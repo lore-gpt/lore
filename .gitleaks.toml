@@ -1,0 +1,18 @@
+# gitleaks config — default rules + Lore "cloud leak linter" (opencore sheet §3.3):
+# the PUBLIC repo must never contain cloud endpoints, customer names, price logic, or internal metrics.
+title = "lore gitleaks config"
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "lore-cloud-endpoint"
+description = "Internal cloud endpoint / control-plane host leaked into the OSS repo"
+regex = '''(api\.internal\.loregpt|control-plane\.loregpt|billing\.loregpt|gateway\.internal\.loregpt)[a-z0-9.\-]*'''
+tags = ["lore", "cloud-boundary"]
+
+[[rules]]
+id = "lore-billing-secret"
+description = "Payment/billing provider secret leaked into the OSS repo"
+regex = '''(sk_live_[0-9a-zA-Z]{20,}|whsec_[0-9a-zA-Z]{20,})'''
+tags = ["lore", "billing"]

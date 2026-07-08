@@ -1,0 +1,39 @@
+{
+  "name": "@loregpt/sdk",
+  "version": "0.0.1",
+  "description": "TypeScript SDK for Lore — the coordination memory layer for multi-agent AI systems. Placeholder release; the real API lands with Lore v0.1.",
+  "license": "Apache-2.0",
+  "author": "The LoreGPT Authors",
+  "homepage": "https://loregpt.ai",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/loregpt/lore.git",
+    "directory": "clients/typescript"
+  },
+  "bugs": {
+    "url": "https://github.com/loregpt/lore/issues"
+  },
+  "keywords": [
+    "ai",
+    "agents",
+    "multi-agent",
+    "memory",
+    "llm",
+    "mcp",
+    "coordination",
+    "context",
+    "read-your-writes"
+  ],
+  "type": "module",
+  "main": "index.js",
+  "files": [
+    "index.js",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

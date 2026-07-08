@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 💬 Discussions & RFC feedback
+    url: https://github.com/loregpt/lore/discussions
+    about: Design questions, RFC feedback, and general Q&A.
+  - name: 🔒 Report a security issue
+    url: https://github.com/loregpt/lore/security/policy
+    about: Please report vulnerabilities privately (see SECURITY.md), not as public issues.
+  - name: ✉️ Waitlist / early access
+    url: https://loregpt.ai
+    about: Join the waitlist for design-partner slots and cloud early access.

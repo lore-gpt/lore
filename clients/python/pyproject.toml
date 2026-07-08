@@ -1,0 +1,27 @@
+[project]
+name = "loregpt"
+version = "0.0.1"
+description = "Python SDK for Lore — the coordination memory layer for multi-agent AI systems. Placeholder release; the real API lands with Lore v0.1."
+readme = "README.md"
+requires-python = ">=3.9"
+license = "Apache-2.0"
+authors = [{ name = "The LoreGPT Authors" }]
+keywords = ["ai", "agents", "multi-agent", "memory", "llm", "mcp", "coordination", "context"]
+classifiers = [
+  "Development Status :: 1 - Planning",
+  "Programming Language :: Python :: 3",
+  "Intended Audience :: Developers",
+  "Topic :: Software Development :: Libraries",
+]
+
+[project.urls]
+Homepage = "https://loregpt.ai"
+Repository = "https://github.com/loregpt/lore"
+Issues = "https://github.com/loregpt/lore/issues"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["loregpt"]
