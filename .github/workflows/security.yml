@@ -16,9 +16,14 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0 # full history so secrets in any commit are caught
-      - name: Run gitleaks
-        uses: gitleaks/gitleaks-action@v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # gitleaks-action is free for public repos. If this ever moves to a private
-          # org repo, set the GITLEAKS_LICENSE secret. Config: .gitleaks.toml
+      - name: Install gitleaks
+        run: |
+          VERSION=8.18.4
+          curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${VERSION}/gitleaks_${VERSION}_linux_x64.tar.gz" -o gitleaks.tar.gz
+          tar -xzf gitleaks.tar.gz gitleaks
+          sudo install gitleaks /usr/local/bin/gitleaks
+          gitleaks version
+      - name: Scan for secrets
+        # Runs the open-source gitleaks binary directly (no GITLEAKS_LICENSE needed for orgs,
+        # unlike gitleaks-action). Config: .gitleaks.toml. Non-zero exit = leak found.
+        run: gitleaks detect --source . --config .gitleaks.toml --redact --verbose

@@ -5,6 +5,10 @@ title = "lore gitleaks config"
 [extend]
 useDefault = true
 
+[allowlist]
+description = "Ignore this config file's own rule patterns"
+paths = ['''\.gitleaks\.toml''']
+
 [[rules]]
 id = "lore-cloud-endpoint"
 description = "Internal cloud endpoint / control-plane host leaked into the OSS repo"
