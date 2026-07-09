@@ -26,7 +26,7 @@ public or private harassment, and publishing others' private information without
 ## Enforcement
 
 Instances of abusive, harassing, or otherwise unacceptable behavior may be reported to the maintainers at
-**conduct@loregpt.ai**. All complaints will be reviewed and investigated promptly and fairly.
+**support@loregpt.ai**. All complaints will be reviewed and investigated promptly and fairly.
 
 This Code of Conduct is adapted from the [Contributor Covenant](https://www.contributor-covenant.org),
 version 2.1.
