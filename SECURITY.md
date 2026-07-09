@@ -4,7 +4,7 @@
 
 **Please do not report security issues through public GitHub issues, discussions, or pull requests.**
 
-Instead, email **support@loregpt.ai** with:
+Instead, email **security@loregpt.ai** with:
 
 - a description of the issue and its impact,
 - steps to reproduce (proof-of-concept if possible),
