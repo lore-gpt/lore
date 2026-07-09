@@ -16,8 +16,8 @@ classifiers = [
 
 [project.urls]
 Homepage = "https://loregpt.ai"
-Repository = "https://github.com/loregpt/lore"
-Issues = "https://github.com/loregpt/lore/issues"
+Repository = "https://github.com/lore-gpt/lore"
+Issues = "https://github.com/lore-gpt/lore/issues"
 
 [build-system]
 requires = ["hatchling"]

@@ -35,7 +35,7 @@ memory, published with reproducible results for Lore and comparable systems — 
 - Open harness; anyone can run it against any system via an adapter. Third-party result PRs welcome.
 - Published results table for Lore + Mem0 + Zep, same judge, harness linked. Where a competitor is
   stronger on an axis (e.g. deep temporal reasoning), we say so — trust is the point.
-- Lives in its own repo (`loregpt/coordination-bench`) at launch so a would-be community standard doesn't
+- Lives in its own repo (`lore-gpt/coordination-bench`) at launch so a would-be community standard doesn't
   sit inside a vendor's product repo. Develops in this monorepo under `evals/coordination/` until then.
 
 ## Open questions

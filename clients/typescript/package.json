@@ -7,11 +7,11 @@
   "homepage": "https://loregpt.ai",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/loregpt/lore.git",
+    "url": "git+https://github.com/lore-gpt/lore.git",
     "directory": "clients/typescript"
   },
   "bugs": {
-    "url": "https://github.com/loregpt/lore/issues"
+    "url": "https://github.com/lore-gpt/lore/issues"
   },
   "keywords": [
     "ai",
