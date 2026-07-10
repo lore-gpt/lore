@@ -1,0 +1,11 @@
+# Redocly lint configuration for spec/openapi.yaml.
+extends:
+  - recommended
+rules:
+  # Phase 0 ships a localhost self-host server and a deliberately-minimal surface:
+  # a 501 recall placeholder and a health check that only returns 200. Relax the
+  # rules that fire solely on that placeholder shape; Phase 1 re-tightens them when
+  # the real endpoints and a production server land.
+  no-server-example.com: off
+  operation-2xx-response: off
+  operation-4xx-response: off
