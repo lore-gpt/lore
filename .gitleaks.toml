@@ -20,3 +20,15 @@ id = "lore-billing-secret"
 description = "Payment/billing provider secret leaked into the OSS repo"
 regex = '''(sk_live_[0-9a-zA-Z]{20,}|whsec_[0-9a-zA-Z]{20,})'''
 tags = ["lore", "billing"]
+
+[[rules]]
+id = "lore-planning-doc-marker"
+description = "Internal planning-document content must not appear in the OSS repo (boundary guard)"
+regex = '''(?i)(master[- ]brief|internal[- ]docs|internal-documents|child[- ]brief|ADR-0?(08|16|21|22)\b)'''
+tags = ["lore", "planning-boundary"]
+
+[[rules]]
+id = "lore-price-point"
+description = "Price points / tier pricing must not appear in the OSS repo (boundary guard)"
+regex = '''\$\d{2,4}\s*(/|per\s+)(mo(nth)?|ay)\b'''
+tags = ["lore", "planning-boundary"]
