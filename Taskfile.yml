@@ -1,0 +1,70 @@
+# Developer entry point. Task runs commands through its own embedded POSIX-sh
+# interpreter, so these behave the same on Windows, macOS, and Linux — only the
+# native tools (go, pnpm, uv, docker, npx) need to be on PATH. CI invokes those
+# tools directly; this file is the human-facing convenience layer.
+version: "3"
+
+silent: true
+
+vars:
+  BIN: bin/lore
+  MAIN_PKG: ./server/cmd/lore
+  COMPOSE: infra/docker-compose.yml
+  GOLANGCI_VERSION: v2.12.2
+  SQLC_VERSION: v1.31.1
+  REDOCLY_VERSION: 2.38.0
+
+tasks:
+  default:
+    desc: List available tasks.
+    cmds:
+      - task --list
+
+  setup:
+    desc: Install dev dependencies (Go tools + JS/Py deps).
+    cmds:
+      - go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@{{.GOLANGCI_VERSION}}
+      - go install github.com/sqlc-dev/sqlc/cmd/sqlc@{{.SQLC_VERSION}}
+      - go mod download
+      - cd clients/typescript && pnpm install
+      - cd clients/python && uv sync
+
+  sqlc:
+    desc: Regenerate typed DB access code from SQL.
+    cmds:
+      - sqlc generate
+
+  lint:
+    desc: Lint Go (golangci-lint; includes gofmt).
+    cmds:
+      - golangci-lint run ./...
+
+  test:
+    desc: Run unit tests.
+    cmds:
+      - go test ./...
+
+  test:integration:
+    desc: Run integration tests (needs Docker; spins ParadeDB via testcontainers).
+    cmds:
+      - go test -tags=integration ./...
+
+  build:
+    desc: Build the lore binary into bin/.
+    cmds:
+      - go build -o {{.BIN}} {{.MAIN_PKG}}
+
+  spec:lint:
+    desc: Lint the OpenAPI spec (redocly).
+    cmds:
+      - npx --yes @redocly/cli@{{.REDOCLY_VERSION}} lint spec/openapi.yaml
+
+  compose:up:
+    desc: Start the local stack (ParadeDB, Valkey, MinIO, server, worker) and wait until healthy.
+    cmds:
+      - docker compose -f {{.COMPOSE}} up -d --wait
+
+  compose:down:
+    desc: Stop the local stack and remove its volumes.
+    cmds:
+      - docker compose -f {{.COMPOSE}} down -v
