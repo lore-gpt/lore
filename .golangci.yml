@@ -1,0 +1,18 @@
+# golangci-lint v2 configuration.
+# Zero-tolerance baseline (phase-0 acceptance criterion 4): the go CI leg fails
+# on any finding. Keep the enabled set explicit rather than relying on defaults
+# so the contract is visible in-repo.
+version: "2"
+
+linters:
+  default: none
+  enable:
+    - errcheck # unchecked errors are bugs waiting to happen
+    - govet # vet's correctness checks
+    - ineffassign # ineffectual assignments
+    - staticcheck # the staticcheck analyzer suite
+    - unused # dead code
+
+formatters:
+  enable:
+    - gofmt
