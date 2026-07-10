@@ -1,0 +1,157 @@
+openapi: 3.0.3
+info:
+  title: Lore API
+  version: 0.0.0-dev
+  description: |
+    HTTP API for Lore, the coordination memory layer for multi-agent AI systems.
+
+    This is the source of truth from which the SDKs are generated. Phase 0 exposes
+    health, event ingest, and a recall placeholder; the write / extract / pack
+    surface lands in Phase 1.
+  license:
+    name: Apache-2.0
+    url: https://www.apache.org/licenses/LICENSE-2.0
+  contact:
+    name: Lore
+    url: https://loregpt.ai
+    email: support@loregpt.ai
+servers:
+  - url: http://localhost:8080
+    description: Local self-host (docker compose).
+tags:
+  - name: system
+    description: Health and diagnostics.
+  - name: events
+    description: Append-only event ingest.
+  - name: recall
+    description: Context retrieval (Phase 1).
+security:
+  - bearerAuth: []
+paths:
+  /healthz:
+    get:
+      operationId: getHealthz
+      summary: Liveness and dependency health.
+      description: >
+        Reports the process version and the status of the database and job queue.
+        Unauthenticated so orchestrators can probe it.
+      tags:
+        - system
+      security: []
+      responses:
+        "200":
+          description: Service is healthy.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Health"
+  /v1/events:
+    post:
+      operationId: createEvent
+      summary: Append an event to a run.
+      description: >
+        Appends an event to the run's append-only log and (from Phase 1) enqueues
+        an extraction job in the same database transaction. Returns the created
+        event id.
+      tags:
+        - events
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateEventRequest"
+      responses:
+        "202":
+          description: Event accepted and persisted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreateEventResponse"
+        "400":
+          description: Invalid request body.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Missing or invalid API key.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/recall:
+    post:
+      operationId: recall
+      summary: Retrieve a context pack.
+      description: Not implemented in Phase 0; the read path lands in Phase 1.
+      tags:
+        - recall
+      responses:
+        "501":
+          description: Not implemented until Phase 1.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: "API key sent as a bearer token: `Authorization: Bearer <key>`."
+  schemas:
+    Health:
+      type: object
+      required:
+        - status
+        - version
+        - db
+        - queue
+      properties:
+        status:
+          type: string
+          example: ok
+        version:
+          type: string
+          example: 0.0.0-dev
+        db:
+          type: string
+          example: ok
+        queue:
+          type: string
+          example: ok
+    CreateEventRequest:
+      type: object
+      required:
+        - run_id
+        - agent_id
+        - payload
+      properties:
+        run_id:
+          type: string
+          format: uuid
+        agent_id:
+          type: string
+          minLength: 1
+          example: researcher
+        payload:
+          type: object
+          additionalProperties: true
+    CreateEventResponse:
+      type: object
+      required:
+        - event_id
+      properties:
+        event_id:
+          type: string
+          format: uuid
+    Error:
+      type: object
+      required:
+        - message
+      properties:
+        message:
+          type: string
+        code:
+          type: string

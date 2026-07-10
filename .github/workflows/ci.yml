@@ -95,3 +95,14 @@ jobs:
             exit 1
           fi
           echo "clean: no forbidden strings"
+
+  spec-lint:
+    name: spec-lint (openapi)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      # Redocly reads redocly.yaml at the repo root for the ruleset.
+      - run: npx --yes @redocly/cli@2.38.0 lint spec/openapi.yaml
