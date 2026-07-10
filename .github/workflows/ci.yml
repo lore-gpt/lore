@@ -67,6 +67,19 @@ jobs:
       - name: ruff
         run: uvx ruff@0.14.4 check .
 
+  integration:
+    name: integration (testcontainers · ParadeDB)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+          cache: true
+      # ubuntu-latest ships a working Docker engine; testcontainers-go drives it
+      # to spin a real ParadeDB and prove migrations + extensions + queries.
+      - run: go test -tags=integration ./...
+
   forbidden-strings:
     name: forbidden-strings (criterion 7)
     runs-on: ubuntu-latest

@@ -1,0 +1,15 @@
+version: "2"
+sql:
+  - engine: "postgresql"
+    schema: "core/store/migrations"
+    queries: "core/store/queries"
+    # sqlc natively maps the pgvector `vector` type to github.com/pgvector/pgvector-go
+    # (Memory.Embedding becomes *pgvector.Vector). The Phase 0 embedding column is
+    # unused and dropped in Phase 1; the mapping just keeps the generated model honest.
+    gen:
+      go:
+        package: "db"
+        out: "core/store/db"
+        sql_package: "pgx/v5"
+        emit_json_tags: true
+        emit_pointers_for_null_types: true
