@@ -1,0 +1,26 @@
+; EditorConfig — consistent formatting across editors.
+; https://editorconfig.org · line endings are also enforced by .gitattributes (LF).
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 2
+
+# Go is gofmt-governed: tabs for indentation.
+[*.go]
+indent_style = tab
+
+# go.mod / go.sum use tabs.
+[go.{mod,sum}]
+indent_style = tab
+
+[Makefile]
+indent_style = tab
+
+# Don't strip trailing whitespace in Markdown (two trailing spaces = hard break).
+[*.md]
+trim_trailing_whitespace = false
