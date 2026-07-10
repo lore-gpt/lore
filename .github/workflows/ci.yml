@@ -1,0 +1,84 @@
+# Polyglot CI: one leg per language in the monorepo, plus a hygiene grep.
+# Secret scanning lives in the separate security.yml (gitleaks) — not duplicated here.
+# Later phase-0 increments add spec-lint, docker-build, and import-smoke jobs.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  go:
+    name: go (vet · lint · test)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+          cache: true
+      - run: go vet ./...
+      - name: golangci-lint (v2, zero-tolerance — see .golangci.yml)
+        run: |
+          go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2
+          golangci-lint run ./...
+      - run: go test ./...
+
+  typescript:
+    name: typescript (@loregpt/sdk)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: clients/typescript
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      # Placeholder package: no committed lockfile yet, so a non-frozen install.
+      # Switches to `--frozen-lockfile` when the real SDK lands in phase 1.
+      - run: pnpm install
+      - name: type=module syntax check
+        run: node --check index.js
+
+  python:
+    name: python (loregpt)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: clients/python
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.11.26"
+      - run: uv sync
+      - name: ruff
+        run: uvx ruff@0.14.4 check .
+
+  forbidden-strings:
+    name: forbidden-strings (criterion 7)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Fails if the placeholder token or the rejected product name leaks into the
+      # tree. The [x] character classes keep this pattern from matching its own
+      # source line, so every file — including this workflow — is scanned.
+      - name: no placeholder / rejected-name strings
+        run: |
+          if git grep -nEi '<[p]roje>|m[a]estro'; then
+            echo "::error::forbidden string found (see matches above)"
+            exit 1
+          fi
+          echo "clean: no forbidden strings"
