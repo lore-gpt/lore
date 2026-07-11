@@ -398,7 +398,8 @@ func TestMigration0003VersionsClaimsScopes(t *testing.T) {
 	}
 
 	// Migration 0003 is cleanly reversible: Down drops the three tables and the
-	// scope_keys column; Up restores them. 0003 is the head, so a single Down reverts it.
+	// scope_keys column; Up restores them. Target 0003 by version (down to 0002, back
+	// up through 0003) so the check stays correct as later migrations stack on top.
 	sqlDB, err := sql.Open("pgx", dsn)
 	if err != nil {
 		t.Fatalf("open sql.DB for goose: %v", err)
@@ -408,8 +409,8 @@ func TestMigration0003VersionsClaimsScopes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create goose provider: %v", err)
 	}
-	if _, err := provider.Down(ctx); err != nil {
-		t.Fatalf("goose down (revert 0003): %v", err)
+	if _, err := provider.DownTo(ctx, 2); err != nil {
+		t.Fatalf("goose down to 0002 (revert 0003): %v", err)
 	}
 	for _, tbl := range []string{"memory_versions", "claims", "memory_scopes"} {
 		if tableExists(ctx, t, st.Pool, tbl) {
@@ -419,8 +420,8 @@ func TestMigration0003VersionsClaimsScopes(t *testing.T) {
 	if memoriesHasColumn(ctx, t, st.Pool, "scope_keys") {
 		t.Error("down 0003 should drop memories.scope_keys")
 	}
-	if _, err := provider.Up(ctx); err != nil {
-		t.Fatalf("goose up (reapply 0003): %v", err)
+	if _, err := provider.UpTo(ctx, 3); err != nil {
+		t.Fatalf("goose up to 0003 (reapply 0003): %v", err)
 	}
 	for _, tbl := range []string{"memory_versions", "claims", "memory_scopes"} {
 		if !tableExists(ctx, t, st.Pool, tbl) {
