@@ -78,6 +78,22 @@ jobs:
           cache: true
       # ubuntu-latest ships a working Docker engine; testcontainers-go drives it
       # to spin a real ParadeDB and prove migrations + extensions + queries.
+      #
+      # Pre-pull the image once (with retry) before the tests. `go test ./...` runs
+      # packages in parallel, so several would otherwise each start a container and
+      # race to pull from Docker Hub, which intermittently rate-limits/times out
+      # anonymous pulls on shared CI IPs. Pulling once seeds the local cache so the
+      # parallel packages reuse it instead of hammering the registry.
+      - name: Pre-pull ParadeDB image (retry to absorb Docker Hub flakes)
+        run: |
+          img="paradedb/paradedb:0.24.2-pg17" # keep in lockstep with infra/docker-compose.yml
+          for attempt in 1 2 3 4 5; do
+            if docker pull "$img"; then exit 0; fi
+            echo "pull attempt ${attempt} failed; retrying in $((attempt * 10))s"
+            sleep "$((attempt * 10))"
+          done
+          echo "::error::failed to pull ${img} after 5 attempts"
+          exit 1
       - run: go test -tags=integration ./...
 
   forbidden-strings:
