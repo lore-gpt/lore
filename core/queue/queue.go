@@ -73,6 +73,17 @@ func (q *Queue) Stop(ctx context.Context) error {
 	return q.Client.Stop(ctx)
 }
 
+// EnqueueExtract inserts an extract_event job on the given transaction, so the
+// enqueue commits atomically with whatever else tx is doing (the event insert).
+// Available on both client shapes: the insert-only server enqueues here; only
+// working the job requires NewWorker.
+func (q *Queue) EnqueueExtract(ctx context.Context, tx pgx.Tx, eventID string) error {
+	if _, err := q.Client.InsertTx(ctx, tx, jobs.ExtractEventArgs{EventID: eventID}, nil); err != nil {
+		return fmt.Errorf("enqueue extract_event: %w", err)
+	}
+	return nil
+}
+
 // Ping reports queue health for /healthz: the River schema must be migrated and
 // reachable. Available on both client shapes (the server needs it).
 func (q *Queue) Ping(ctx context.Context) error {
