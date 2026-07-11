@@ -1,7 +1,7 @@
 # RFC 0001 — Read-your-writes for agent teams (the `seq` contract)
 
 - **Status:** 🌱 Draft
-- **Discussion:** (open a thread in Discussions and link it here)
+- **Discussion:** [lore-gpt/lore#10](https://github.com/lore-gpt/lore/discussions/10)
 
 ## Summary
 

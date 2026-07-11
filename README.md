@@ -128,7 +128,7 @@ recall, MCP server + TS/Python SDKs, minimal inspector.
 - 🗺️ **Design & RFCs:** [`docs/rfcs/`](docs/rfcs) — the read-your-writes contract and the coordination
   benchmark are being designed in the open. Feedback wanted.
 - 💬 **Discussion:** [GitHub Discussions](../../discussions)
-- 📊 **Category framing:** `vs Mem0` / `vs Zep` comparisons at [loregpt.ai/compare](https://loregpt.ai) *(soon)*
+- 📊 **Category framing:** `vs Mem0` / `vs Zep` comparisons at [loregpt.ai/compare](https://loregpt.ai/compare)
 
 ## Open source & what's paid
 

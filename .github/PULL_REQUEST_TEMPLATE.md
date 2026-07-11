@@ -18,4 +18,4 @@ Closes #
 - [ ] Docs / RFC updated (or N/A)
 - [ ] No secrets, internal cloud endpoints, or commercial-layer code
       (see [CONTRIBUTING → OSS and paid boundary](../CONTRIBUTING.md#the-oss-and-paid-boundary))
-- [ ] Architectural change? An ADR note is included in this PR
+- [ ] Architectural change? The design rationale is explained in the PR description

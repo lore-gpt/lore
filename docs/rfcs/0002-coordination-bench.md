@@ -1,7 +1,7 @@
 # RFC 0002 — `coordination-bench`: a benchmark for multi-agent memory
 
 - **Status:** 🌱 Draft
-- **Discussion:** (open a thread in Discussions and link it here)
+- **Discussion:** [lore-gpt/lore#11](https://github.com/lore-gpt/lore/discussions/11)
 
 ## Summary
 

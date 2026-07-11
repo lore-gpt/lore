@@ -20,7 +20,8 @@ open an issue, comment on an RFC, or send a patch — thank you.
 - **Conventional Commits** — `feat:`, `fix:`, `docs:`, `refactor:`, `test:`, `chore:` … This drives the
   changelog and release train.
 - **Small PRs** — keep diffs focused (< ~400 lines where possible); one logical change per PR.
-- **Green CI** — lint + tests must pass. Any architectural deviation should come with a short ADR note.
+- **Green CI** — lint + tests must pass. Any architectural change should explain its design
+  rationale in the PR description.
 - **DCO / CLA** — contributions are accepted under the project's Contributor License Agreement (a CLA bot
   will guide you on your first PR). This keeps future licensing flexibility open and protects the project
   and its contributors.
