@@ -28,6 +28,33 @@ type Claim struct {
 	CreatedAt    pgtype.Timestamptz `json:"created_at"`
 }
 
+type Entity struct {
+	ID           pgtype.UUID        `json:"id"`
+	ProjectID    pgtype.UUID        `json:"project_id"`
+	Name         string             `json:"name"`
+	Type         string             `json:"type"`
+	Aliases      []string           `json:"aliases"`
+	DegreeCached int32              `json:"degree_cached"`
+	CreatedAt    pgtype.Timestamptz `json:"created_at"`
+}
+
+type EntityLink struct {
+	ID           pgtype.UUID        `json:"id"`
+	ProjectID    pgtype.UUID        `json:"project_id"`
+	SrcEntityID  pgtype.UUID        `json:"src_entity_id"`
+	DstEntityID  pgtype.UUID        `json:"dst_entity_id"`
+	Predicate    string             `json:"predicate"`
+	Weight       float32            `json:"weight"`
+	TrustTier    int16              `json:"trust_tier"`
+	ValidFrom    pgtype.Timestamptz `json:"valid_from"`
+	ValidTo      pgtype.Timestamptz `json:"valid_to"`
+	SupersededBy pgtype.UUID        `json:"superseded_by"`
+	Provenance   []pgtype.UUID      `json:"provenance"`
+	FirstSeenSeq int64              `json:"first_seen_seq"`
+	LastSeenSeq  int64              `json:"last_seen_seq"`
+	CreatedAt    pgtype.Timestamptz `json:"created_at"`
+}
+
 type Event struct {
 	ID        pgtype.UUID        `json:"id"`
 	RunID     pgtype.UUID        `json:"run_id"`
