@@ -66,7 +66,9 @@ services:
       LORE_ADDR: ":8080"
       LORE_VALKEY_URL: redis://valkey:6379
     ports:
-      - "8080:8080"
+      # The container always listens on 8080; the host port is overridable via
+      # LORE_HTTP_PORT for when 8080 is already taken (e.g. a local Apache/nginx).
+      - "${LORE_HTTP_PORT:-8080}:8080"
     depends_on:
       paradedb:
         condition: service_healthy
