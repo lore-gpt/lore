@@ -45,6 +45,15 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Health"
+        "503":
+          description: >
+            Service degraded: the database or queue is unreachable. Same body as
+            200, with status "degraded" and the failing dependency marked
+            "error", so orchestrators drain the instance on the status code.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Health"
   /v1/events:
     post:
       operationId: createEvent
