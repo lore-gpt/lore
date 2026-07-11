@@ -3,9 +3,10 @@ sql:
   - engine: "postgresql"
     schema: "core/store/migrations"
     queries: "core/store/queries"
-    # sqlc natively maps the pgvector `vector` type to github.com/pgvector/pgvector-go
-    # (Memory.Embedding becomes *pgvector.Vector). The Phase 0 embedding column is
-    # unused and dropped in Phase 1; the mapping just keeps the generated model honest.
+    # The Phase 0 inline `memories.embedding` column was dropped in migration 0002;
+    # embeddings relocate to a dedicated `embeddings(vector)` table in a later Phase 1
+    # migration, at which point sqlc's native pgvector mapping (vector ->
+    # github.com/pgvector/pgvector-go) applies to that table instead.
     gen:
       go:
         package: "db"
