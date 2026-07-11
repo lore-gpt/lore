@@ -49,6 +49,71 @@ pack.coveredSeq   // ≥ seq → read-your-writes, guaranteed
 pack.savedTokens  // the number your CFO will ask about
 ```
 
+## Quickstart (self-host)
+
+Today Lore runs as a skeleton: a server that accepts events, persists them, and
+enqueues a (stub) extraction job, and a worker that drains it. The write →
+consolidate → pack API shown above lands in `v0.1`.
+
+**Prerequisites:** Docker (with Compose) and [Task](https://taskfile.dev). Go 1.26+
+is only needed to build or test outside containers.
+
+```bash
+git clone https://github.com/lore-gpt/lore
+cd lore
+task compose:up        # builds the image, starts the stack, waits until healthy
+```
+
+> **Port 8080 already in use?** (a local Apache/nginx, say) — pick a free host
+> port; the container still listens on 8080:
+> `LORE_HTTP_PORT=18080 task compose:up`, then use that port in the URLs below.
+
+Check health — unauthenticated, so orchestrators can probe it:
+
+```bash
+curl localhost:8080/healthz
+# {"status":"ok","version":"0.0.0-dev","db":"ok","queue":"ok"}
+```
+
+Append an event. Phase 0 has no run-creation endpoint yet, so seed one run
+directly, then post to it:
+
+```bash
+RUN_ID=$(docker compose -f infra/docker-compose.yml exec -T paradedb \
+  psql -U lore -d lore -tA -c "WITH o AS (INSERT INTO organizations(name) VALUES('demo') RETURNING id), p AS (INSERT INTO projects(org_id,name) SELECT id,'demo' FROM o RETURNING id), r AS (INSERT INTO runs(project_id) SELECT id FROM p RETURNING id) SELECT id FROM r;")
+
+curl -X POST localhost:8080/v1/events \
+  -H "Authorization: Bearer local-dev-key" \
+  -H "Content-Type: application/json" \
+  -d "{\"run_id\":\"$RUN_ID\",\"agent_id\":\"researcher\",\"payload\":{\"note\":\"hello memory\"}}"
+# {"event_id":"..."}   (HTTP 202)
+```
+
+Within seconds the worker drains the job:
+
+```bash
+docker compose -f infra/docker-compose.yml logs lore-worker | grep "extract stub"
+# ... INFO extract stub: event received event_id=...
+```
+
+Tear it down:
+
+```bash
+task compose:down
+```
+
+### Configuration
+
+`task compose:up` runs with working defaults. To run the binary outside Compose,
+copy [`.env.example`](.env.example) to `.env` and set:
+
+| Variable | Required | Default | Purpose |
+|---|---|---|---|
+| `LORE_DATABASE_URL` | yes | — | Postgres (ParadeDB) connection string |
+| `LORE_API_KEY` | yes | — | bearer token required on `/v1/*` |
+| `LORE_ADDR` | no | `:8080` | HTTP listen address |
+| `LORE_VALKEY_URL` | no | — | Valkey URL (started by Compose, reserved for `v0.1`) |
+
 ## Works with
 
 SDKs for **TypeScript** and **Python**, plus an **MCP server** for everything else (Claude Code, Cursor,
