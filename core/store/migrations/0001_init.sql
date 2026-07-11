@@ -46,8 +46,8 @@ CREATE TABLE events (
 CREATE INDEX events_run_id_idx ON events (run_id);
 
 -- Phase 1 placeholder. The inline embedding column is intentionally
--- DIMENSIONLESS (ADR-0010 is still open — no dimension is fixed before it is
--- measured); Phase 1 relocates embeddings to a dedicated multi-model table.
+-- DIMENSIONLESS — no dimension is fixed before it is measured; Phase 1
+-- relocates embeddings to a dedicated multi-model table.
 CREATE TABLE memories (
     id         uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     project_id uuid NOT NULL REFERENCES projects (id) ON DELETE CASCADE,

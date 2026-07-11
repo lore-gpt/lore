@@ -2,7 +2,7 @@
 // a downstream build — including the closed-source cloud build — swaps out to
 // change authorization, conflict resolution, and metering without forking the
 // core. Composition happens at compile time via core.NewServer options, not a
-// runtime plugin system (see ADR-014).
+// runtime plugin system.
 //
 // Phase 0 ships the interfaces and their OSS default implementations only; the
 // server composes them but does not yet invoke them on the request path. Each

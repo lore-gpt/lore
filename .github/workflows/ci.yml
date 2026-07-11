@@ -137,5 +137,5 @@ jobs:
           go-version: "1.26"
           cache: true
       # A throwaway module outside this repo imports core/httpapi + core/ext and
-      # builds, while server/internal stays unimportable (ADR-014).
+      # builds, while server/internal stays unimportable — the open-core boundary.
       - run: bash scripts/import-smoke.sh
