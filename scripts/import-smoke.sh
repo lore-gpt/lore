@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# import-smoke — prove the open-core import surface (ADR-014, acceptance
+# import-smoke — prove the open-core import surface (acceptance
 # criterion 8).
 #
 # A throwaway module OUTSIDE this repo (so Go's internal-package rules apply as

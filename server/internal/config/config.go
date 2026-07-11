@@ -1,6 +1,6 @@
 // Package config loads the lore server configuration from LORE_-prefixed
 // environment variables. It lives under server/internal so it stays out of the
-// open-core import surface (ADR-014): only the OSS binary wires configuration,
+// open-core import surface: only the OSS binary wires configuration,
 // a downstream build supplies core.Config however it likes.
 package config
 

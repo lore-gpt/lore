@@ -1,6 +1,6 @@
 // Package queue wires the River job queue over the shared pgx pool.
 //
-// There are two client shapes on purpose (ADR-014 composition: each binary
+// There are two client shapes on purpose (open-core composition: each binary
 // wires only what it needs):
 //
 //   - New       — insert-only. `lore serve` enqueues jobs (InsertTx) but has no

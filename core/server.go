@@ -63,7 +63,7 @@ func (e extensions) logComposed(ctx context.Context, role string) {
 }
 
 // Option overrides a default extension point. A closed-source build injects its
-// own implementations here without forking the core (ADR-014).
+// own implementations here without forking the core.
 type Option func(*extensions)
 
 // WithPolicyEngine overrides the default PolicyEngine.

@@ -1,4 +1,4 @@
-# gitleaks config — default rules + Lore "cloud leak linter" (opencore sheet §3.3):
+# gitleaks config — default rules plus Lore's custom cloud/boundary rules:
 # the PUBLIC repo must never contain cloud endpoints, customer names, price logic, or internal metrics.
 title = "lore gitleaks config"
 
