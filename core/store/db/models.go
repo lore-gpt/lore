@@ -16,6 +16,18 @@ type ApiKey struct {
 	RevokedAt pgtype.Timestamptz `json:"revoked_at"`
 }
 
+type Claim struct {
+	ID           pgtype.UUID        `json:"id"`
+	MemoryID     pgtype.UUID        `json:"memory_id"`
+	ProjectID    pgtype.UUID        `json:"project_id"`
+	EntityID     pgtype.UUID        `json:"entity_id"`
+	Predicate    string             `json:"predicate"`
+	Value        []byte             `json:"value"`
+	EventTime    pgtype.Timestamptz `json:"event_time"`
+	SupersededBy pgtype.UUID        `json:"superseded_by"`
+	CreatedAt    pgtype.Timestamptz `json:"created_at"`
+}
+
 type Event struct {
 	ID        pgtype.UUID        `json:"id"`
 	RunID     pgtype.UUID        `json:"run_id"`
@@ -39,6 +51,23 @@ type Memory struct {
 	ReviewStatus   string             `json:"review_status"`
 	CreatedByAgent *string            `json:"created_by_agent"`
 	SourceEventID  pgtype.UUID        `json:"source_event_id"`
+	ScopeKeys      []string           `json:"scope_keys"`
+}
+
+type MemoryScope struct {
+	MemoryID  pgtype.UUID        `json:"memory_id"`
+	ScopeType string             `json:"scope_type"`
+	ScopeID   string             `json:"scope_id"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+}
+
+type MemoryVersion struct {
+	MemoryID  pgtype.UUID        `json:"memory_id"`
+	Version   int32              `json:"version"`
+	Content   string             `json:"content"`
+	ChangedBy *string            `json:"changed_by"`
+	Reason    *string            `json:"reason"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
 }
 
 type Organization struct {
