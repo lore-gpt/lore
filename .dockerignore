@@ -1,0 +1,10 @@
+# Allowlist, not denylist: the image build only needs the Go module and the
+# sources `go build ./server/cmd/lore` actually imports. Excluding everything
+# else keeps the build context small and stops edits to the SDKs, docs, spec, or
+# CI from invalidating the `COPY . .` layer cache. Self-maintaining as new
+# top-level siblings are added.
+*
+!go.mod
+!go.sum
+!core
+!server

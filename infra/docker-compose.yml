@@ -1,0 +1,96 @@
+# Local self-host topology for Lore.
+#
+#   docker compose -f infra/docker-compose.yml up --build --wait
+#
+# `--wait` returns once the server is healthy: paradedb accepting TCP, the schema
+# migrated (serve --auto-migrate), and /healthz green. The worker starts only
+# after the server is healthy (so the queue schema exists) and, like every
+# service, restarts on failure — but it has no HTTP surface, so `--wait` does not
+# gate on the worker independently. valkey and minio are started so the Phase 1
+# topology is already in place; Phase 0 does not read or write them.
+#
+# The credentials below are throwaway local-dev values, not secrets.
+name: lore
+
+services:
+  paradedb:
+    image: paradedb/paradedb:0.24.2-pg17
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: lore
+      POSTGRES_PASSWORD: lore
+      POSTGRES_DB: lore
+    healthcheck:
+      # Force a TCP check (-h) so this only passes once Postgres accepts network
+      # connections. The socket-only phase of first-time init would otherwise
+      # report ready before the server can dial it over TCP.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U lore -d lore"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+      start_period: 10s
+    volumes:
+      - paradedb-data:/var/lib/postgresql/data
+
+  valkey:
+    image: valkey/valkey:8.1-alpine
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  minio:
+    image: minio/minio:RELEASE.2025-04-22T22-12-26Z
+    restart: unless-stopped
+    # No healthcheck yet: nothing consumes minio in Phase 0, so `--wait` only
+    # waits for it to start. Add a GET /minio/health/live probe when a service
+    # begins depending on it.
+    command: ["server", "/data"]
+    environment:
+      MINIO_ROOT_USER: lore
+      MINIO_ROOT_PASSWORD: lore-local-dev
+    volumes:
+      - minio-data:/data
+
+  lore-server:
+    restart: unless-stopped
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    command: ["serve", "--auto-migrate"]
+    environment:
+      LORE_DATABASE_URL: postgres://lore:lore@paradedb:5432/lore?sslmode=disable
+      LORE_API_KEY: local-dev-key
+      LORE_ADDR: ":8080"
+      LORE_VALKEY_URL: redis://valkey:6379
+    ports:
+      - "8080:8080"
+    depends_on:
+      paradedb:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "/lore", "health"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  lore-worker:
+    restart: unless-stopped
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    command: ["worker"]
+    environment:
+      LORE_DATABASE_URL: postgres://lore:lore@paradedb:5432/lore?sslmode=disable
+      LORE_API_KEY: local-dev-key
+    depends_on:
+      paradedb:
+        condition: service_healthy
+      lore-server:
+        condition: service_healthy
+
+volumes:
+  paradedb-data:
+  minio-data:

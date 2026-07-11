@@ -106,3 +106,23 @@ jobs:
           node-version: 22
       # Redocly reads redocly.yaml at the repo root for the ruleset.
       - run: npx --yes @redocly/cli@2.38.0 lint spec/openapi.yaml
+
+  docker-build:
+    name: docker-build (image size · criterion 5)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: build distroless image
+        run: docker build -t lore:ci .
+      - name: assert image under 30 MB
+        run: |
+          size=$(docker image inspect lore:ci --format '{{.Size}}')
+          limit=$((30 * 1024 * 1024))
+          echo "image size: ${size} bytes (limit ${limit} bytes / 30 MB)"
+          if [ "$size" -gt "$limit" ]; then
+            echo "::error::image exceeds the 30 MB budget (${size} > ${limit})"
+            exit 1
+          fi
+          echo "ok: image within the 30 MB budget"
+      - name: validate compose file
+        run: docker compose -f infra/docker-compose.yml config --quiet

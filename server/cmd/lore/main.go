@@ -1,15 +1,18 @@
 // Command lore is the OSS server binary. It wires the open-core packages with
 // their default (OSS) extension implementations and exposes the serve, worker,
-// migrate, and version subcommands.
+// migrate, version, and health subcommands.
 package main
 
 import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -32,7 +35,7 @@ func rootCmd() *cobra.Command {
 		// Errors are returned by RunE and printed by cobra; don't also dump usage.
 		SilenceUsage: true,
 	}
-	root.AddCommand(serveCmd(), workerCmd(), migrateCmd(), versionCmd())
+	root.AddCommand(serveCmd(), workerCmd(), migrateCmd(), versionCmd(), healthCmd())
 	return root
 }
 
@@ -142,6 +145,42 @@ func versionCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			_, err := fmt.Fprintln(cmd.OutOrStdout(), core.Version)
 			return err
+		},
+	}
+}
+
+// healthCmd probes the local /healthz endpoint and exits non-zero if the server
+// is not healthy. It backs the container HEALTHCHECK: the distroless image has
+// no shell or curl, so the binary probes itself. It reads only LORE_ADDR (for
+// the port) so it works without the full server configuration.
+func healthCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "health",
+		Short: "Probe the local /healthz endpoint; exit non-zero if unhealthy",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			_, port, err := net.SplitHostPort(os.Getenv("LORE_ADDR"))
+			if err != nil || port == "" {
+				port = "8080"
+			}
+			url := "http://127.0.0.1:" + port + "/healthz"
+
+			ctx, cancel := context.WithTimeout(cmd.Context(), 3*time.Second)
+			defer cancel()
+			req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+			if err != nil {
+				return err
+			}
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				return err
+			}
+			defer func() { _ = resp.Body.Close() }()
+
+			if resp.StatusCode != http.StatusOK {
+				return fmt.Errorf("unhealthy: /healthz returned %d", resp.StatusCode)
+			}
+			return nil
 		},
 	}
 }
