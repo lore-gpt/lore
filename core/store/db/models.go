@@ -6,6 +6,7 @@ package db
 
 import (
 	"github.com/jackc/pgx/v5/pgtype"
+	pgvector "github.com/pgvector/pgvector-go"
 )
 
 type ApiKey struct {
@@ -28,6 +29,14 @@ type Claim struct {
 	CreatedAt    pgtype.Timestamptz `json:"created_at"`
 }
 
+type Embedding struct {
+	ProjectID pgtype.UUID        `json:"project_id"`
+	MemoryID  pgtype.UUID        `json:"memory_id"`
+	ModelID   string             `json:"model_id"`
+	Vec       pgvector.Vector    `json:"vec"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+}
+
 type Entity struct {
 	ID           pgtype.UUID        `json:"id"`
 	ProjectID    pgtype.UUID        `json:"project_id"`
@@ -36,6 +45,7 @@ type Entity struct {
 	Aliases      []string           `json:"aliases"`
 	DegreeCached int32              `json:"degree_cached"`
 	CreatedAt    pgtype.Timestamptz `json:"created_at"`
+	Embedding    *pgvector.Vector   `json:"embedding"`
 }
 
 type EntityLink struct {
@@ -104,10 +114,11 @@ type Organization struct {
 }
 
 type Project struct {
-	ID        pgtype.UUID        `json:"id"`
-	OrgID     pgtype.UUID        `json:"org_id"`
-	Name      string             `json:"name"`
-	CreatedAt pgtype.Timestamptz `json:"created_at"`
+	ID            pgtype.UUID        `json:"id"`
+	OrgID         pgtype.UUID        `json:"org_id"`
+	Name          string             `json:"name"`
+	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+	ActiveModelID *string            `json:"active_model_id"`
 }
 
 type Run struct {

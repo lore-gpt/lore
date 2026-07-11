@@ -54,7 +54,7 @@ func (q *Queries) InsertOrganization(ctx context.Context, name string) (Organiza
 const insertProject = `-- name: InsertProject :one
 INSERT INTO projects (org_id, name)
 VALUES ($1, $2)
-RETURNING id, org_id, name, created_at
+RETURNING id, org_id, name, created_at, active_model_id
 `
 
 type InsertProjectParams struct {
@@ -70,6 +70,7 @@ func (q *Queries) InsertProject(ctx context.Context, arg InsertProjectParams) (P
 		&i.OrgID,
 		&i.Name,
 		&i.CreatedAt,
+		&i.ActiveModelID,
 	)
 	return i, err
 }
