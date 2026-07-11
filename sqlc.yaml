@@ -3,10 +3,10 @@ sql:
   - engine: "postgresql"
     schema: "core/store/migrations"
     queries: "core/store/queries"
-    # The Phase 0 inline `memories.embedding` column was dropped in migration 0002;
-    # embeddings relocate to a dedicated `embeddings(vector)` table in a later Phase 1
-    # migration, at which point sqlc's native pgvector mapping (vector ->
-    # github.com/pgvector/pgvector-go) applies to that table instead.
+    # Dense vectors live in the dedicated `embeddings` table (and inline on `entities`)
+    # as of migration 0005; the `vector` type maps to pgvector-go's Vector. store.New
+    # registers the pgvector types on every pooled connection, so these encode and decode
+    # natively (binary, and NULL-safe) rather than through the text Valuer/Scanner path.
     gen:
       go:
         package: "db"
@@ -14,3 +14,9 @@ sql:
         sql_package: "pgx/v5"
         emit_json_tags: true
         emit_pointers_for_null_types: true
+        overrides:
+          - db_type: "vector"
+            go_type:
+              import: "github.com/pgvector/pgvector-go"
+              package: "pgvector"
+              type: "Vector"

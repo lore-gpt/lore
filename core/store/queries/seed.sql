@@ -9,7 +9,7 @@ RETURNING id, name, created_at;
 -- name: InsertProject :one
 INSERT INTO projects (org_id, name)
 VALUES ($1, $2)
-RETURNING id, org_id, name, created_at;
+RETURNING id, org_id, name, created_at, active_model_id;
 
 -- name: InsertAPIKey :one
 INSERT INTO api_keys (project_id, key_hash)
