@@ -6,7 +6,6 @@ package db
 
 import (
 	"github.com/jackc/pgx/v5/pgtype"
-	"github.com/pgvector/pgvector-go"
 )
 
 type ApiKey struct {
@@ -26,13 +25,20 @@ type Event struct {
 }
 
 type Memory struct {
-	ID        pgtype.UUID        `json:"id"`
-	ProjectID pgtype.UUID        `json:"project_id"`
-	Kind      string             `json:"kind"`
-	Content   string             `json:"content"`
-	Embedding *pgvector.Vector   `json:"embedding"`
-	Version   int32              `json:"version"`
-	CreatedAt pgtype.Timestamptz `json:"created_at"`
+	ID             pgtype.UUID        `json:"id"`
+	ProjectID      pgtype.UUID        `json:"project_id"`
+	Kind           string             `json:"kind"`
+	Content        string             `json:"content"`
+	Version        int32              `json:"version"`
+	CreatedAt      pgtype.Timestamptz `json:"created_at"`
+	Entities       []byte             `json:"entities"`
+	ValidFrom      pgtype.Timestamptz `json:"valid_from"`
+	ValidTo        pgtype.Timestamptz `json:"valid_to"`
+	SupersededBy   pgtype.UUID        `json:"superseded_by"`
+	TrustTier      string             `json:"trust_tier"`
+	ReviewStatus   string             `json:"review_status"`
+	CreatedByAgent *string            `json:"created_by_agent"`
+	SourceEventID  pgtype.UUID        `json:"source_event_id"`
 }
 
 type Organization struct {
