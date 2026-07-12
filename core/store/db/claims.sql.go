@@ -53,19 +53,20 @@ func (q *Queries) InsertClaim(ctx context.Context, arg InsertClaimParams) (Claim
 const supersedeClaim = `-- name: SupersedeClaim :execrows
 UPDATE claims
 SET superseded_by = $2
-WHERE id = $1 AND superseded_by IS NULL
+WHERE id = $1 AND superseded_by IS NULL AND project_id = $3
 `
 
 type SupersedeClaimParams struct {
 	ID           pgtype.UUID `json:"id"`
 	SupersededBy pgtype.UUID `json:"superseded_by"`
+	ProjectID    pgtype.UUID `json:"project_id"`
 }
 
 // Supersede only a currently-active claim; the row count lets the caller detect a
 // no-op (the claim was already superseded), keeping the one-active-per-subject
 // invariant enforceable from the write path rather than from the index alone.
 func (q *Queries) SupersedeClaim(ctx context.Context, arg SupersedeClaimParams) (int64, error) {
-	result, err := q.db.Exec(ctx, supersedeClaim, arg.ID, arg.SupersededBy)
+	result, err := q.db.Exec(ctx, supersedeClaim, arg.ID, arg.SupersededBy, arg.ProjectID)
 	if err != nil {
 		return 0, err
 	}

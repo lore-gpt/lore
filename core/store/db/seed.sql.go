@@ -62,6 +62,7 @@ type InsertProjectParams struct {
 	Name  string      `json:"name"`
 }
 
+// lore:tenant-exempt: creates the tenant (projects) row itself — there is no project to scope by
 func (q *Queries) InsertProject(ctx context.Context, arg InsertProjectParams) (Project, error) {
 	row := q.db.QueryRow(ctx, insertProject, arg.OrgID, arg.Name)
 	var i Project

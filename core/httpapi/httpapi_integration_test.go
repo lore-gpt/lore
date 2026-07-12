@@ -165,7 +165,7 @@ func seedRun(ctx context.Context, t *testing.T, pool *pgxpool.Pool) string {
 
 func countEvents(ctx context.Context, t *testing.T, pool *pgxpool.Pool) int64 {
 	t.Helper()
-	n, err := db.New(pool).CountEvents(ctx)
+	n, err := db.New(pool).CountAllEvents(ctx)
 	if err != nil {
 		t.Fatalf("count events: %v", err)
 	}

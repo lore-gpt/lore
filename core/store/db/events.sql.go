@@ -11,12 +11,13 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
-const countEvents = `-- name: CountEvents :one
+const countAllEvents = `-- name: CountAllEvents :one
 SELECT count(*) FROM events
 `
 
-func (q *Queries) CountEvents(ctx context.Context) (int64, error) {
-	row := q.db.QueryRow(ctx, countEvents)
+// lore:tenant-exempt: global by design; must run under a bypass role (readonly/ops), NOT lore_app — RLS would silently scope it
+func (q *Queries) CountAllEvents(ctx context.Context) (int64, error) {
+	row := q.db.QueryRow(ctx, countAllEvents)
 	var count int64
 	err := row.Scan(&count)
 	return count, err
@@ -25,11 +26,16 @@ func (q *Queries) CountEvents(ctx context.Context) (int64, error) {
 const getEvent = `-- name: GetEvent :one
 SELECT id, run_id, agent_id, payload, created_at, seq, project_id
 FROM events
-WHERE id = $1
+WHERE project_id = $1 AND id = $2
 `
 
-func (q *Queries) GetEvent(ctx context.Context, id pgtype.UUID) (Event, error) {
-	row := q.db.QueryRow(ctx, getEvent, id)
+type GetEventParams struct {
+	ProjectID pgtype.UUID `json:"project_id"`
+	ID        pgtype.UUID `json:"id"`
+}
+
+func (q *Queries) GetEvent(ctx context.Context, arg GetEventParams) (Event, error) {
+	row := q.db.QueryRow(ctx, getEvent, arg.ProjectID, arg.ID)
 	var i Event
 	err := row.Scan(
 		&i.ID,
