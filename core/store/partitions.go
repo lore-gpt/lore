@@ -27,17 +27,16 @@ type execer interface {
 //
 // The per-partition HNSW index is not built here: the embedding vector is dimensionless
 // until a model is chosen, and building it needs CREATE INDEX CONCURRENTLY (which cannot
-// run inside a transaction). That arrives with the vector-index seam in a following
-// increment; this helper only manages partition existence.
+// run inside a transaction). That is PgVectorIndex.EnsureIndex (vector_index.go); this
+// helper only manages partition existence.
 
 // CreateProjectPartitions creates the memories and embeddings partitions for a project.
 // It is idempotent (a partition that already exists is left alone).
 func CreateProjectPartitions(ctx context.Context, db execer, projectID pgtype.UUID) error {
-	pid, err := projectIDText(projectID)
+	pid, suffix, err := partitionNames(projectID)
 	if err != nil {
 		return err
 	}
-	suffix := strings.ReplaceAll(pid, "-", "")
 	for _, parent := range []string{"memories", "embeddings"} {
 		// parent + suffix are trusted (fixed strings / a validated uuid), so the
 		// dynamic identifier and the FOR VALUES literal cannot be injected.
@@ -54,11 +53,10 @@ func CreateProjectPartitions(ctx context.Context, db execer, projectID pgtype.UU
 // DropProjectPartitions removes a project's partitions — the tenant hard-delete. It is
 // idempotent. Embeddings is dropped before memories because it references it.
 func DropProjectPartitions(ctx context.Context, db execer, projectID pgtype.UUID) error {
-	pid, err := projectIDText(projectID)
+	_, suffix, err := partitionNames(projectID)
 	if err != nil {
 		return err
 	}
-	suffix := strings.ReplaceAll(pid, "-", "")
 	// Each partition is DETACHed before it is dropped: the inbound foreign keys install
 	// per-partition enforcement triggers, so a plain DROP TABLE is refused, and DROP TABLE
 	// ... CASCADE would take the whole constraint with it (breaking every other tenant's
@@ -90,4 +88,16 @@ func projectIDText(id pgtype.UUID) (string, error) {
 		return "", fmt.Errorf("project id is not set")
 	}
 	return uuid.UUID(id.Bytes).String(), nil
+}
+
+// partitionNames returns a project's canonical uuid (hyphenated, for the FOR VALUES
+// literal) and the hyphen-free suffix used in both partition names and their index names.
+// Keeping the suffix rule in one place is what guarantees a partition's HNSW index name
+// (embeddings_p_<suffix>_vec_hnsw) lines up with the partition it belongs to.
+func partitionNames(projectID pgtype.UUID) (id, suffix string, err error) {
+	id, err = projectIDText(projectID)
+	if err != nil {
+		return "", "", err
+	}
+	return id, strings.ReplaceAll(id, "-", ""), nil
 }
