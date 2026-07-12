@@ -131,19 +131,19 @@ func TestMigration0007SeqAuditRetention(t *testing.T) {
 		}
 		// An assigned seq is unique within its run: the second seq=1 is rejected.
 		if _, err := st.Pool.Exec(ctx,
-			`INSERT INTO events (run_id, agent_id, payload, seq) VALUES ($1, 'a', '{}'::jsonb, 1)`,
-			run.ID); err != nil {
+			`INSERT INTO events (project_id, run_id, agent_id, payload, seq) VALUES ($1, $2, 'a', '{}'::jsonb, 1)`,
+			proj.ID, run.ID); err != nil {
 			t.Fatalf("first seq=1 event should insert: %v", err)
 		}
 		if _, err := st.Pool.Exec(ctx,
-			`INSERT INTO events (run_id, agent_id, payload, seq) VALUES ($1, 'a', '{}'::jsonb, 1)`,
-			run.ID); pgErrCode(err) != "23505" {
+			`INSERT INTO events (project_id, run_id, agent_id, payload, seq) VALUES ($1, $2, 'a', '{}'::jsonb, 1)`,
+			proj.ID, run.ID); pgErrCode(err) != "23505" {
 			t.Errorf("a second seq=1 in the same run should raise 23505, got %q", pgErrCode(err))
 		}
 		// A distinct seq in the same run is fine.
 		if _, err := st.Pool.Exec(ctx,
-			`INSERT INTO events (run_id, agent_id, payload, seq) VALUES ($1, 'a', '{}'::jsonb, 2)`,
-			run.ID); err != nil {
+			`INSERT INTO events (project_id, run_id, agent_id, payload, seq) VALUES ($1, $2, 'a', '{}'::jsonb, 2)`,
+			proj.ID, run.ID); err != nil {
 			t.Errorf("a distinct seq in the same run should insert: %v", err)
 		}
 		// The same seq in a DIFFERENT run is fine — uniqueness is scoped to the run.
@@ -152,8 +152,8 @@ func TestMigration0007SeqAuditRetention(t *testing.T) {
 			t.Fatalf("insert second run: %v", err)
 		}
 		if _, err := st.Pool.Exec(ctx,
-			`INSERT INTO events (run_id, agent_id, payload, seq) VALUES ($1, 'a', '{}'::jsonb, 1)`,
-			run2.ID); err != nil {
+			`INSERT INTO events (project_id, run_id, agent_id, payload, seq) VALUES ($1, $2, 'a', '{}'::jsonb, 1)`,
+			proj.ID, run2.ID); err != nil {
 			t.Errorf("seq=1 in a different run should insert (uniqueness is per run): %v", err)
 		}
 	})

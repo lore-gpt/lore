@@ -23,7 +23,7 @@ func (q *Queries) CountEvents(ctx context.Context) (int64, error) {
 }
 
 const getEvent = `-- name: GetEvent :one
-SELECT id, run_id, agent_id, payload, created_at, seq
+SELECT id, run_id, agent_id, payload, created_at, seq, project_id
 FROM events
 WHERE id = $1
 `
@@ -38,24 +38,30 @@ func (q *Queries) GetEvent(ctx context.Context, id pgtype.UUID) (Event, error) {
 		&i.Payload,
 		&i.CreatedAt,
 		&i.Seq,
+		&i.ProjectID,
 	)
 	return i, err
 }
 
 const insertEvent = `-- name: InsertEvent :one
-INSERT INTO events (run_id, agent_id, payload)
-VALUES ($1, $2, $3)
-RETURNING id, run_id, agent_id, payload, created_at, seq
+INSERT INTO events (project_id, run_id, agent_id, payload)
+SELECT r.project_id, r.id, $1, $2
+FROM runs r
+WHERE r.id = $3
+RETURNING id, run_id, agent_id, payload, created_at, seq, project_id
 `
 
 type InsertEventParams struct {
-	RunID   pgtype.UUID `json:"run_id"`
 	AgentID string      `json:"agent_id"`
 	Payload []byte      `json:"payload"`
+	RunID   pgtype.UUID `json:"run_id"`
 }
 
+// project_id is derived from the run so it can never disagree with the run's project (and the
+// composite (project_id, run_id) foreign key backstops it). An unknown run_id matches no row, so
+// nothing is inserted and no row is returned (pgx.ErrNoRows) — the caller's "unknown run" signal.
 func (q *Queries) InsertEvent(ctx context.Context, arg InsertEventParams) (Event, error) {
-	row := q.db.QueryRow(ctx, insertEvent, arg.RunID, arg.AgentID, arg.Payload)
+	row := q.db.QueryRow(ctx, insertEvent, arg.AgentID, arg.Payload, arg.RunID)
 	var i Event
 	err := row.Scan(
 		&i.ID,
@@ -64,6 +70,7 @@ func (q *Queries) InsertEvent(ctx context.Context, arg InsertEventParams) (Event
 		&i.Payload,
 		&i.CreatedAt,
 		&i.Seq,
+		&i.ProjectID,
 	)
 	return i, err
 }
