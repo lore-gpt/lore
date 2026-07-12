@@ -59,6 +59,9 @@ func TestMigration0005Embeddings(t *testing.T) {
 	if proj.ActiveModelID != nil {
 		t.Errorf("new project active_model_id = %q, want nil (no model chosen yet)", *proj.ActiveModelID)
 	}
+	if err := store.CreateProjectPartitions(ctx, st.Pool, proj.ID); err != nil {
+		t.Fatalf("create project partitions: %v", err)
+	}
 	mem := insertMemory(ctx, t, st.Pool, proj.ID)
 
 	// --- a vector round-trips through the sqlc pgvector mapping. ---
@@ -68,7 +71,7 @@ func TestMigration0005Embeddings(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("upsert embedding (model-a): %v", err)
 	}
-	got, err := q.GetEmbedding(ctx, db.GetEmbeddingParams{MemoryID: mem, ModelID: "model-a"})
+	got, err := q.GetEmbedding(ctx, db.GetEmbeddingParams{ProjectID: proj.ID, MemoryID: mem, ModelID: "model-a"})
 	if err != nil {
 		t.Fatalf("get embedding (model-a): %v", err)
 	}
@@ -83,7 +86,7 @@ func TestMigration0005Embeddings(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("upsert embedding (model-b): %v", err)
 	}
-	if got, err := q.GetEmbedding(ctx, db.GetEmbeddingParams{MemoryID: mem, ModelID: "model-b"}); err != nil {
+	if got, err := q.GetEmbedding(ctx, db.GetEmbeddingParams{ProjectID: proj.ID, MemoryID: mem, ModelID: "model-b"}); err != nil {
 		t.Fatalf("get embedding (model-b): %v", err)
 	} else if !slices.Equal(got.Vec.Slice(), vecB) {
 		t.Errorf("model-b vec = %v, want %v", got.Vec.Slice(), vecB)
@@ -96,7 +99,7 @@ func TestMigration0005Embeddings(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("re-upsert embedding (model-a): %v", err)
 	}
-	if got, err := q.GetEmbedding(ctx, db.GetEmbeddingParams{MemoryID: mem, ModelID: "model-a"}); err != nil {
+	if got, err := q.GetEmbedding(ctx, db.GetEmbeddingParams{ProjectID: proj.ID, MemoryID: mem, ModelID: "model-a"}); err != nil {
 		t.Fatalf("get embedding (model-a, updated): %v", err)
 	} else if !slices.Equal(got.Vec.Slice(), vecA2) {
 		t.Errorf("model-a vec after re-upsert = %v, want %v", got.Vec.Slice(), vecA2)
@@ -119,7 +122,7 @@ func TestMigration0005Embeddings(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("upsert embedding (mem2, model-a): %v", err)
 	}
-	if got, err := q.GetEmbedding(ctx, db.GetEmbeddingParams{MemoryID: mem2, ModelID: "model-a"}); err != nil {
+	if got, err := q.GetEmbedding(ctx, db.GetEmbeddingParams{ProjectID: proj.ID, MemoryID: mem2, ModelID: "model-a"}); err != nil {
 		t.Fatalf("get embedding (mem2, model-a): %v", err)
 	} else if !slices.Equal(got.Vec.Slice(), vecC) {
 		t.Errorf("mem2 model-a vec = %v, want %v", got.Vec.Slice(), vecC)
@@ -131,10 +134,12 @@ func TestMigration0005Embeddings(t *testing.T) {
 		proj.ID, randomUUID(ctx, t, st.Pool)); pgErrCode(err) != "23503" {
 		t.Errorf("embedding for unknown memory should raise 23503, got %q", pgErrCode(err))
 	}
+	// With no default partition, an embedding for an unprovisioned project routes to no
+	// partition and is rejected before the tenancy FK is even reached.
 	if _, err := st.Pool.Exec(ctx,
 		`INSERT INTO embeddings (project_id, memory_id, model_id, vec) VALUES ($1, $2, 'm', '[1,2,3]')`,
-		randomUUID(ctx, t, st.Pool), mem); pgErrCode(err) != "23503" {
-		t.Errorf("embedding for unknown project should raise 23503, got %q", pgErrCode(err))
+		randomUUID(ctx, t, st.Pool), mem); pgErrCode(err) != "23514" {
+		t.Errorf("embedding for unprovisioned project should raise 23514 (no partition found), got %q", pgErrCode(err))
 	}
 
 	// --- entities.embedding round-trips inline. ---

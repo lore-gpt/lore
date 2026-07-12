@@ -88,6 +88,11 @@ func TestMigrationsExtensionsAndRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("insert project: %v", err)
 	}
+	// memories/embeddings are LIST-partitioned by project_id (0006) with no default
+	// partition, so a project's partition must exist before any memory is written.
+	if err := store.CreateProjectPartitions(ctx, st.Pool, proj.ID); err != nil {
+		t.Fatalf("create project partitions: %v", err)
+	}
 	run, err := q.InsertRun(ctx, proj.ID)
 	if err != nil {
 		t.Fatalf("insert run: %v", err)
@@ -245,21 +250,24 @@ func TestMigration0003VersionsClaimsScopes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("insert project: %v", err)
 	}
+	if err := store.CreateProjectPartitions(ctx, st.Pool, proj.ID); err != nil {
+		t.Fatalf("create project partitions: %v", err)
+	}
 	mem := insertMemory(ctx, t, st.Pool, proj.ID)
 
 	// --- memory_versions: full history round-trips in version order. ---
 	if _, err := q.InsertMemoryVersion(ctx, db.InsertMemoryVersionParams{
-		MemoryID: mem, Version: 1, Content: "first",
+		ProjectID: proj.ID, MemoryID: mem, Version: 1, Content: "first",
 	}); err != nil {
 		t.Fatalf("insert memory version 1: %v", err)
 	}
 	changedBy, reason := "agent-x", "lww"
 	if _, err := q.InsertMemoryVersion(ctx, db.InsertMemoryVersionParams{
-		MemoryID: mem, Version: 2, Content: "second", ChangedBy: &changedBy, Reason: &reason,
+		ProjectID: proj.ID, MemoryID: mem, Version: 2, Content: "second", ChangedBy: &changedBy, Reason: &reason,
 	}); err != nil {
 		t.Fatalf("insert memory version 2: %v", err)
 	}
-	versions, err := q.ListMemoryVersions(ctx, mem)
+	versions, err := q.ListMemoryVersions(ctx, db.ListMemoryVersionsParams{ProjectID: proj.ID, MemoryID: mem})
 	if err != nil {
 		t.Fatalf("list memory versions: %v", err)
 	}
@@ -275,11 +283,11 @@ func TestMigration0003VersionsClaimsScopes(t *testing.T) {
 	if versions[1].Reason == nil || *versions[1].Reason != "lww" {
 		t.Errorf("version 2 reason = %v, want %q", versions[1].Reason, "lww")
 	}
-	// The (memory_id, version) primary key rejects a duplicate version for a memory.
+	// The (project_id, memory_id, version) primary key rejects a duplicate version.
 	if _, err := st.Pool.Exec(ctx,
-		`INSERT INTO memory_versions (memory_id, version, content) VALUES ($1, 2, 'dup')`,
-		mem); pgErrCode(err) != "23505" {
-		t.Errorf("duplicate (memory_id, version) should raise 23505 (unique_violation), got %q", pgErrCode(err))
+		`INSERT INTO memory_versions (project_id, memory_id, version, content) VALUES ($1, $2, 2, 'dup')`,
+		proj.ID, mem); pgErrCode(err) != "23505" {
+		t.Errorf("duplicate (project_id, memory_id, version) should raise 23505 (unique_violation), got %q", pgErrCode(err))
 	}
 
 	// --- claims: the partial-unique index allows one active claim per subject. ---
@@ -375,16 +383,16 @@ func TestMigration0003VersionsClaimsScopes(t *testing.T) {
 
 	// --- memory_scopes: tags round-trip and the scope_type vocabulary is enforced. ---
 	if _, err := q.InsertMemoryScope(ctx, db.InsertMemoryScopeParams{
-		MemoryID: mem, ScopeType: "run", ScopeID: "run-123",
+		ProjectID: proj.ID, MemoryID: mem, ScopeType: "run", ScopeID: "run-123",
 	}); err != nil {
 		t.Fatalf("insert run scope: %v", err)
 	}
 	if _, err := q.InsertMemoryScope(ctx, db.InsertMemoryScopeParams{
-		MemoryID: mem, ScopeType: "agent", ScopeID: "researcher",
+		ProjectID: proj.ID, MemoryID: mem, ScopeType: "agent", ScopeID: "researcher",
 	}); err != nil {
 		t.Fatalf("insert agent scope: %v", err)
 	}
-	scopes, err := q.ListMemoryScopes(ctx, mem)
+	scopes, err := q.ListMemoryScopes(ctx, db.ListMemoryScopesParams{ProjectID: proj.ID, MemoryID: mem})
 	if err != nil {
 		t.Fatalf("list memory scopes: %v", err)
 	}
@@ -392,8 +400,8 @@ func TestMigration0003VersionsClaimsScopes(t *testing.T) {
 		t.Errorf("memory scopes = %d, want 2", len(scopes))
 	}
 	if _, err := st.Pool.Exec(ctx,
-		`INSERT INTO memory_scopes (memory_id, scope_type, scope_id) VALUES ($1, 'bogus', 'x')`,
-		mem); pgErrCode(err) != "23514" {
+		`INSERT INTO memory_scopes (project_id, memory_id, scope_type, scope_id) VALUES ($1, $2, 'bogus', 'x')`,
+		proj.ID, mem); pgErrCode(err) != "23514" {
 		t.Errorf("scope_type CHECK should raise 23514 (check_violation), got %q", pgErrCode(err))
 	}
 

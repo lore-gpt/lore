@@ -15,16 +15,17 @@ import (
 const getEmbedding = `-- name: GetEmbedding :one
 SELECT project_id, memory_id, model_id, vec, created_at
 FROM embeddings
-WHERE memory_id = $1 AND model_id = $2
+WHERE project_id = $1 AND memory_id = $2 AND model_id = $3
 `
 
 type GetEmbeddingParams struct {
-	MemoryID pgtype.UUID `json:"memory_id"`
-	ModelID  string      `json:"model_id"`
+	ProjectID pgtype.UUID `json:"project_id"`
+	MemoryID  pgtype.UUID `json:"memory_id"`
+	ModelID   string      `json:"model_id"`
 }
 
 func (q *Queries) GetEmbedding(ctx context.Context, arg GetEmbeddingParams) (Embedding, error) {
-	row := q.db.QueryRow(ctx, getEmbedding, arg.MemoryID, arg.ModelID)
+	row := q.db.QueryRow(ctx, getEmbedding, arg.ProjectID, arg.MemoryID, arg.ModelID)
 	var i Embedding
 	err := row.Scan(
 		&i.ProjectID,
@@ -39,7 +40,7 @@ func (q *Queries) GetEmbedding(ctx context.Context, arg GetEmbeddingParams) (Emb
 const upsertEmbedding = `-- name: UpsertEmbedding :one
 INSERT INTO embeddings (project_id, memory_id, model_id, vec)
 VALUES ($1, $2, $3, $4)
-ON CONFLICT (memory_id, model_id) DO UPDATE SET vec = EXCLUDED.vec
+ON CONFLICT (project_id, memory_id, model_id) DO UPDATE SET vec = EXCLUDED.vec
 RETURNING project_id, memory_id, model_id, vec, created_at
 `
 

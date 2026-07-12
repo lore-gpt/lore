@@ -12,12 +12,13 @@ import (
 )
 
 const insertMemoryVersion = `-- name: InsertMemoryVersion :one
-INSERT INTO memory_versions (memory_id, version, content, changed_by, reason)
-VALUES ($1, $2, $3, $4, $5)
-RETURNING memory_id, version, content, changed_by, reason, created_at
+INSERT INTO memory_versions (project_id, memory_id, version, content, changed_by, reason)
+VALUES ($1, $2, $3, $4, $5, $6)
+RETURNING memory_id, version, content, changed_by, reason, created_at, project_id
 `
 
 type InsertMemoryVersionParams struct {
+	ProjectID pgtype.UUID `json:"project_id"`
 	MemoryID  pgtype.UUID `json:"memory_id"`
 	Version   int32       `json:"version"`
 	Content   string      `json:"content"`
@@ -27,6 +28,7 @@ type InsertMemoryVersionParams struct {
 
 func (q *Queries) InsertMemoryVersion(ctx context.Context, arg InsertMemoryVersionParams) (MemoryVersion, error) {
 	row := q.db.QueryRow(ctx, insertMemoryVersion,
+		arg.ProjectID,
 		arg.MemoryID,
 		arg.Version,
 		arg.Content,
@@ -41,19 +43,25 @@ func (q *Queries) InsertMemoryVersion(ctx context.Context, arg InsertMemoryVersi
 		&i.ChangedBy,
 		&i.Reason,
 		&i.CreatedAt,
+		&i.ProjectID,
 	)
 	return i, err
 }
 
 const listMemoryVersions = `-- name: ListMemoryVersions :many
-SELECT memory_id, version, content, changed_by, reason, created_at
+SELECT memory_id, version, content, changed_by, reason, created_at, project_id
 FROM memory_versions
-WHERE memory_id = $1
+WHERE project_id = $1 AND memory_id = $2
 ORDER BY version
 `
 
-func (q *Queries) ListMemoryVersions(ctx context.Context, memoryID pgtype.UUID) ([]MemoryVersion, error) {
-	rows, err := q.db.Query(ctx, listMemoryVersions, memoryID)
+type ListMemoryVersionsParams struct {
+	ProjectID pgtype.UUID `json:"project_id"`
+	MemoryID  pgtype.UUID `json:"memory_id"`
+}
+
+func (q *Queries) ListMemoryVersions(ctx context.Context, arg ListMemoryVersionsParams) ([]MemoryVersion, error) {
+	rows, err := q.db.Query(ctx, listMemoryVersions, arg.ProjectID, arg.MemoryID)
 	if err != nil {
 		return nil, err
 	}
@@ -68,6 +76,7 @@ func (q *Queries) ListMemoryVersions(ctx context.Context, memoryID pgtype.UUID) 
 			&i.ChangedBy,
 			&i.Reason,
 			&i.CreatedAt,
+			&i.ProjectID,
 		); err != nil {
 			return nil, err
 		}
