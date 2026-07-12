@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/testcontainers/testcontainers-go"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 
@@ -110,7 +111,7 @@ func TestExtractRunWorkerProcessesRun(t *testing.T) {
 	st := migratedStore(ctx, t)
 
 	rec := &recordingExtractor{ch: make(chan ext.ExtractInput, 1)}
-	w, err := queue.NewWorker(st.Pool, rec)
+	w, err := queue.NewWorker(st, rec)
 	if err != nil {
 		t.Fatalf("new worker: %v", err)
 	}
@@ -180,7 +181,7 @@ func TestExtractRunWorkerRetriesOnExtractorError(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(ctx, t)
 
-	w, err := queue.NewWorker(st.Pool, ext.FixtureExtractor{})
+	w, err := queue.NewWorker(st, ext.FixtureExtractor{})
 	if err != nil {
 		t.Fatalf("new worker: %v", err)
 	}
@@ -262,7 +263,7 @@ func TestExtractRunWorkerDebouncesUntilIdle(t *testing.T) {
 	st := migratedStore(ctx, t)
 
 	rec := &recordingExtractor{ch: make(chan ext.ExtractInput, 1)}
-	w, err := queue.NewWorker(st.Pool, rec) // DefaultDebounce: 2s idle window
+	w, err := queue.NewWorker(st, rec) // DefaultDebounce: 2s idle window
 	if err != nil {
 		t.Fatalf("new worker: %v", err)
 	}
@@ -327,5 +328,242 @@ func TestExtractRunWorkerDebouncesUntilIdle(t *testing.T) {
 	}
 	if snoozes < 1 {
 		t.Errorf("job snoozes = %d, want >= 1 (the fresh run must be debounced, not processed immediately)", snoozes)
+	}
+}
+
+// seedProjectRun creates the org -> project -> run chain and provisions the project's memory
+// partition. memories is LIST-partitioned with no default partition, so a write for an
+// un-provisioned project fails loud; provisioning is a project-setup step, not the write path's job.
+func seedProjectRun(ctx context.Context, t *testing.T, st *store.Store) (db.Project, db.InsertRunRow) {
+	t.Helper()
+	q := db.New(st.Pool)
+	org, err := q.InsertOrganization(ctx, "acme")
+	if err != nil {
+		t.Fatalf("insert org: %v", err)
+	}
+	proj, err := q.InsertProject(ctx, db.InsertProjectParams{OrgID: org.ID, Name: "a"})
+	if err != nil {
+		t.Fatalf("insert project: %v", err)
+	}
+	if err := store.CreateProjectPartitions(ctx, st.Pool, proj.ID); err != nil {
+		t.Fatalf("create partitions: %v", err)
+	}
+	run, err := q.InsertRun(ctx, proj.ID)
+	if err != nil {
+		t.Fatalf("insert run: %v", err)
+	}
+	return proj, run
+}
+
+// enqueueExtract commits an extract_run enqueue for the run on its own transaction.
+func enqueueExtract(ctx context.Context, t *testing.T, w *queue.Queue, st *store.Store, projectID, runID string) {
+	t.Helper()
+	tx, err := st.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	if err := w.EnqueueExtract(ctx, tx, projectID, runID); err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+}
+
+// waitForMemoryCount polls until a project has at least want memories or the timeout elapses.
+func waitForMemoryCount(ctx context.Context, t *testing.T, st *store.Store, projectID pgtype.UUID, want int64, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for {
+		var n int64
+		if err := st.Pool.QueryRow(ctx, `SELECT count(*) FROM memories WHERE project_id = $1`, projectID).Scan(&n); err != nil {
+			t.Fatalf("count memories: %v", err)
+		}
+		if n >= want {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("memories reached %d, want >= %d within %s", n, want, timeout)
+		}
+		time.Sleep(150 * time.Millisecond)
+	}
+}
+
+// waitForCompletedExtractJobs polls until at least want extract_run jobs have reached the completed
+// state. Waiting for a pass to fully complete (not just to have persisted) before enqueuing the next
+// one guarantees a fresh job rather than a coalesce into a still-running pass — the completed state
+// is excluded from the unique states by design, so a post-completion enqueue opens a new window.
+func waitForCompletedExtractJobs(ctx context.Context, t *testing.T, st *store.Store, want int64, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for {
+		var n int64
+		if err := st.Pool.QueryRow(ctx,
+			`SELECT count(*) FROM river_job WHERE kind = 'extract_run' AND state = 'completed'`).Scan(&n); err != nil {
+			t.Fatalf("count completed extract_run jobs: %v", err)
+		}
+		if n >= want {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("completed extract_run jobs reached %d, want >= %d within %s", n, want, timeout)
+		}
+		time.Sleep(150 * time.Millisecond)
+	}
+}
+
+// TestExtractRunPersistsMemory drives the whole write path end to end against real River + ParadeDB:
+// seed a project (with its memory partition), append an event carrying a memory, run the
+// FixtureExtractor worker, and assert the distilled memory lands in `memories` with its provenance
+// resolved (source event id + agent) and the run checkpoint advanced past the event.
+func TestExtractRunPersistsMemory(t *testing.T) {
+	ctx := context.Background()
+	st := migratedStore(ctx, t)
+
+	w, err := queue.NewWorker(st, ext.FixtureExtractor{})
+	if err != nil {
+		t.Fatalf("new worker: %v", err)
+	}
+	if err := w.Start(ctx); err != nil {
+		t.Fatalf("start worker: %v", err)
+	}
+	t.Cleanup(func() {
+		stopCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_ = w.Stop(stopCtx)
+	})
+
+	proj, run := seedProjectRun(ctx, t, st)
+	q := db.New(st.Pool)
+	ev, err := q.InsertEvent(ctx, db.InsertEventParams{
+		RunID: run.ID, AgentID: "planner", Payload: []byte(`{"memory":"deploy finished"}`),
+	})
+	if err != nil {
+		t.Fatalf("insert event: %v", err)
+	}
+	// A trailing gated tool_log at the highest seq: it distils no memory, but the checkpoint must
+	// still advance PAST it, so the archived chatter at the tail is never re-read on the next pass.
+	gatedEv, err := q.InsertEvent(ctx, db.InsertEventParams{
+		RunID: run.ID, AgentID: "planner", Payload: []byte(`{"kind":"tool_log","data":"noise"}`),
+	})
+	if err != nil {
+		t.Fatalf("insert gated event: %v", err)
+	}
+
+	enqueueExtract(ctx, t, w, st, uuid.UUID(proj.ID.Bytes).String(), uuid.UUID(run.ID.Bytes).String())
+
+	// The debounce holds the pass ~2s; poll until the memory is persisted.
+	waitForMemoryCount(ctx, t, st, proj.ID, 1, 20*time.Second)
+
+	var (
+		content   string
+		kind      string
+		srcEvent  pgtype.UUID
+		createdBy *string
+	)
+	if err := st.Pool.QueryRow(ctx,
+		`SELECT content, kind, source_event_id, created_by_agent FROM memories WHERE project_id = $1`, proj.ID).
+		Scan(&content, &kind, &srcEvent, &createdBy); err != nil {
+		t.Fatalf("read memory: %v", err)
+	}
+	if content != "deploy finished" {
+		t.Errorf("content = %q, want %q", content, "deploy finished")
+	}
+	if kind != "semantic" {
+		t.Errorf("kind = %q, want semantic (the fixture's memory kind)", kind)
+	}
+	if srcEvent != ev.ID {
+		t.Errorf("source_event_id = %v, want the source event %v", srcEvent, ev.ID)
+	}
+	if createdBy == nil || *createdBy != "planner" {
+		t.Errorf("created_by_agent = %v, want planner (the source event's agent)", createdBy)
+	}
+
+	// The checkpoint advanced past the trailing gated event (the highest seq read), not merely to the
+	// extracted memory's seq — so the gated tail is never re-read.
+	var coveredSeq int64
+	if err := st.Pool.QueryRow(ctx, `SELECT covered_seq FROM runs WHERE id = $1`, run.ID).Scan(&coveredSeq); err != nil {
+		t.Fatalf("read covered_seq: %v", err)
+	}
+	if coveredSeq != gatedEv.Seq {
+		t.Errorf("covered_seq = %d, want %d (advanced past the trailing gated event, not just the extracted seq %d)", coveredSeq, gatedEv.Seq, ev.Seq)
+	}
+	// Exactly one memory: the gated tool_log distilled nothing.
+	var memCount int64
+	if err := st.Pool.QueryRow(ctx, `SELECT count(*) FROM memories WHERE project_id = $1`, proj.ID).Scan(&memCount); err != nil {
+		t.Fatalf("count memories: %v", err)
+	}
+	if memCount != 1 {
+		t.Errorf("memories = %d, want 1 (the gated event yields no memory)", memCount)
+	}
+}
+
+// TestExtractRunCheckpointProcessesEachEventOnce proves the checkpoint makes extraction idempotent:
+// a second event, appended after the first was extracted, is processed on its own pass reading only
+// past the checkpoint — so the first pass's event is never re-extracted and each event yields exactly
+// one memory. This is the structural payoff of covered_seq: no duplicates across coalesced passes.
+func TestExtractRunCheckpointProcessesEachEventOnce(t *testing.T) {
+	ctx := context.Background()
+	st := migratedStore(ctx, t)
+
+	w, err := queue.NewWorker(st, ext.FixtureExtractor{})
+	if err != nil {
+		t.Fatalf("new worker: %v", err)
+	}
+	if err := w.Start(ctx); err != nil {
+		t.Fatalf("start worker: %v", err)
+	}
+	t.Cleanup(func() {
+		stopCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_ = w.Stop(stopCtx)
+	})
+
+	proj, run := seedProjectRun(ctx, t, st)
+	q := db.New(st.Pool)
+	projectID := uuid.UUID(proj.ID.Bytes).String()
+	runID := uuid.UUID(run.ID.Bytes).String()
+
+	// First event, first pass. Wait for the pass to fully complete (checkpoint now at seq 1) before
+	// the second event, so the second lands on a fresh, separate pass rather than coalescing into the
+	// first — which is exactly the scenario the checkpoint has to get right.
+	if _, err := q.InsertEvent(ctx, db.InsertEventParams{RunID: run.ID, AgentID: "planner", Payload: []byte(`{"memory":"first"}`)}); err != nil {
+		t.Fatalf("insert event 1: %v", err)
+	}
+	enqueueExtract(ctx, t, w, st, projectID, runID)
+	waitForMemoryCount(ctx, t, st, proj.ID, 1, 20*time.Second)
+	waitForCompletedExtractJobs(ctx, t, st, 1, 20*time.Second)
+
+	// Second event: a fresh pass reads only past the checkpoint, so it distils just this event.
+	if _, err := q.InsertEvent(ctx, db.InsertEventParams{RunID: run.ID, AgentID: "tester", Payload: []byte(`{"memory":"second"}`)}); err != nil {
+		t.Fatalf("insert event 2: %v", err)
+	}
+	enqueueExtract(ctx, t, w, st, projectID, runID)
+	waitForMemoryCount(ctx, t, st, proj.ID, 2, 20*time.Second)
+	waitForCompletedExtractJobs(ctx, t, st, 2, 20*time.Second)
+
+	// Exactly two memories, and "first" appears exactly once — the checkpoint kept the second pass
+	// from re-reading (and re-distilling) the first pass's event. Counts are structurally stable once
+	// both events are covered: a re-run reads only seq past the checkpoint, which is now empty.
+	var total, firsts int64
+	if err := st.Pool.QueryRow(ctx, `SELECT count(*) FROM memories WHERE project_id = $1`, proj.ID).Scan(&total); err != nil {
+		t.Fatalf("count memories: %v", err)
+	}
+	if total != 2 {
+		t.Errorf("memories = %d, want exactly 2 (each event distilled once, no reprocessing)", total)
+	}
+	if err := st.Pool.QueryRow(ctx, `SELECT count(*) FROM memories WHERE project_id = $1 AND content = 'first'`, proj.ID).Scan(&firsts); err != nil {
+		t.Fatalf("count 'first' memories: %v", err)
+	}
+	if firsts != 1 {
+		t.Errorf("'first' memory count = %d, want 1 (the checkpoint keeps the first event from being re-extracted)", firsts)
+	}
+
+	var coveredSeq int64
+	if err := st.Pool.QueryRow(ctx, `SELECT covered_seq FROM runs WHERE id = $1`, run.ID).Scan(&coveredSeq); err != nil {
+		t.Fatalf("read covered_seq: %v", err)
+	}
+	if coveredSeq != 2 {
+		t.Errorf("covered_seq = %d, want 2 (advanced across both events)", coveredSeq)
 	}
 }

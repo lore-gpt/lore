@@ -70,20 +70,22 @@ func DefaultDebounce() Debounce {
 	return Debounce{IdleWindow: 2 * time.Second, MaxEvents: 20}
 }
 
-// ExtractRunWorker processes ExtractRunArgs: it debounces the run, reads its events, gates the
-// machine chatter, and hands the survivors to the Extractor. This increment does not yet persist
-// the result — the memory/claim writes land in a later increment; here the pass runs end to end
-// and logs its output.
+// ExtractRunWorker processes ExtractRunArgs: it debounces the run, reads the events past its
+// checkpoint, gates the machine chatter, hands the survivors to the Extractor, and persists the
+// distilled memories while advancing the run's checkpoint atomically. Claims and entities are
+// distilled and logged but their persistence lands in a later increment.
 type ExtractRunWorker struct {
 	river.WorkerDefaults[ExtractRunArgs]
 	source    EventSource
 	extractor ext.Extractor
+	persister Persister
 	debounce  Debounce
 }
 
-// NewExtractRunWorker builds the worker from its event source, extractor, and debounce window.
-func NewExtractRunWorker(source EventSource, extractor ext.Extractor, debounce Debounce) *ExtractRunWorker {
-	return &ExtractRunWorker{source: source, extractor: extractor, debounce: debounce}
+// NewExtractRunWorker builds the worker from its event source, extractor, persister, and debounce
+// window.
+func NewExtractRunWorker(source EventSource, extractor ext.Extractor, persister Persister, debounce Debounce) *ExtractRunWorker {
+	return &ExtractRunWorker{source: source, extractor: extractor, persister: persister, debounce: debounce}
 }
 
 // Work runs one coalesced extraction pass for the job's run.
@@ -97,16 +99,18 @@ func (w *ExtractRunWorker) Work(ctx context.Context, job *river.Job[ExtractRunAr
 		return fmt.Errorf("extract_run: run_id: %w", err)
 	}
 
-	// Debounce: defer until the run has been idle for the window or enough events have accumulated.
-	// Snoozing keeps the job in a unique state, so further events for the run keep collapsing into it
-	// rather than enqueuing another pass. JobSnooze does not consume an attempt.
+	// Debounce over the events past the run's checkpoint: defer until the run has been idle for the
+	// window or enough events have accumulated. Snoozing keeps the job in a unique state, so further
+	// events for the run keep collapsing into it rather than enqueuing another pass. JobSnooze does
+	// not consume an attempt.
 	ready, err := w.source.RunExtractionReadiness(ctx, db.RunExtractionReadinessParams{ProjectID: projectID, RunID: runID})
 	if err != nil {
 		return fmt.Errorf("extract_run: readiness: %w", err)
 	}
-	if ready.EventCount > 0 &&
-		ready.EventCount < int64(w.debounce.MaxEvents) &&
-		ready.IdleSeconds < w.debounce.IdleWindow.Seconds() {
+	if ready.EventCount == 0 {
+		return nil // nothing past the checkpoint: the run is drained, so the pass is done.
+	}
+	if ready.EventCount < int64(w.debounce.MaxEvents) && ready.IdleSeconds < w.debounce.IdleWindow.Seconds() {
 		return river.JobSnooze(w.debounce.IdleWindow)
 	}
 
@@ -114,11 +118,18 @@ func (w *ExtractRunWorker) Work(ctx context.Context, job *river.Job[ExtractRunAr
 	if err != nil {
 		return fmt.Errorf("extract_run: list events: %w", err)
 	}
+	if len(events) == 0 {
+		return nil // readiness saw pending events but none remain past the checkpoint: nothing to do.
+	}
 
-	// Gate machine chatter before the model; the survivors form the extraction window.
+	// Gate machine chatter before the model; the survivors form the extraction window. bySeq indexes
+	// every event READ so a candidate's provenance resolves back to its source event. The checkpoint
+	// advances to the highest seq read — gated events included — so archived chatter is never re-read.
 	window := make([]ext.InputEvent, 0, len(events))
+	bySeq := make(map[int64]db.Event, len(events))
 	gated := 0
 	for _, e := range events {
+		bySeq[e.Seq] = e
 		if reason := gatedReason(e.Payload); reason != "" {
 			gated++
 			slog.DebugContext(ctx, "extract gate: event archived",
@@ -133,14 +144,51 @@ func (w *ExtractRunWorker) Work(ctx context.Context, job *river.Job[ExtractRunAr
 			Payload: json.RawMessage(e.Payload),
 		})
 	}
+	coveredSeq := events[len(events)-1].Seq // events are seq-ordered; the last is the highest read.
 
-	res, err := w.extractor.Extract(ctx, ext.ExtractInput{
-		ProjectID: job.Args.ProjectID,
-		RunID:     job.Args.RunID,
-		Events:    window,
-	})
-	if err != nil {
-		return fmt.Errorf("extract_run: extract: %w", err)
+	// Only invoke the extractor when there is something to distil; an all-gated window still advances
+	// the checkpoint below but needs no model call.
+	var res ext.ExtractResult
+	if len(window) > 0 {
+		res, err = w.extractor.Extract(ctx, ext.ExtractInput{
+			ProjectID: job.Args.ProjectID,
+			RunID:     job.Args.RunID,
+			Events:    window,
+		})
+		if err != nil {
+			return fmt.Errorf("extract_run: extract: %w", err)
+		}
+	}
+
+	// Resolve each candidate memory's provenance from the event it was distilled from. A candidate
+	// naming a seq outside the window is a misbehaving extractor: drop it rather than store a memory
+	// with no provenance.
+	memories := make([]MemoryWrite, 0, len(res.Memories))
+	for _, m := range res.Memories {
+		src, ok := bySeq[m.SourceSeq]
+		if !ok {
+			slog.WarnContext(ctx, "extract_run: candidate memory references a seq outside the window; dropped",
+				slog.String("run_id", job.Args.RunID),
+				slog.Int64("source_seq", m.SourceSeq))
+			continue
+		}
+		memories = append(memories, MemoryWrite{
+			Kind:           m.Kind,
+			Content:        m.Content,
+			SourceEventID:  src.ID,
+			CreatedByAgent: src.AgentID,
+		})
+	}
+
+	// Persist the memories and advance the checkpoint in one transaction: a committed pass moves the
+	// checkpoint past its events so they are never reprocessed, and a crashed one rolls both back.
+	if err := w.persister.Persist(ctx, PersistInput{
+		ProjectID:  projectID,
+		RunID:      runID,
+		CoveredSeq: coveredSeq,
+		Memories:   memories,
+	}); err != nil {
+		return fmt.Errorf("extract_run: persist: %w", err)
 	}
 
 	slog.InfoContext(ctx, "extract_run pass complete",
@@ -148,9 +196,24 @@ func (w *ExtractRunWorker) Work(ctx context.Context, job *river.Job[ExtractRunAr
 		slog.Int("events", len(events)),
 		slog.Int("gated", gated),
 		slog.Int("extracted", len(window)),
-		slog.Int("memories", len(res.Memories)),
+		slog.Int64("covered_seq", coveredSeq),
+		slog.Int("memories", len(memories)),
 		slog.Int("claims", len(res.Claims)),
 		slog.Int("entities", len(res.Entities)))
+
+	// Tail drain: events may have arrived while this pass ran — unique-by-state coalesced them into
+	// this running job, so they got no job of their own. If any remain past the advanced checkpoint,
+	// snooze to process them; otherwise the run is drained and the pass completes. This narrows but
+	// does not fully close the window: an event that lands after this check yet before the job leaves
+	// the running state still coalesces into this finishing job and is left for the next enqueue's
+	// fresh pass to pick up (the checkpoint guarantees it is processed exactly once whenever that is).
+	tail, err := w.source.RunExtractionReadiness(ctx, db.RunExtractionReadinessParams{ProjectID: projectID, RunID: runID})
+	if err != nil {
+		return fmt.Errorf("extract_run: tail readiness: %w", err)
+	}
+	if tail.EventCount > 0 {
+		return river.JobSnooze(w.debounce.IdleWindow)
+	}
 	return nil
 }
 

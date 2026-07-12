@@ -149,9 +149,10 @@ type Project struct {
 }
 
 type Run struct {
-	ID        pgtype.UUID        `json:"id"`
-	ProjectID pgtype.UUID        `json:"project_id"`
-	Status    string             `json:"status"`
-	StartedAt pgtype.Timestamptz `json:"started_at"`
-	LastSeq   int64              `json:"last_seq"`
+	ID         pgtype.UUID        `json:"id"`
+	ProjectID  pgtype.UUID        `json:"project_id"`
+	Status     string             `json:"status"`
+	StartedAt  pgtype.Timestamptz `json:"started_at"`
+	LastSeq    int64              `json:"last_seq"`
+	CoveredSeq int64              `json:"covered_seq"`
 }
