@@ -23,21 +23,37 @@ FROM events
 WHERE project_id = $1 AND id = $2;
 
 -- name: ListRunEvents :many
--- A run's events in seq order, for the coalesced extraction pass. Project-scoped so it is tenant-
--- safe and (under RLS) reads only the caller's project.
+-- A run's not-yet-extracted events (seq past the run's checkpoint) in seq order, for the coalesced
+-- extraction pass. The covered_seq subquery scopes the read to events an earlier pass has not
+-- already consumed, so a re-enqueued or retried job never re-reads them. Project-scoped so it is
+-- tenant-safe and (under RLS) reads only the caller's project.
 SELECT id, run_id, agent_id, payload, created_at, seq, project_id
 FROM events
-WHERE project_id = $1 AND run_id = $2
-ORDER BY seq;
+WHERE events.project_id = $1 AND events.run_id = $2
+  AND events.seq > (SELECT covered_seq FROM runs WHERE runs.id = $2)
+ORDER BY events.seq;
 
 -- name: RunExtractionReadiness :one
--- Debounce inputs for one run's coalesced extraction: how many events it has, and how long since
--- the most recent one measured by the database clock (so there is no app/DB clock skew). With no
--- events, idle_seconds is 0 and the caller treats the empty run as ready. Project-scoped.
+-- Debounce inputs for one run's coalesced extraction, measured over its not-yet-extracted events
+-- (seq past the checkpoint): how many there are, and how long since the most recent one measured by
+-- the database clock (so there is no app/DB clock skew). With none pending, event_count is 0 and
+-- idle_seconds is 0, so the caller treats the drained run as ready (nothing to do). Project-scoped.
 SELECT count(*)::bigint AS event_count,
-       coalesce(extract(epoch FROM now() - max(created_at)), 0)::double precision AS idle_seconds
+       coalesce(extract(epoch FROM now() - max(events.created_at)), 0)::double precision AS idle_seconds
 FROM events
-WHERE project_id = $1 AND run_id = $2;
+WHERE events.project_id = $1 AND events.run_id = $2
+  AND events.seq > (SELECT covered_seq FROM runs WHERE runs.id = $2);
+
+-- name: AdvanceCoveredSeq :execrows
+-- Advance a run's extraction checkpoint to the highest seq the pass consumed, never backward. The
+-- covered_seq < guard keeps it monotonic and makes a duplicate advance a no-op (0 rows). This runs
+-- in the same transaction as the pass's memory writes, so the checkpoint and the rows it accounts
+-- for commit together — the atomicity that makes a coalesced pass idempotent.
+UPDATE runs
+SET covered_seq = sqlc.arg(covered_seq)
+WHERE id = sqlc.arg(run_id)
+  AND project_id = sqlc.arg(project_id)
+  AND covered_seq < sqlc.arg(covered_seq);
 
 -- name: CountAllEvents :one
 -- lore:tenant-exempt: global by design; must run under a bypass role (readonly/ops), NOT lore_app — RLS would silently scope it

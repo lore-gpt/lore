@@ -84,9 +84,17 @@ VALUES ($1)
 RETURNING id, project_id, status, started_at, last_seq
 `
 
-func (q *Queries) InsertRun(ctx context.Context, projectID pgtype.UUID) (Run, error) {
+type InsertRunRow struct {
+	ID        pgtype.UUID        `json:"id"`
+	ProjectID pgtype.UUID        `json:"project_id"`
+	Status    string             `json:"status"`
+	StartedAt pgtype.Timestamptz `json:"started_at"`
+	LastSeq   int64              `json:"last_seq"`
+}
+
+func (q *Queries) InsertRun(ctx context.Context, projectID pgtype.UUID) (InsertRunRow, error) {
 	row := q.db.QueryRow(ctx, insertRun, projectID)
-	var i Run
+	var i InsertRunRow
 	err := row.Scan(
 		&i.ID,
 		&i.ProjectID,

@@ -22,6 +22,7 @@ import (
 
 	"github.com/lore-gpt/lore/core/ext"
 	"github.com/lore-gpt/lore/core/jobs"
+	"github.com/lore-gpt/lore/core/store"
 	"github.com/lore-gpt/lore/core/store/db"
 )
 
@@ -44,11 +45,20 @@ func New(pool *pgxpool.Pool) (*Queue, error) {
 }
 
 // NewWorker builds a River client that processes extract_run jobs on the default
-// queue, reading events through the pool and distilling them with the given
-// Extractor. `lore worker` uses this and calls Start.
-func NewWorker(pool *pgxpool.Pool, extractor ext.Extractor) (*Queue, error) {
+// queue: it reads events through the pool, distils them with the given Extractor,
+// and persists the result (advancing the run checkpoint) through the store's
+// tenant-scoped transactions. `lore worker` uses this and calls Start.
+func NewWorker(st *store.Store, extractor ext.Extractor) (*Queue, error) {
+	pool := st.Pool
 	workers := river.NewWorkers()
-	river.AddWorker(workers, jobs.NewExtractRunWorker(db.New(pool), extractor, jobs.DefaultDebounce()))
+	// The worker reads events straight through db.New(pool) but writes through the store's
+	// tenant-scoped transactions (NewPGPersister sets lore.project_id). Both are correct today because
+	// the worker connects as the RLS-bypassing pool owner. When that role is cut over to the
+	// RLS-subject application role, these reads must also set the per-run project scope (via the
+	// store), or the tenant policies would return no rows and extraction would silently stall — the
+	// writes are already scoped, the reads are not yet.
+	river.AddWorker(workers, jobs.NewExtractRunWorker(
+		db.New(pool), extractor, jobs.NewPGPersister(st), jobs.DefaultDebounce()))
 
 	client, err := river.NewClient(riverpgxv5.New(pool), &river.Config{
 		Queues: map[string]river.QueueConfig{

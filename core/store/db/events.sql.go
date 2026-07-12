@@ -11,6 +11,32 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const advanceCoveredSeq = `-- name: AdvanceCoveredSeq :execrows
+UPDATE runs
+SET covered_seq = $1
+WHERE id = $2
+  AND project_id = $3
+  AND covered_seq < $1
+`
+
+type AdvanceCoveredSeqParams struct {
+	CoveredSeq int64       `json:"covered_seq"`
+	RunID      pgtype.UUID `json:"run_id"`
+	ProjectID  pgtype.UUID `json:"project_id"`
+}
+
+// Advance a run's extraction checkpoint to the highest seq the pass consumed, never backward. The
+// covered_seq < guard keeps it monotonic and makes a duplicate advance a no-op (0 rows). This runs
+// in the same transaction as the pass's memory writes, so the checkpoint and the rows it accounts
+// for commit together — the atomicity that makes a coalesced pass idempotent.
+func (q *Queries) AdvanceCoveredSeq(ctx context.Context, arg AdvanceCoveredSeqParams) (int64, error) {
+	result, err := q.db.Exec(ctx, advanceCoveredSeq, arg.CoveredSeq, arg.RunID, arg.ProjectID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const countAllEvents = `-- name: CountAllEvents :one
 SELECT count(*) FROM events
 `
@@ -93,8 +119,9 @@ func (q *Queries) InsertEvent(ctx context.Context, arg InsertEventParams) (Event
 const listRunEvents = `-- name: ListRunEvents :many
 SELECT id, run_id, agent_id, payload, created_at, seq, project_id
 FROM events
-WHERE project_id = $1 AND run_id = $2
-ORDER BY seq
+WHERE events.project_id = $1 AND events.run_id = $2
+  AND events.seq > (SELECT covered_seq FROM runs WHERE runs.id = $2)
+ORDER BY events.seq
 `
 
 type ListRunEventsParams struct {
@@ -102,8 +129,10 @@ type ListRunEventsParams struct {
 	RunID     pgtype.UUID `json:"run_id"`
 }
 
-// A run's events in seq order, for the coalesced extraction pass. Project-scoped so it is tenant-
-// safe and (under RLS) reads only the caller's project.
+// A run's not-yet-extracted events (seq past the run's checkpoint) in seq order, for the coalesced
+// extraction pass. The covered_seq subquery scopes the read to events an earlier pass has not
+// already consumed, so a re-enqueued or retried job never re-reads them. Project-scoped so it is
+// tenant-safe and (under RLS) reads only the caller's project.
 func (q *Queries) ListRunEvents(ctx context.Context, arg ListRunEventsParams) ([]Event, error) {
 	rows, err := q.db.Query(ctx, listRunEvents, arg.ProjectID, arg.RunID)
 	if err != nil {
@@ -134,9 +163,10 @@ func (q *Queries) ListRunEvents(ctx context.Context, arg ListRunEventsParams) ([
 
 const runExtractionReadiness = `-- name: RunExtractionReadiness :one
 SELECT count(*)::bigint AS event_count,
-       coalesce(extract(epoch FROM now() - max(created_at)), 0)::double precision AS idle_seconds
+       coalesce(extract(epoch FROM now() - max(events.created_at)), 0)::double precision AS idle_seconds
 FROM events
-WHERE project_id = $1 AND run_id = $2
+WHERE events.project_id = $1 AND events.run_id = $2
+  AND events.seq > (SELECT covered_seq FROM runs WHERE runs.id = $2)
 `
 
 type RunExtractionReadinessParams struct {
@@ -149,9 +179,10 @@ type RunExtractionReadinessRow struct {
 	IdleSeconds float64 `json:"idle_seconds"`
 }
 
-// Debounce inputs for one run's coalesced extraction: how many events it has, and how long since
-// the most recent one measured by the database clock (so there is no app/DB clock skew). With no
-// events, idle_seconds is 0 and the caller treats the empty run as ready. Project-scoped.
+// Debounce inputs for one run's coalesced extraction, measured over its not-yet-extracted events
+// (seq past the checkpoint): how many there are, and how long since the most recent one measured by
+// the database clock (so there is no app/DB clock skew). With none pending, event_count is 0 and
+// idle_seconds is 0, so the caller treats the drained run as ready (nothing to do). Project-scoped.
 func (q *Queries) RunExtractionReadiness(ctx context.Context, arg RunExtractionReadinessParams) (RunExtractionReadinessRow, error) {
 	row := q.db.QueryRow(ctx, runExtractionReadiness, arg.ProjectID, arg.RunID)
 	var i RunExtractionReadinessRow
