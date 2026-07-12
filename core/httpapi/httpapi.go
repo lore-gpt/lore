@@ -21,9 +21,11 @@ import (
 
 // Enqueuer schedules the follow-up extraction for an accepted event. It runs on
 // the caller's transaction so the enqueue is atomic with the event insert: if
-// either fails, neither is durable. *queue.Queue satisfies it.
+// either fails, neither is durable. Extraction is coalesced per run, so the
+// enqueue is keyed on the event's project and run, not the event id. *queue.Queue
+// satisfies it.
 type Enqueuer interface {
-	EnqueueExtract(ctx context.Context, tx pgx.Tx, eventID string) error
+	EnqueueExtract(ctx context.Context, tx pgx.Tx, projectID, runID string) error
 }
 
 // Pinger reports a dependency's health for /healthz. *store.Store and

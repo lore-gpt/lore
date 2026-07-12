@@ -86,7 +86,10 @@ func (a *API) handleCreateEvent(w http.ResponseWriter, r *http.Request) {
 	}
 
 	eventID := uuid.UUID(event.ID.Bytes).String()
-	if err := a.enqueuer.EnqueueExtract(ctx, tx, eventID); err != nil {
+	// Extraction is coalesced per run: enqueue by the event's project and run (unique per run), not
+	// per event, so a burst of events collapses into one extraction pass.
+	projectID := uuid.UUID(event.ProjectID.Bytes).String()
+	if err := a.enqueuer.EnqueueExtract(ctx, tx, projectID, req.RunID); err != nil {
 		writeError(w, r, http.StatusInternalServerError, "internal", "could not enqueue extraction")
 		return
 	}

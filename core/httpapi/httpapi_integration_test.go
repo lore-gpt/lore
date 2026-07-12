@@ -29,7 +29,7 @@ const paradeDBImage = "paradedb/paradedb:0.24.2-pg17"
 // been inserted, exercising the rollback guarantee.
 type failingEnqueuer struct{}
 
-func (failingEnqueuer) EnqueueExtract(context.Context, pgx.Tx, string) error {
+func (failingEnqueuer) EnqueueExtract(context.Context, pgx.Tx, string, string) error {
 	return errors.New("simulated enqueue failure")
 }
 
@@ -91,7 +91,7 @@ func TestEventsWritePath(t *testing.T) {
 		Version:  "test",
 	}).Handler()
 
-	// --- Happy path: 202 with a monotonic per-run seq; one event row and one river_job each. ---
+	// --- Happy path: 202 with a monotonic per-run seq; two event rows, one coalesced extract_run. ---
 	body := `{"run_id":"` + runID + `","agent_id":"researcher","payload":{"hello":"world"}}`
 	if seq := postEvent(t, handler, apiKey, body); seq != 1 {
 		t.Fatalf("first event seq = %d, want 1", seq)
@@ -103,8 +103,9 @@ func TestEventsWritePath(t *testing.T) {
 	if got := countEvents(ctx, t, st.Pool); got != 2 {
 		t.Fatalf("events after two writes = %d, want 2", got)
 	}
-	if got := countRiverJobs(ctx, t, st.Pool); got != 2 {
-		t.Fatalf("river_job after two writes = %d, want 2", got)
+	// Extraction is coalesced per run, so the two same-run events enqueue a single extract_run job.
+	if got := countRiverJobs(ctx, t, st.Pool); got != 1 {
+		t.Fatalf("river_job after two same-run writes = %d, want 1 (coalesced per run)", got)
 	}
 
 	// --- Rollback (criterion 3): a failing enqueue rolls back the whole transaction — no new
@@ -127,8 +128,8 @@ func TestEventsWritePath(t *testing.T) {
 	if got := countEvents(ctx, t, st.Pool); got != 2 {
 		t.Errorf("events after failed enqueue = %d, want 2 (the insert must roll back)", got)
 	}
-	if got := countRiverJobs(ctx, t, st.Pool); got != 2 {
-		t.Errorf("river_job after failed enqueue = %d, want 2 (no new job)", got)
+	if got := countRiverJobs(ctx, t, st.Pool); got != 1 {
+		t.Errorf("river_job after failed enqueue = %d, want 1 (no new job)", got)
 	}
 	if after := runLastSeq(ctx, t, st.Pool, runID); after != beforeSeq {
 		t.Errorf("runs.last_seq moved from %d to %d on a rolled-back write — seq must not be consumed", beforeSeq, after)

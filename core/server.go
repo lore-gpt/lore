@@ -30,6 +30,7 @@ type extensions struct {
 	policy      ext.PolicyEngine
 	adjudicator ext.Adjudicator
 	metering    ext.MeteringSink
+	extractor   ext.Extractor
 }
 
 func defaultExtensions() extensions {
@@ -37,6 +38,7 @@ func defaultExtensions() extensions {
 		policy:      ext.BasicScopePolicy{},
 		adjudicator: ext.LWW{},
 		metering:    ext.NoopMetering{},
+		extractor:   ext.FixtureExtractor{},
 	}
 }
 
@@ -48,7 +50,7 @@ func resolveExtensions(opts []Option) (extensions, error) {
 	for _, o := range opts {
 		o(&e)
 	}
-	if e.policy == nil || e.adjudicator == nil || e.metering == nil {
+	if e.policy == nil || e.adjudicator == nil || e.metering == nil || e.extractor == nil {
 		return extensions{}, errors.New("core: extension point set to nil")
 	}
 	return e, nil
@@ -59,6 +61,7 @@ func (e extensions) logComposed(ctx context.Context, role string) {
 		slog.String("policy", fmt.Sprintf("%T", e.policy)),
 		slog.String("adjudicator", fmt.Sprintf("%T", e.adjudicator)),
 		slog.String("metering", fmt.Sprintf("%T", e.metering)),
+		slog.String("extractor", fmt.Sprintf("%T", e.extractor)),
 	)
 }
 
@@ -79,6 +82,12 @@ func WithAdjudicator(a ext.Adjudicator) Option {
 // WithMetering overrides the default MeteringSink.
 func WithMetering(m ext.MeteringSink) Option {
 	return func(e *extensions) { e.metering = m }
+}
+
+// WithExtractor overrides the default Extractor. The worker uses it to distil
+// events into memories and claims; a downstream build injects its own provider.
+func WithExtractor(x ext.Extractor) Option {
+	return func(e *extensions) { e.extractor = x }
 }
 
 // Server is the HTTP-serving composition: the store, an insert-only queue

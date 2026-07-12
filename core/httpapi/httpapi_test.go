@@ -20,7 +20,7 @@ func (f fakePinger) Ping(context.Context) error { return f.err }
 // request before the enqueue would run.
 type fakeEnqueuer struct{}
 
-func (fakeEnqueuer) EnqueueExtract(context.Context, pgx.Tx, string) error { return nil }
+func (fakeEnqueuer) EnqueueExtract(context.Context, pgx.Tx, string, string) error { return nil }
 
 // TestRequireAuth locks the bearer-auth contract without a database. It probes
 // via /v1/recall, which passes through auth and then returns 501 — so a 401
