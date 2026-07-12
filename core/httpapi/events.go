@@ -22,15 +22,20 @@ type CreateEventRequest struct {
 	Payload json.RawMessage `json:"payload"`
 }
 
-// CreateEventResponse is the 202 body: the id of the appended event.
+// CreateEventResponse is the 202 body: the id of the appended event and its
+// server-assigned, per-run sequence number. Clients carry seq to assert
+// read-your-writes on recall.
 type CreateEventResponse struct {
 	EventID string `json:"event_id"`
+	Seq     int64  `json:"seq"`
 }
 
 // handleCreateEvent appends an event and enqueues its extraction job in a single
 // transaction. The write is atomic: if the enqueue (or the commit) fails, the
 // event row is rolled back and the client gets an error, never a persisted event
-// with no job or a job with no event.
+// with no job or a job with no event. The event is stamped with a monotonic
+// per-run seq assigned inside that same transaction, so a rolled-back write
+// consumes no sequence number; the seq is returned to the client.
 func (a *API) handleCreateEvent(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
@@ -91,7 +96,7 @@ func (a *API) handleCreateEvent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, r, http.StatusAccepted, CreateEventResponse{EventID: eventID})
+	writeJSON(w, r, http.StatusAccepted, CreateEventResponse{EventID: eventID, Seq: event.Seq})
 }
 
 // handleRecall is the Phase 1 read path. Phase 0 answers 501 so the route and
