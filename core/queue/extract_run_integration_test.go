@@ -247,3 +247,85 @@ func TestExtractRunWorkerRetriesOnExtractorError(t *testing.T) {
 		time.Sleep(150 * time.Millisecond)
 	}
 }
+
+// TestExtractRunWorkerDebouncesUntilIdle proves the debounce against real River: a just-written run
+// (idle ~ 0 at first pickup) is not processed immediately — the job snoozes — and only once the idle
+// window elapses does the extractor run. River's short-snooze optimization sets a snoozed job to
+// 'available' with a future scheduled_at (the 2s window is under the ~5s scheduler interval), so the
+// snooze is detected via the persisted 'snoozes' metadata, not a transient state.
+//
+// This assumes the first pickup lands within the 2s window; River wakes on insert via NOTIFY, so
+// pickup is sub-second in practice. A pathological >2s stall between insert and first pickup would
+// leave the run already idle and skip the snooze (the metadata assertion, not processing, would fail).
+func TestExtractRunWorkerDebouncesUntilIdle(t *testing.T) {
+	ctx := context.Background()
+	st := migratedStore(ctx, t)
+
+	rec := &recordingExtractor{ch: make(chan ext.ExtractInput, 1)}
+	w, err := queue.NewWorker(st.Pool, rec) // DefaultDebounce: 2s idle window
+	if err != nil {
+		t.Fatalf("new worker: %v", err)
+	}
+	if err := w.Start(ctx); err != nil {
+		t.Fatalf("start worker: %v", err)
+	}
+	t.Cleanup(func() {
+		stopCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_ = w.Stop(stopCtx)
+	})
+
+	q := db.New(st.Pool)
+	org, err := q.InsertOrganization(ctx, "acme")
+	if err != nil {
+		t.Fatalf("insert org: %v", err)
+	}
+	proj, err := q.InsertProject(ctx, db.InsertProjectParams{OrgID: org.ID, Name: "a"})
+	if err != nil {
+		t.Fatalf("insert project: %v", err)
+	}
+	run, err := q.InsertRun(ctx, proj.ID)
+	if err != nil {
+		t.Fatalf("insert run: %v", err)
+	}
+	if _, err := q.InsertEvent(ctx, db.InsertEventParams{RunID: run.ID, AgentID: "a", Payload: []byte(`{"memory":"one"}`)}); err != nil {
+		t.Fatalf("insert event: %v", err)
+	}
+
+	projectID := uuid.UUID(proj.ID.Bytes).String()
+	runID := uuid.UUID(run.ID.Bytes).String()
+	tx, err := st.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	if err := w.EnqueueExtract(ctx, tx, projectID, runID); err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+
+	// The run was just written (idle ~ 0), so it must be debounced: the pass runs only after the
+	// idle window elapses, not immediately on the first pickup.
+	select {
+	case in := <-rec.ch:
+		if len(in.Events) != 1 || in.Events[0].Seq != 1 {
+			t.Errorf("processed window = %+v, want the single seq-1 event", in.Events)
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("extractor not called after the debounce window elapsed")
+	}
+
+	// It snoozed at least once before running — proving the fresh run was deferred, not processed
+	// immediately. River records the snooze count in the job's metadata, which persists across the
+	// later processing pass (and is robust to River's short-snooze state handling).
+	var snoozes int
+	if err := st.Pool.QueryRow(ctx,
+		`SELECT coalesce((metadata->>'snoozes')::int, 0) FROM river_job WHERE kind = 'extract_run' ORDER BY id DESC LIMIT 1`).
+		Scan(&snoozes); err != nil {
+		t.Fatalf("read snoozes: %v", err)
+	}
+	if snoozes < 1 {
+		t.Errorf("job snoozes = %d, want >= 1 (the fresh run must be debounced, not processed immediately)", snoozes)
+	}
+}

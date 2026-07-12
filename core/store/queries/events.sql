@@ -30,6 +30,15 @@ FROM events
 WHERE project_id = $1 AND run_id = $2
 ORDER BY seq;
 
+-- name: RunExtractionReadiness :one
+-- Debounce inputs for one run's coalesced extraction: how many events it has, and how long since
+-- the most recent one measured by the database clock (so there is no app/DB clock skew). With no
+-- events, idle_seconds is 0 and the caller treats the empty run as ready. Project-scoped.
+SELECT count(*)::bigint AS event_count,
+       coalesce(extract(epoch FROM now() - max(created_at)), 0)::double precision AS idle_seconds
+FROM events
+WHERE project_id = $1 AND run_id = $2;
+
 -- name: CountAllEvents :one
 -- lore:tenant-exempt: global by design; must run under a bypass role (readonly/ops), NOT lore_app — RLS would silently scope it
 SELECT count(*) FROM events;

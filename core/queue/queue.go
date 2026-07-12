@@ -48,7 +48,7 @@ func New(pool *pgxpool.Pool) (*Queue, error) {
 // Extractor. `lore worker` uses this and calls Start.
 func NewWorker(pool *pgxpool.Pool, extractor ext.Extractor) (*Queue, error) {
 	workers := river.NewWorkers()
-	river.AddWorker(workers, jobs.NewExtractRunWorker(db.New(pool), extractor))
+	river.AddWorker(workers, jobs.NewExtractRunWorker(db.New(pool), extractor, jobs.DefaultDebounce()))
 
 	client, err := river.NewClient(riverpgxv5.New(pool), &river.Config{
 		Queues: map[string]river.QueueConfig{

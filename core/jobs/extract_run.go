@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -49,23 +50,40 @@ func (ExtractRunArgs) InsertOpts() river.InsertOpts {
 	}
 }
 
-// EventLister reads a run's events for extraction. *db.Queries satisfies it; tests supply a fake.
-type EventLister interface {
+// EventSource reads a run's events and its debounce readiness. *db.Queries satisfies it; tests
+// supply a fake.
+type EventSource interface {
+	RunExtractionReadiness(ctx context.Context, arg db.RunExtractionReadinessParams) (db.RunExtractionReadinessRow, error)
 	ListRunEvents(ctx context.Context, arg db.ListRunEventsParams) ([]db.Event, error)
 }
 
-// ExtractRunWorker processes ExtractRunArgs: it reads the run's events, gates the machine chatter,
-// and hands the survivors to the Extractor. This increment does not yet persist the result — the
-// memory/claim writes land in a later increment; here the pass runs end to end and logs its output.
-type ExtractRunWorker struct {
-	river.WorkerDefaults[ExtractRunArgs]
-	lister    EventLister
-	extractor ext.Extractor
+// Debounce controls the coalescing window: a run's extraction pass runs once the run has been idle
+// for IdleWindow, or once MaxEvents have accumulated — whichever comes first. MaxEvents also bounds
+// the wait, so a run that never idles still gets processed.
+type Debounce struct {
+	IdleWindow time.Duration
+	MaxEvents  int
 }
 
-// NewExtractRunWorker builds the worker from its event source and extractor.
-func NewExtractRunWorker(lister EventLister, extractor ext.Extractor) *ExtractRunWorker {
-	return &ExtractRunWorker{lister: lister, extractor: extractor}
+// DefaultDebounce is the production window: process after 2s idle or 20 accumulated events.
+func DefaultDebounce() Debounce {
+	return Debounce{IdleWindow: 2 * time.Second, MaxEvents: 20}
+}
+
+// ExtractRunWorker processes ExtractRunArgs: it debounces the run, reads its events, gates the
+// machine chatter, and hands the survivors to the Extractor. This increment does not yet persist
+// the result — the memory/claim writes land in a later increment; here the pass runs end to end
+// and logs its output.
+type ExtractRunWorker struct {
+	river.WorkerDefaults[ExtractRunArgs]
+	source    EventSource
+	extractor ext.Extractor
+	debounce  Debounce
+}
+
+// NewExtractRunWorker builds the worker from its event source, extractor, and debounce window.
+func NewExtractRunWorker(source EventSource, extractor ext.Extractor, debounce Debounce) *ExtractRunWorker {
+	return &ExtractRunWorker{source: source, extractor: extractor, debounce: debounce}
 }
 
 // Work runs one coalesced extraction pass for the job's run.
@@ -79,7 +97,20 @@ func (w *ExtractRunWorker) Work(ctx context.Context, job *river.Job[ExtractRunAr
 		return fmt.Errorf("extract_run: run_id: %w", err)
 	}
 
-	events, err := w.lister.ListRunEvents(ctx, db.ListRunEventsParams{ProjectID: projectID, RunID: runID})
+	// Debounce: defer until the run has been idle for the window or enough events have accumulated.
+	// Snoozing keeps the job in a unique state, so further events for the run keep collapsing into it
+	// rather than enqueuing another pass. JobSnooze does not consume an attempt.
+	ready, err := w.source.RunExtractionReadiness(ctx, db.RunExtractionReadinessParams{ProjectID: projectID, RunID: runID})
+	if err != nil {
+		return fmt.Errorf("extract_run: readiness: %w", err)
+	}
+	if ready.EventCount > 0 &&
+		ready.EventCount < int64(w.debounce.MaxEvents) &&
+		ready.IdleSeconds < w.debounce.IdleWindow.Seconds() {
+		return river.JobSnooze(w.debounce.IdleWindow)
+	}
+
+	events, err := w.source.ListRunEvents(ctx, db.ListRunEventsParams{ProjectID: projectID, RunID: runID})
 	if err != nil {
 		return fmt.Errorf("extract_run: list events: %w", err)
 	}

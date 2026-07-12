@@ -131,3 +131,30 @@ func (q *Queries) ListRunEvents(ctx context.Context, arg ListRunEventsParams) ([
 	}
 	return items, nil
 }
+
+const runExtractionReadiness = `-- name: RunExtractionReadiness :one
+SELECT count(*)::bigint AS event_count,
+       coalesce(extract(epoch FROM now() - max(created_at)), 0)::double precision AS idle_seconds
+FROM events
+WHERE project_id = $1 AND run_id = $2
+`
+
+type RunExtractionReadinessParams struct {
+	ProjectID pgtype.UUID `json:"project_id"`
+	RunID     pgtype.UUID `json:"run_id"`
+}
+
+type RunExtractionReadinessRow struct {
+	EventCount  int64   `json:"event_count"`
+	IdleSeconds float64 `json:"idle_seconds"`
+}
+
+// Debounce inputs for one run's coalesced extraction: how many events it has, and how long since
+// the most recent one measured by the database clock (so there is no app/DB clock skew). With no
+// events, idle_seconds is 0 and the caller treats the empty run as ready. Project-scoped.
+func (q *Queries) RunExtractionReadiness(ctx context.Context, arg RunExtractionReadinessParams) (RunExtractionReadinessRow, error) {
+	row := q.db.QueryRow(ctx, runExtractionReadiness, arg.ProjectID, arg.RunID)
+	var i RunExtractionReadinessRow
+	err := row.Scan(&i.EventCount, &i.IdleSeconds)
+	return i, err
+}
