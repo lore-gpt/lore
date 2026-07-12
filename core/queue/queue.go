@@ -20,7 +20,9 @@ import (
 	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/riverdriver/riverpgxv5"
 
+	"github.com/lore-gpt/lore/core/ext"
 	"github.com/lore-gpt/lore/core/jobs"
+	"github.com/lore-gpt/lore/core/store/db"
 )
 
 // Queue owns a River client and the pool it runs on. Whether it can work jobs
@@ -41,11 +43,12 @@ func New(pool *pgxpool.Pool) (*Queue, error) {
 	return &Queue{Client: client, pool: pool, worker: false}, nil
 }
 
-// NewWorker builds a River client that processes extract_event jobs on the
-// default queue. `lore worker` uses this and calls Start.
-func NewWorker(pool *pgxpool.Pool) (*Queue, error) {
+// NewWorker builds a River client that processes extract_run jobs on the default
+// queue, reading events through the pool and distilling them with the given
+// Extractor. `lore worker` uses this and calls Start.
+func NewWorker(pool *pgxpool.Pool, extractor ext.Extractor) (*Queue, error) {
 	workers := river.NewWorkers()
-	river.AddWorker(workers, jobs.NewExtractEventWorker())
+	river.AddWorker(workers, jobs.NewExtractRunWorker(db.New(pool), extractor))
 
 	client, err := river.NewClient(riverpgxv5.New(pool), &river.Config{
 		Queues: map[string]river.QueueConfig{
@@ -73,13 +76,14 @@ func (q *Queue) Stop(ctx context.Context) error {
 	return q.Client.Stop(ctx)
 }
 
-// EnqueueExtract inserts an extract_event job on the given transaction, so the
-// enqueue commits atomically with whatever else tx is doing (the event insert).
-// Available on both client shapes: the insert-only server enqueues here; only
-// working the job requires NewWorker.
-func (q *Queue) EnqueueExtract(ctx context.Context, tx pgx.Tx, eventID string) error {
-	if _, err := q.Client.InsertTx(ctx, tx, jobs.ExtractEventArgs{EventID: eventID}, nil); err != nil {
-		return fmt.Errorf("enqueue extract_event: %w", err)
+// EnqueueExtract inserts a coalesced extract_run job for the event's run on the
+// given transaction, so the enqueue commits atomically with the event insert. The
+// job is unique per run, so a burst of events for one run collapses into a single
+// extraction pass. Available on both client shapes: the insert-only server
+// enqueues here; only working the job requires NewWorker.
+func (q *Queue) EnqueueExtract(ctx context.Context, tx pgx.Tx, projectID, runID string) error {
+	if _, err := q.Client.InsertTx(ctx, tx, jobs.ExtractRunArgs{ProjectID: projectID, RunID: runID}, nil); err != nil {
+		return fmt.Errorf("enqueue extract_run: %w", err)
 	}
 	return nil
 }

@@ -27,6 +27,9 @@ func TestResolveExtensionsDefaults(t *testing.T) {
 	if _, ok := e.metering.(ext.NoopMetering); !ok {
 		t.Errorf("metering default = %T, want NoopMetering", e.metering)
 	}
+	if _, ok := e.extractor.(ext.FixtureExtractor); !ok {
+		t.Errorf("extractor default = %T, want FixtureExtractor", e.extractor)
+	}
 }
 
 func TestResolveExtensionsOverride(t *testing.T) {
@@ -46,5 +49,8 @@ func TestResolveExtensionsOverride(t *testing.T) {
 func TestResolveExtensionsNilRejected(t *testing.T) {
 	if _, err := resolveExtensions([]Option{WithMetering(nil)}); err == nil {
 		t.Error("resolveExtensions with nil metering = nil error, want error")
+	}
+	if _, err := resolveExtensions([]Option{WithExtractor(nil)}); err == nil {
+		t.Error("resolveExtensions with nil extractor = nil error, want error")
 	}
 }

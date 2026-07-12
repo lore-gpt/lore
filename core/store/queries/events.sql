@@ -22,6 +22,14 @@ SELECT id, run_id, agent_id, payload, created_at, seq, project_id
 FROM events
 WHERE project_id = $1 AND id = $2;
 
+-- name: ListRunEvents :many
+-- A run's events in seq order, for the coalesced extraction pass. Project-scoped so it is tenant-
+-- safe and (under RLS) reads only the caller's project.
+SELECT id, run_id, agent_id, payload, created_at, seq, project_id
+FROM events
+WHERE project_id = $1 AND run_id = $2
+ORDER BY seq;
+
 -- name: CountAllEvents :one
 -- lore:tenant-exempt: global by design; must run under a bypass role (readonly/ops), NOT lore_app — RLS would silently scope it
 SELECT count(*) FROM events;

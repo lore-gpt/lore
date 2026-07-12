@@ -89,3 +89,45 @@ func (q *Queries) InsertEvent(ctx context.Context, arg InsertEventParams) (Event
 	)
 	return i, err
 }
+
+const listRunEvents = `-- name: ListRunEvents :many
+SELECT id, run_id, agent_id, payload, created_at, seq, project_id
+FROM events
+WHERE project_id = $1 AND run_id = $2
+ORDER BY seq
+`
+
+type ListRunEventsParams struct {
+	ProjectID pgtype.UUID `json:"project_id"`
+	RunID     pgtype.UUID `json:"run_id"`
+}
+
+// A run's events in seq order, for the coalesced extraction pass. Project-scoped so it is tenant-
+// safe and (under RLS) reads only the caller's project.
+func (q *Queries) ListRunEvents(ctx context.Context, arg ListRunEventsParams) ([]Event, error) {
+	rows, err := q.db.Query(ctx, listRunEvents, arg.ProjectID, arg.RunID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Event
+	for rows.Next() {
+		var i Event
+		if err := rows.Scan(
+			&i.ID,
+			&i.RunID,
+			&i.AgentID,
+			&i.Payload,
+			&i.CreatedAt,
+			&i.Seq,
+			&i.ProjectID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
