@@ -12,38 +12,50 @@ import (
 )
 
 const insertMemoryScope = `-- name: InsertMemoryScope :one
-INSERT INTO memory_scopes (memory_id, scope_type, scope_id)
-VALUES ($1, $2, $3)
-RETURNING memory_id, scope_type, scope_id, created_at
+INSERT INTO memory_scopes (project_id, memory_id, scope_type, scope_id)
+VALUES ($1, $2, $3, $4)
+RETURNING memory_id, scope_type, scope_id, created_at, project_id
 `
 
 type InsertMemoryScopeParams struct {
+	ProjectID pgtype.UUID `json:"project_id"`
 	MemoryID  pgtype.UUID `json:"memory_id"`
 	ScopeType string      `json:"scope_type"`
 	ScopeID   string      `json:"scope_id"`
 }
 
 func (q *Queries) InsertMemoryScope(ctx context.Context, arg InsertMemoryScopeParams) (MemoryScope, error) {
-	row := q.db.QueryRow(ctx, insertMemoryScope, arg.MemoryID, arg.ScopeType, arg.ScopeID)
+	row := q.db.QueryRow(ctx, insertMemoryScope,
+		arg.ProjectID,
+		arg.MemoryID,
+		arg.ScopeType,
+		arg.ScopeID,
+	)
 	var i MemoryScope
 	err := row.Scan(
 		&i.MemoryID,
 		&i.ScopeType,
 		&i.ScopeID,
 		&i.CreatedAt,
+		&i.ProjectID,
 	)
 	return i, err
 }
 
 const listMemoryScopes = `-- name: ListMemoryScopes :many
-SELECT memory_id, scope_type, scope_id, created_at
+SELECT memory_id, scope_type, scope_id, created_at, project_id
 FROM memory_scopes
-WHERE memory_id = $1
+WHERE project_id = $1 AND memory_id = $2
 ORDER BY scope_type, scope_id
 `
 
-func (q *Queries) ListMemoryScopes(ctx context.Context, memoryID pgtype.UUID) ([]MemoryScope, error) {
-	rows, err := q.db.Query(ctx, listMemoryScopes, memoryID)
+type ListMemoryScopesParams struct {
+	ProjectID pgtype.UUID `json:"project_id"`
+	MemoryID  pgtype.UUID `json:"memory_id"`
+}
+
+func (q *Queries) ListMemoryScopes(ctx context.Context, arg ListMemoryScopesParams) ([]MemoryScope, error) {
+	rows, err := q.db.Query(ctx, listMemoryScopes, arg.ProjectID, arg.MemoryID)
 	if err != nil {
 		return nil, err
 	}
@@ -56,6 +68,7 @@ func (q *Queries) ListMemoryScopes(ctx context.Context, memoryID pgtype.UUID) ([
 			&i.ScopeType,
 			&i.ScopeID,
 			&i.CreatedAt,
+			&i.ProjectID,
 		); err != nil {
 			return nil, err
 		}

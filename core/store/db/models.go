@@ -96,6 +96,7 @@ type MemoryScope struct {
 	ScopeType string             `json:"scope_type"`
 	ScopeID   string             `json:"scope_id"`
 	CreatedAt pgtype.Timestamptz `json:"created_at"`
+	ProjectID pgtype.UUID        `json:"project_id"`
 }
 
 type MemoryVersion struct {
@@ -105,6 +106,7 @@ type MemoryVersion struct {
 	ChangedBy *string            `json:"changed_by"`
 	Reason    *string            `json:"reason"`
 	CreatedAt pgtype.Timestamptz `json:"created_at"`
+	ProjectID pgtype.UUID        `json:"project_id"`
 }
 
 type Organization struct {
