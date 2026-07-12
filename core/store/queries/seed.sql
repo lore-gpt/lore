@@ -9,7 +9,7 @@ RETURNING id, name, created_at;
 -- name: InsertProject :one
 INSERT INTO projects (org_id, name)
 VALUES ($1, $2)
-RETURNING id, org_id, name, created_at, active_model_id;
+RETURNING id, org_id, name, created_at, active_model_id, retain_events_days, retain_memories_days;
 
 -- name: InsertAPIKey :one
 INSERT INTO api_keys (project_id, key_hash)
@@ -19,4 +19,4 @@ RETURNING id, project_id, key_hash, created_at, revoked_at;
 -- name: InsertRun :one
 INSERT INTO runs (project_id)
 VALUES ($1)
-RETURNING id, project_id, status, started_at;
+RETURNING id, project_id, status, started_at, last_seq;

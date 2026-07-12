@@ -1,12 +1,24 @@
+<div align="center">
+
+<img src="https://loregpt.ai/logo.svg" alt="Lore" width="88" />
+
 # Lore
 
-**Open-source coordination memory layer for multi-agent AI systems.**
+**Open-source coordination memory for multi-agent AI systems — shared agent memory with
+read-your-writes consistency, per-agent access control, and deterministic context packs.**
+
+[![CI](https://github.com/lore-gpt/lore/actions/workflows/ci.yml/badge.svg)](https://github.com/lore-gpt/lore/actions/workflows/ci.yml)
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+[![Discussions](https://img.shields.io/badge/GitHub-Discussions-333.svg?logo=github)](https://github.com/lore-gpt/lore/discussions)
+[![Waitlist](https://img.shields.io/badge/loregpt.ai-join_the_waitlist-6C4CF1.svg)](https://loregpt.ai)
 
 > *Mem0 remembers your user. Zep knows what's true now.*
 > ***Lore keeps your agent team in sync*** *— with consistency guarantees, access control, and a token bill that goes down.*
 
-> 🚧 **Building in the open.** Lore is pre-release. The design is public and evolving through RFCs; `v0.1` lands soon.
-> **[→ Join the waitlist](https://loregpt.ai)** for early access and design-partner slots.
+</div>
+
+> 🚧 **Building in the open.** Lore is pre-release. The design is public and evolving through RFCs;
+> `v0.1` lands soon. **[→ Join the waitlist](https://loregpt.ai)** for early access and design-partner slots.
 
 ---
 
@@ -16,18 +28,28 @@ Multi-agent systems mostly don't fail because agents can't reason — they fail 
 inconsistent copies of shared state. *(MAST, 1,600+ annotated traces: **36.9%** of multi-agent failures
 are inter-agent misalignment; teams burn ~40% of compute re-establishing context.)*
 
-Lore is the shared memory that keeps a **team** of agents working from one reality:
+Lore is the memory layer that keeps a **team** of LLM agents working from one reality:
 
 - **Consistency you can call** — `seq` tokens, `covered_seq`, `freshness_lag_ms`: read-your-writes as an
   API contract, not a blog promise. If agent A wrote it, agent B's next pack contains it.
-- **Governance built in** — per-agent ACL compiled to SQL, trust tiers with quarantine, mandatory
-  provenance, human-approved curation.
+- **Governance built in** — per-agent access control compiled to SQL, trust tiers with quarantine,
+  mandatory provenance, human-approved curation.
 - **A token bill that goes down** — deterministic, budget-fit context packs maximize prompt-cache hits;
   a built-in meter reports tokens and dollars saved versus raw history.
-- **Real open source** — not a library you operate around, a full server. `docker run`, one Go binary,
-  Postgres inside. Apache-2.0.
+- **Real open source** — not a library you operate around, a full server: one Go binary with Postgres
+  (pgvector + BM25 hybrid search) inside. `docker compose up`, Apache-2.0.
 
 ## How it works
+
+```mermaid
+flowchart LR
+    A["🤖 Agent A"] -- "write → seq" --> E["📥 Event log<br/>(append-only)"]
+    B["🤖 Agent B"] -- "write" --> E
+    E --> C["⚖️ Consolidate<br/>versioned claims<br/>conflicts resolved by policy"]
+    C --> P["📦 Context pack<br/>budget-fit · provenance-tagged<br/>deterministic"]
+    P -- "pack(min_seq) → covered_seq ≥ seq" --> A
+    P --> B
+```
 
 1. **Write** — agents stream events; nothing blocks.
 2. **Consolidate** — facts become versioned claims; conflicts resolved by policy, not luck.
@@ -51,61 +73,65 @@ pack.savedTokens  // the number your CFO will ask about
 
 ## Quickstart (self-host)
 
-Today Lore runs as a skeleton: a server that accepts events, persists them, and
-enqueues a (stub) extraction job, and a worker that drains it. The write →
-consolidate → pack API shown above lands in `v0.1`.
+> Today Lore runs as a skeleton: a server that accepts events, persists them, and enqueues a (stub)
+> extraction job, and a worker that drains it. The write → consolidate → pack API above lands in `v0.1`.
 
-**Prerequisites:** Docker (with Compose) and [Task](https://taskfile.dev). Go 1.26+
-is only needed to build or test outside containers.
+All you need is **Docker** (with Compose):
 
 ```bash
 git clone https://github.com/lore-gpt/lore
 cd lore
-task compose:up        # builds the image, starts the stack, waits until healthy
+docker compose -f infra/docker-compose.yml up -d --build --wait
 ```
 
-> **Port 8080 already in use?** (a local Apache/nginx, say) — pick a free host
-> port; the container still listens on 8080:
-> `LORE_HTTP_PORT=18080 task compose:up`, then use that port in the URLs below.
+*(Prefer [Task](https://taskfile.dev)? `task compose:up` does the same and is the dev entry point
+for lint/test/build too.)*
 
-Check health — unauthenticated, so orchestrators can probe it:
+**1 · Check health** — unauthenticated, so orchestrators can probe it:
 
 ```bash
 curl localhost:8080/healthz
 # {"status":"ok","version":"0.0.0-dev","db":"ok","queue":"ok"}
 ```
 
-Append an event. Phase 0 has no run-creation endpoint yet, so seed one run
-directly, then post to it:
+**2 · Append an event and watch the worker pick it up:**
 
 ```bash
-RUN_ID=$(docker compose -f infra/docker-compose.yml exec -T paradedb \
-  psql -U lore -d lore -tA -c "WITH o AS (INSERT INTO organizations(name) VALUES('demo') RETURNING id), p AS (INSERT INTO projects(org_id,name) SELECT id,'demo' FROM o RETURNING id), r AS (INSERT INTO runs(project_id) SELECT id FROM p RETURNING id) SELECT id FROM r;")
-
 curl -X POST localhost:8080/v1/events \
   -H "Authorization: Bearer local-dev-key" \
   -H "Content-Type: application/json" \
   -d "{\"run_id\":\"$RUN_ID\",\"agent_id\":\"researcher\",\"payload\":{\"note\":\"hello memory\"}}"
 # {"event_id":"..."}   (HTTP 202)
-```
 
-Within seconds the worker drains the job:
-
-```bash
 docker compose -f infra/docker-compose.yml logs lore-worker | grep "extract stub"
 # ... INFO extract stub: event received event_id=...
 ```
 
-Tear it down:
+<details>
+<summary><b>Where does <code>$RUN_ID</code> come from?</b> (temporary seed step — a run-creation
+endpoint and <code>lore init</code> land in <code>v0.1</code>)</summary>
 
 ```bash
-task compose:down
+RUN_ID=$(docker compose -f infra/docker-compose.yml exec -T paradedb \
+  psql -U lore -d lore -tA -c "WITH o AS (INSERT INTO organizations(name) VALUES('demo') RETURNING id), p AS (INSERT INTO projects(org_id,name) SELECT id,'demo' FROM o RETURNING id), r AS (INSERT INTO runs(project_id) SELECT id FROM p RETURNING id) SELECT id FROM r;")
+echo $RUN_ID
 ```
 
-### Configuration
+</details>
 
-`task compose:up` runs with working defaults. To run the binary outside Compose,
-copy [`.env.example`](.env.example) to `.env` and set:
+**3 · Tear it down:**
+
+```bash
+docker compose -f infra/docker-compose.yml down -v   # or: task compose:down
+```
+
+> **Port 8080 already in use?** Pick a free host port; the container still listens on 8080:
+> `LORE_HTTP_PORT=18080 docker compose -f infra/docker-compose.yml up -d --build --wait`
+
+<details>
+<summary><b>Configuration</b> — run the binary outside Compose</summary>
+
+Copy [`.env.example`](.env.example) to `.env` and set:
 
 | Variable | Required | Default | Purpose |
 |---|---|---|---|
@@ -114,21 +140,35 @@ copy [`.env.example`](.env.example) to `.env` and set:
 | `LORE_ADDR` | no | `:8080` | HTTP listen address |
 | `LORE_VALKEY_URL` | no | — | Valkey URL (started by Compose, reserved for `v0.1`) |
 
+</details>
+
 ## Works with
 
-SDKs for **TypeScript** and **Python**, plus an **MCP server** for everything else (Claude Code, Cursor,
-and any MCP client). Framework-neutral by design: LangGraph, CrewAI, AutoGen, Claude Agent SDK — no
-framework shares memory with a competitor's agent; Lore does.
+SDKs for **TypeScript** and **Python**, plus an **MCP server** for everything else — Claude Code,
+Cursor, and any MCP client (`v0.1`). Framework-neutral by design: **LangGraph, CrewAI, AutoGen,
+Claude Agent SDK, OpenAI Agents SDK, Pydantic AI** — no framework shares memory with a competitor's
+agent; Lore does. Integration guides: [loregpt.ai/integrations](https://loregpt.ai/integrations).
+
+## How Lore compares
+
+| | [Mem0](https://loregpt.ai/compare/mem0) | [Zep](https://loregpt.ai/compare/zep) | **Lore** |
+|---|---|---|---|
+| Primary question | "Who is my user?" | "What is true now?" | **"Is my agent team in sync?"** |
+| Read-your-writes contract | — | — | ✓ `seq` / `covered_seq` |
+| Per-agent access control | basic scopes | governed messaging | ✓ SQL-compiled + quarantine |
+| OSS scope | engine | library | **full server, one binary** |
+
+Honest, same-judge comparisons (including *when to choose them*): [loregpt.ai/compare](https://loregpt.ai/compare)
 
 ## Status & roadmap
 
 Lore is being built in the open. Current focus: **`v0.1` MVP** — write → consolidate → pack, hybrid
-recall, MCP server + TS/Python SDKs, minimal inspector.
+recall (vector + BM25 + entity), MCP server + TS/Python SDKs, minimal inspector.
 
 - 🗺️ **Design & RFCs:** [`docs/rfcs/`](docs/rfcs) — the read-your-writes contract and the coordination
   benchmark are being designed in the open. Feedback wanted.
 - 💬 **Discussion:** [GitHub Discussions](../../discussions)
-- 📊 **Category framing:** `vs Mem0` / `vs Zep` comparisons at [loregpt.ai/compare](https://loregpt.ai/compare)
+- 📰 **Blog:** [loregpt.ai/blog](https://loregpt.ai/blog) — agent memory, context engineering, benchmarks
 
 ## Open source & what's paid
 
