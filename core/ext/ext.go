@@ -12,6 +12,7 @@ package ext
 
 import (
 	"context"
+	"encoding/json"
 	"time"
 )
 
@@ -59,4 +60,63 @@ type MeteringSink interface {
 type Measurement struct {
 	Op    string
 	Count int64
+}
+
+// Extractor distils a coalesced window of one run's events into candidate memories, claims, and
+// entity mentions. It abstracts the extraction provider: the OSS defaults are FixtureExtractor
+// (deterministic, offline — no API key) and, later, a thin Claude/OpenAI provider adapter behind
+// this same interface with bring-your-own-key. Extraction is a batch call (one window, not one
+// event) so the caller can coalesce many events into a single pass.
+type Extractor interface {
+	// Extract returns the candidates distilled from in.Events. A provider or transport failure
+	// returns an error (e.g. ErrExtractorUnavailable) and no partial result; the caller retries.
+	Extract(ctx context.Context, in ExtractInput) (ExtractResult, error)
+}
+
+// ExtractInput is one extraction pass over a run's events. Events are ordered by Seq — extraction
+// and provenance are keyed on Seq, never on a client clock.
+type ExtractInput struct {
+	ProjectID string
+	RunID     string
+	Events    []InputEvent
+}
+
+// InputEvent is a single event offered to the extractor: its per-run Seq (for ordering and
+// provenance), the writing agent, and the opaque JSON payload.
+type InputEvent struct {
+	Seq     int64
+	AgentID string
+	Payload json.RawMessage
+}
+
+// ExtractResult is everything one pass distilled. Any slice may be empty.
+type ExtractResult struct {
+	Memories []CandidateMemory
+	Claims   []CandidateClaim
+	Entities []EntityMention
+}
+
+// CandidateMemory is a distilled memory awaiting persistence. The write path derives the stored
+// provenance (source_event_id, created_by_agent) and defaults (trust tier) from SourceSeq.
+type CandidateMemory struct {
+	Kind      string // semantic | episodic | procedural
+	Content   string
+	SourceSeq int64 // the event this was distilled from
+}
+
+// CandidateClaim is a structured assertion about an entity. EventTime is set only for temporal
+// claims; it never drives ordering (Seq does).
+type CandidateClaim struct {
+	Entity    string
+	Predicate string
+	Value     json.RawMessage
+	EventTime *time.Time
+	SourceSeq int64
+}
+
+// EntityMention is an entity the extractor recognised in the window.
+type EntityMention struct {
+	Name    string
+	Type    string
+	Aliases []string
 }
