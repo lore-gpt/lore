@@ -9,4 +9,4 @@ RETURNING id, memory_id, project_id, entity_id, predicate, value, event_time, su
 -- name: SupersedeClaim :execrows
 UPDATE claims
 SET superseded_by = $2
-WHERE id = $1 AND superseded_by IS NULL;
+WHERE id = $1 AND superseded_by IS NULL AND project_id = $3;

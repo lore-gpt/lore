@@ -7,6 +7,7 @@ VALUES ($1)
 RETURNING id, name, created_at;
 
 -- name: InsertProject :one
+-- lore:tenant-exempt: creates the tenant (projects) row itself — there is no project to scope by
 INSERT INTO projects (org_id, name)
 VALUES ($1, $2)
 RETURNING id, org_id, name, created_at, active_model_id, retain_events_days, retain_memories_days;

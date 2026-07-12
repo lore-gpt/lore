@@ -111,7 +111,7 @@ func TestMigrationsExtensionsAndRoundTrip(t *testing.T) {
 		t.Fatalf("insert event: %v", err)
 	}
 
-	got, err := q.GetEvent(ctx, ev.ID)
+	got, err := q.GetEvent(ctx, db.GetEventParams{ProjectID: ev.ProjectID, ID: ev.ID})
 	if err != nil {
 		t.Fatalf("get event: %v", err)
 	}
@@ -119,7 +119,7 @@ func TestMigrationsExtensionsAndRoundTrip(t *testing.T) {
 		t.Errorf("agent_id = %q, want %q", got.AgentID, "researcher")
 	}
 
-	count, err := q.CountEvents(ctx)
+	count, err := q.CountAllEvents(ctx)
 	if err != nil {
 		t.Fatalf("count events: %v", err)
 	}
@@ -321,7 +321,7 @@ func TestMigration0003VersionsClaimsScopes(t *testing.T) {
 		t.Fatalf("begin swap tx: %v", err)
 	}
 	rows, err := q.WithTx(tx).SupersedeClaim(ctx, db.SupersedeClaimParams{
-		ID: first.ID, SupersededBy: replacementID,
+		ID: first.ID, SupersededBy: replacementID, ProjectID: first.ProjectID,
 	})
 	if err != nil {
 		_ = tx.Rollback(ctx)

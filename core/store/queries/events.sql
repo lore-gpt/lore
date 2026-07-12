@@ -11,7 +11,8 @@ RETURNING id, run_id, agent_id, payload, created_at, seq, project_id;
 -- name: GetEvent :one
 SELECT id, run_id, agent_id, payload, created_at, seq, project_id
 FROM events
-WHERE id = $1;
+WHERE project_id = $1 AND id = $2;
 
--- name: CountEvents :one
+-- name: CountAllEvents :one
+-- lore:tenant-exempt: global by design; must run under a bypass role (readonly/ops), NOT lore_app — RLS would silently scope it
 SELECT count(*) FROM events;
