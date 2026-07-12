@@ -7,6 +7,7 @@ import (
 	"fmt"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 	pgxvec "github.com/pgvector/pgvector-go/pgx"
 )
@@ -53,4 +54,32 @@ func (s *Store) Ping(ctx context.Context) error {
 // Close releases the pool's connections.
 func (s *Store) Close() {
 	s.Pool.Close()
+}
+
+// WithProject runs fn inside a transaction whose lore.project_id session setting is set to
+// projectID, so the Row-Level Security policies (migration 0008) scope every statement fn issues
+// to that one project. It uses set_config with is_local => true, which is transaction-scoped, so
+// the setting is discarded at commit/rollback and never leaks to the next user of a pooled
+// connection. fn must run its queries on the provided tx.
+//
+// An error from fn rolls the transaction back. An unset project id is refused, so a tenant query
+// can never run with an empty scope. (RLS would treat an empty scope as "see nothing" regardless,
+// but failing here turns a silent zero-row result into an explicit error.)
+func (s *Store) WithProject(ctx context.Context, projectID pgtype.UUID, fn func(pgx.Tx) error) error {
+	pid, err := projectIDText(projectID)
+	if err != nil {
+		return err
+	}
+	tx, err := s.Pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin tenant transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, `SELECT set_config('lore.project_id', $1, true)`, pid); err != nil {
+		return fmt.Errorf("set tenant scope: %w", err)
+	}
+	if err := fn(tx); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }

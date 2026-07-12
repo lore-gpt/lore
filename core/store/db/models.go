@@ -82,6 +82,7 @@ type Event struct {
 	Payload   []byte             `json:"payload"`
 	CreatedAt pgtype.Timestamptz `json:"created_at"`
 	Seq       *int64             `json:"seq"`
+	ProjectID pgtype.UUID        `json:"project_id"`
 }
 
 type Memory struct {

@@ -6,7 +6,7 @@ import (
 	"net/http"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/lore-gpt/lore/core/store/db"
@@ -70,7 +70,9 @@ func (a *API) handleCreateEvent(w http.ResponseWriter, r *http.Request) {
 		Payload: req.Payload,
 	})
 	if err != nil {
-		if isForeignKeyViolation(err) {
+		// The insert derives project_id from the run, so an unknown run_id matches no row and
+		// returns pgx.ErrNoRows rather than a foreign-key violation.
+		if errors.Is(err, pgx.ErrNoRows) {
 			writeError(w, r, http.StatusBadRequest, "unknown_run", "run_id does not exist")
 			return
 		}
@@ -113,11 +115,4 @@ func isJSONObject(raw json.RawMessage) bool {
 		}
 	}
 	return false
-}
-
-// isForeignKeyViolation reports whether err is a Postgres foreign-key violation
-// (SQLSTATE 23503) — the shape a non-existent run_id takes on insert.
-func isForeignKeyViolation(err error) bool {
-	var pgErr *pgconn.PgError
-	return errors.As(err, &pgErr) && pgErr.Code == "23503"
 }
