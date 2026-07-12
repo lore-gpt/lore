@@ -17,6 +17,16 @@ type ApiKey struct {
 	RevokedAt pgtype.Timestamptz `json:"revoked_at"`
 }
 
+type AuditLog struct {
+	ID        pgtype.UUID        `json:"id"`
+	ProjectID pgtype.UUID        `json:"project_id"`
+	Actor     string             `json:"actor"`
+	Action    string             `json:"action"`
+	Target    *string            `json:"target"`
+	Detail    []byte             `json:"detail"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+}
+
 type Claim struct {
 	ID           pgtype.UUID        `json:"id"`
 	MemoryID     pgtype.UUID        `json:"memory_id"`
@@ -71,6 +81,7 @@ type Event struct {
 	AgentID   string             `json:"agent_id"`
 	Payload   []byte             `json:"payload"`
 	CreatedAt pgtype.Timestamptz `json:"created_at"`
+	Seq       *int64             `json:"seq"`
 }
 
 type Memory struct {
@@ -115,12 +126,25 @@ type Organization struct {
 	CreatedAt pgtype.Timestamptz `json:"created_at"`
 }
 
+type PackLog struct {
+	ID             pgtype.UUID        `json:"id"`
+	ProjectID      pgtype.UUID        `json:"project_id"`
+	RunID          pgtype.UUID        `json:"run_id"`
+	Query          string             `json:"query"`
+	CoveredSeq     *int64             `json:"covered_seq"`
+	FreshnessLagMs *int32             `json:"freshness_lag_ms"`
+	LatencyMs      *int32             `json:"latency_ms"`
+	CreatedAt      pgtype.Timestamptz `json:"created_at"`
+}
+
 type Project struct {
-	ID            pgtype.UUID        `json:"id"`
-	OrgID         pgtype.UUID        `json:"org_id"`
-	Name          string             `json:"name"`
-	CreatedAt     pgtype.Timestamptz `json:"created_at"`
-	ActiveModelID *string            `json:"active_model_id"`
+	ID                 pgtype.UUID        `json:"id"`
+	OrgID              pgtype.UUID        `json:"org_id"`
+	Name               string             `json:"name"`
+	CreatedAt          pgtype.Timestamptz `json:"created_at"`
+	ActiveModelID      *string            `json:"active_model_id"`
+	RetainEventsDays   *int32             `json:"retain_events_days"`
+	RetainMemoriesDays *int32             `json:"retain_memories_days"`
 }
 
 type Run struct {
@@ -128,4 +152,5 @@ type Run struct {
 	ProjectID pgtype.UUID        `json:"project_id"`
 	Status    string             `json:"status"`
 	StartedAt pgtype.Timestamptz `json:"started_at"`
+	LastSeq   int64              `json:"last_seq"`
 }

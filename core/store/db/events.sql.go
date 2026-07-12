@@ -23,7 +23,7 @@ func (q *Queries) CountEvents(ctx context.Context) (int64, error) {
 }
 
 const getEvent = `-- name: GetEvent :one
-SELECT id, run_id, agent_id, payload, created_at
+SELECT id, run_id, agent_id, payload, created_at, seq
 FROM events
 WHERE id = $1
 `
@@ -37,6 +37,7 @@ func (q *Queries) GetEvent(ctx context.Context, id pgtype.UUID) (Event, error) {
 		&i.AgentID,
 		&i.Payload,
 		&i.CreatedAt,
+		&i.Seq,
 	)
 	return i, err
 }
@@ -44,7 +45,7 @@ func (q *Queries) GetEvent(ctx context.Context, id pgtype.UUID) (Event, error) {
 const insertEvent = `-- name: InsertEvent :one
 INSERT INTO events (run_id, agent_id, payload)
 VALUES ($1, $2, $3)
-RETURNING id, run_id, agent_id, payload, created_at
+RETURNING id, run_id, agent_id, payload, created_at, seq
 `
 
 type InsertEventParams struct {
@@ -62,6 +63,7 @@ func (q *Queries) InsertEvent(ctx context.Context, arg InsertEventParams) (Event
 		&i.AgentID,
 		&i.Payload,
 		&i.CreatedAt,
+		&i.Seq,
 	)
 	return i, err
 }

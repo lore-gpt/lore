@@ -54,7 +54,7 @@ func (q *Queries) InsertOrganization(ctx context.Context, name string) (Organiza
 const insertProject = `-- name: InsertProject :one
 INSERT INTO projects (org_id, name)
 VALUES ($1, $2)
-RETURNING id, org_id, name, created_at, active_model_id
+RETURNING id, org_id, name, created_at, active_model_id, retain_events_days, retain_memories_days
 `
 
 type InsertProjectParams struct {
@@ -71,6 +71,8 @@ func (q *Queries) InsertProject(ctx context.Context, arg InsertProjectParams) (P
 		&i.Name,
 		&i.CreatedAt,
 		&i.ActiveModelID,
+		&i.RetainEventsDays,
+		&i.RetainMemoriesDays,
 	)
 	return i, err
 }
@@ -78,7 +80,7 @@ func (q *Queries) InsertProject(ctx context.Context, arg InsertProjectParams) (P
 const insertRun = `-- name: InsertRun :one
 INSERT INTO runs (project_id)
 VALUES ($1)
-RETURNING id, project_id, status, started_at
+RETURNING id, project_id, status, started_at, last_seq
 `
 
 func (q *Queries) InsertRun(ctx context.Context, projectID pgtype.UUID) (Run, error) {
@@ -89,6 +91,7 @@ func (q *Queries) InsertRun(ctx context.Context, projectID pgtype.UUID) (Run, er
 		&i.ProjectID,
 		&i.Status,
 		&i.StartedAt,
+		&i.LastSeq,
 	)
 	return i, err
 }
