@@ -174,8 +174,10 @@ func TestMigration0008RolesRLS(t *testing.T) {
 
 	// The composite foreign key stops an event whose project_id disagrees with its run's project.
 	t.Run("events_composite_fk", func(t *testing.T) {
+		// seq is NOT NULL since migration 0009; give it a value that cannot collide with run A's
+		// existing seqs, so the composite FK — not the not-null or unique constraint — is what fails.
 		if _, err := st.Pool.Exec(ctx,
-			`INSERT INTO events (project_id, run_id, agent_id, payload) VALUES ($1, $2, 'a', '{}'::jsonb)`,
+			`INSERT INTO events (project_id, run_id, agent_id, payload, seq) VALUES ($1, $2, 'a', '{}'::jsonb, 999)`,
 			projB.ID, runA.ID); pgErrCode(err) != "23503" {
 			t.Errorf("event for run A tagged with project B should raise 23503, got %q", pgErrCode(err))
 		}
