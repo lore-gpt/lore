@@ -1,8 +1,9 @@
 <div align="center">
 
-<img src="https://loregpt.ai/logo.svg" alt="Lore" width="88" />
-
-# Lore
+<h1>
+  <img src="https://loregpt.ai/logo.svg" alt="" width="46" align="middle" />
+  Lore
+</h1>
 
 **Open-source coordination memory for multi-agent AI systems — shared agent memory with
 read-your-writes consistency, per-agent access control, and deterministic context packs.**
