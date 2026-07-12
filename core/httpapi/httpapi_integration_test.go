@@ -91,27 +91,26 @@ func TestEventsWritePath(t *testing.T) {
 		Version:  "test",
 	}).Handler()
 
-	// --- Happy path: 202, one event row, one river_job row. ---
+	// --- Happy path: 202 with a monotonic per-run seq; one event row and one river_job each. ---
 	body := `{"run_id":"` + runID + `","agent_id":"researcher","payload":{"hello":"world"}}`
-	rr := do(handler, apiKey, body)
-	if rr.Code != http.StatusAccepted {
-		t.Fatalf("happy path status = %d, want 202 (body %q)", rr.Code, rr.Body.String())
+	if seq := postEvent(t, handler, apiKey, body); seq != 1 {
+		t.Fatalf("first event seq = %d, want 1", seq)
 	}
-	var resp httpapi.CreateEventResponse
-	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("decode response: %v", err)
+	// A second event on the same run advances the sequence.
+	if seq := postEvent(t, handler, apiKey, body); seq != 2 {
+		t.Fatalf("second event seq = %d, want 2", seq)
 	}
-	if _, err := uuid.Parse(resp.EventID); err != nil {
-		t.Errorf("event_id %q is not a UUID: %v", resp.EventID, err)
+	if got := countEvents(ctx, t, st.Pool); got != 2 {
+		t.Fatalf("events after two writes = %d, want 2", got)
 	}
-	if got := countEvents(ctx, t, st.Pool); got != 1 {
-		t.Fatalf("events after happy path = %d, want 1", got)
-	}
-	if got := countRiverJobs(ctx, t, st.Pool); got != 1 {
-		t.Fatalf("river_job after happy path = %d, want 1", got)
+	if got := countRiverJobs(ctx, t, st.Pool); got != 2 {
+		t.Fatalf("river_job after two writes = %d, want 2", got)
 	}
 
-	// --- Rollback (criterion 3): a failing enqueue leaves no new event row. ---
+	// --- Rollback (criterion 3): a failing enqueue rolls back the whole transaction — no new
+	// event row, and the run counter is NOT advanced, because seq is assigned in that same
+	// transaction (a rolled-back write must burn no sequence number). ---
+	beforeSeq := runLastSeq(ctx, t, st.Pool, runID)
 	rollbackHandler := httpapi.New(httpapi.Config{
 		Pool:     st.Pool,
 		Enqueuer: failingEnqueuer{},
@@ -121,16 +120,68 @@ func TestEventsWritePath(t *testing.T) {
 		Version:  "test",
 	}).Handler()
 
-	rr = do(rollbackHandler, apiKey, body)
+	rr := do(rollbackHandler, apiKey, body)
 	if rr.Code != http.StatusInternalServerError {
 		t.Fatalf("rollback path status = %d, want 500 (body %q)", rr.Code, rr.Body.String())
 	}
-	if got := countEvents(ctx, t, st.Pool); got != 1 {
-		t.Errorf("events after failed enqueue = %d, want 1 (the insert must roll back)", got)
+	if got := countEvents(ctx, t, st.Pool); got != 2 {
+		t.Errorf("events after failed enqueue = %d, want 2 (the insert must roll back)", got)
 	}
-	if got := countRiverJobs(ctx, t, st.Pool); got != 1 {
-		t.Errorf("river_job after failed enqueue = %d, want 1 (no new job)", got)
+	if got := countRiverJobs(ctx, t, st.Pool); got != 2 {
+		t.Errorf("river_job after failed enqueue = %d, want 2 (no new job)", got)
 	}
+	if after := runLastSeq(ctx, t, st.Pool, runID); after != beforeSeq {
+		t.Errorf("runs.last_seq moved from %d to %d on a rolled-back write — seq must not be consumed", beforeSeq, after)
+	}
+
+	// --- Unknown run: a well-formed but non-existent run_id maps pgx.ErrNoRows to 400
+	// unknown_run. The insert derives project_id from the run, so no matching run means the CTE
+	// is empty and nothing is inserted. ---
+	unknownBody := `{"run_id":"` + uuid.NewString() + `","agent_id":"researcher","payload":{"x":1}}`
+	rr = do(handler, apiKey, unknownBody)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("unknown run status = %d, want 400 (body %q)", rr.Code, rr.Body.String())
+	}
+	var errResp struct {
+		Code string `json:"code"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &errResp); err != nil {
+		t.Fatalf("decode error body: %v", err)
+	}
+	if errResp.Code != "unknown_run" {
+		t.Errorf("unknown run error code = %q, want unknown_run (body %q)", errResp.Code, rr.Body.String())
+	}
+	if got := countEvents(ctx, t, st.Pool); got != 2 {
+		t.Errorf("events after unknown-run attempt = %d, want 2 (nothing inserted)", got)
+	}
+}
+
+// postEvent issues one authenticated POST /v1/events, asserts a 202 with a UUID
+// event_id, and returns the server-assigned seq.
+func postEvent(t *testing.T, handler http.Handler, apiKey, body string) int64 {
+	t.Helper()
+	rr := do(handler, apiKey, body)
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202 (body %q)", rr.Code, rr.Body.String())
+	}
+	var resp httpapi.CreateEventResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if _, err := uuid.Parse(resp.EventID); err != nil {
+		t.Errorf("event_id %q is not a UUID: %v", resp.EventID, err)
+	}
+	return resp.Seq
+}
+
+// runLastSeq reads a run's last_seq counter directly, for the rollback invariant.
+func runLastSeq(ctx context.Context, t *testing.T, pool *pgxpool.Pool, runID string) int64 {
+	t.Helper()
+	var seq int64
+	if err := pool.QueryRow(ctx, `SELECT last_seq FROM runs WHERE id = $1::uuid`, runID).Scan(&seq); err != nil {
+		t.Fatalf("read run last_seq: %v", err)
+	}
+	return seq
 }
 
 // do issues an authenticated POST /v1/events and returns the recorder.

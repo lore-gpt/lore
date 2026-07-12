@@ -110,6 +110,9 @@ func TestMigrationsExtensionsAndRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("insert event: %v", err)
 	}
+	if ev.Seq != 1 {
+		t.Errorf("first event in a fresh run should get seq 1, got %d", ev.Seq)
+	}
 
 	got, err := q.GetEvent(ctx, db.GetEventParams{ProjectID: ev.ProjectID, ID: ev.ID})
 	if err != nil {

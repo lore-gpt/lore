@@ -113,38 +113,34 @@ func TestMigration0007SeqAuditRetention(t *testing.T) {
 		}
 	})
 
-	// The UNIQUE(run_id, seq) constraint the migration adds: assigned seqs are unique within
-	// a run but not across runs, while the many pre-assignment events (seq still NULL) must
-	// coexist — Postgres treats NULLs as distinct, which the current write path depends on.
+	// The UNIQUE(run_id, seq) constraint the migration adds: seq is unique within a run but not
+	// across runs. The seq-aware write path assigns 1, 2, ... monotonically per run; re-using an
+	// assigned seq is rejected, and the same seq in another run is fine.
 	t.Run("events_seq_uniqueness", func(t *testing.T) {
 		run, err := q.InsertRun(ctx, proj.ID)
 		if err != nil {
 			t.Fatalf("insert run: %v", err)
 		}
-		// Two NULL-seq events (what InsertEvent writes today) coexist in one run.
-		for i := 0; i < 2; i++ {
-			if _, err := q.InsertEvent(ctx, db.InsertEventParams{
-				RunID: run.ID, AgentID: "a", Payload: []byte("{}"),
-			}); err != nil {
-				t.Fatalf("null-seq event %d should insert (NULLs distinct under UNIQUE): %v", i, err)
-			}
+		// InsertEvent stamps a monotonic per-run seq: the first is 1, the second 2.
+		ev1, err := q.InsertEvent(ctx, db.InsertEventParams{RunID: run.ID, AgentID: "a", Payload: []byte("{}")})
+		if err != nil {
+			t.Fatalf("first event should insert: %v", err)
 		}
-		// An assigned seq is unique within its run: the second seq=1 is rejected.
-		if _, err := st.Pool.Exec(ctx,
-			`INSERT INTO events (project_id, run_id, agent_id, payload, seq) VALUES ($1, $2, 'a', '{}'::jsonb, 1)`,
-			proj.ID, run.ID); err != nil {
-			t.Fatalf("first seq=1 event should insert: %v", err)
+		if ev1.Seq != 1 {
+			t.Errorf("first event seq = %d, want 1", ev1.Seq)
 		}
+		ev2, err := q.InsertEvent(ctx, db.InsertEventParams{RunID: run.ID, AgentID: "a", Payload: []byte("{}")})
+		if err != nil {
+			t.Fatalf("second event should insert: %v", err)
+		}
+		if ev2.Seq != 2 {
+			t.Errorf("second event seq = %d, want 2", ev2.Seq)
+		}
+		// Re-using an assigned seq within the run violates UNIQUE(run_id, seq).
 		if _, err := st.Pool.Exec(ctx,
 			`INSERT INTO events (project_id, run_id, agent_id, payload, seq) VALUES ($1, $2, 'a', '{}'::jsonb, 1)`,
 			proj.ID, run.ID); pgErrCode(err) != "23505" {
-			t.Errorf("a second seq=1 in the same run should raise 23505, got %q", pgErrCode(err))
-		}
-		// A distinct seq in the same run is fine.
-		if _, err := st.Pool.Exec(ctx,
-			`INSERT INTO events (project_id, run_id, agent_id, payload, seq) VALUES ($1, $2, 'a', '{}'::jsonb, 2)`,
-			proj.ID, run.ID); err != nil {
-			t.Errorf("a distinct seq in the same run should insert: %v", err)
+			t.Errorf("re-using seq=1 in the same run should raise 23505, got %q", pgErrCode(err))
 		}
 		// The same seq in a DIFFERENT run is fine — uniqueness is scoped to the run.
 		run2, err := q.InsertRun(ctx, proj.ID)

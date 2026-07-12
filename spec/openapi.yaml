@@ -61,7 +61,7 @@ paths:
       description: >
         Appends an event to the run's append-only log and (from Phase 1) enqueues
         an extraction job in the same database transaction. Returns the created
-        event id.
+        event id and its server-assigned, per-run sequence number.
       tags:
         - events
       requestBody:
@@ -72,7 +72,9 @@ paths:
               $ref: "#/components/schemas/CreateEventRequest"
       responses:
         "202":
-          description: Event accepted and persisted.
+          description: >
+            Event accepted and persisted, with its per-run sequence number
+            assigned. Extraction runs asynchronously.
           content:
             application/json:
               schema:
@@ -151,10 +153,20 @@ components:
       type: object
       required:
         - event_id
+        - seq
       properties:
         event_id:
           type: string
           format: uuid
+        seq:
+          type: integer
+          format: int64
+          minimum: 1
+          description: >
+            Server-assigned sequence number within the run. Monotonic and
+            gap-free per run; clients carry it to assert read-your-writes on
+            recall.
+          example: 1
     Error:
       type: object
       required:
