@@ -20,6 +20,7 @@ import (
 	"github.com/lore-gpt/lore/core/queue"
 	"github.com/lore-gpt/lore/core/store"
 	"github.com/lore-gpt/lore/core/store/db"
+	"github.com/lore-gpt/lore/core/workmem"
 )
 
 // migratedStore starts a ParadeDB container, applies the store and River migrations, and returns an
@@ -249,7 +250,7 @@ func TestExtractRunWorkerProcessesRun(t *testing.T) {
 	st := migratedStore(ctx, t)
 
 	rec := &recordingExtractor{ch: make(chan ext.ExtractInput, 1)}
-	w, err := queue.NewWorker(st, rec, ext.LWW{})
+	w, err := queue.NewWorker(st, rec, ext.LWW{}, workmem.NewDisabled())
 	if err != nil {
 		t.Fatalf("new worker: %v", err)
 	}
@@ -319,7 +320,7 @@ func TestExtractRunWorkerRetriesOnExtractorError(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(ctx, t)
 
-	w, err := queue.NewWorker(st, ext.FixtureExtractor{}, ext.LWW{})
+	w, err := queue.NewWorker(st, ext.FixtureExtractor{}, ext.LWW{}, workmem.NewDisabled())
 	if err != nil {
 		t.Fatalf("new worker: %v", err)
 	}
@@ -401,7 +402,7 @@ func TestExtractRunWorkerDebouncesUntilIdle(t *testing.T) {
 	st := migratedStore(ctx, t)
 
 	rec := &recordingExtractor{ch: make(chan ext.ExtractInput, 1)}
-	w, err := queue.NewWorker(st, rec, ext.LWW{}) // DefaultDebounce: 2s idle window
+	w, err := queue.NewWorker(st, rec, ext.LWW{}, workmem.NewDisabled()) // DefaultDebounce: 2s idle window
 	if err != nil {
 		t.Fatalf("new worker: %v", err)
 	}
@@ -558,7 +559,7 @@ func TestExtractRunPersistsMemory(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(ctx, t)
 
-	w, err := queue.NewWorker(st, ext.FixtureExtractor{}, ext.LWW{})
+	w, err := queue.NewWorker(st, ext.FixtureExtractor{}, ext.LWW{}, workmem.NewDisabled())
 	if err != nil {
 		t.Fatalf("new worker: %v", err)
 	}
@@ -644,7 +645,7 @@ func TestExtractRunCheckpointProcessesEachEventOnce(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(ctx, t)
 
-	w, err := queue.NewWorker(st, ext.FixtureExtractor{}, ext.LWW{})
+	w, err := queue.NewWorker(st, ext.FixtureExtractor{}, ext.LWW{}, workmem.NewDisabled())
 	if err != nil {
 		t.Fatalf("new worker: %v", err)
 	}
@@ -714,7 +715,7 @@ func TestExtractRunPersistsClaimAndEntity(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(ctx, t)
 
-	w, err := queue.NewWorker(st, ext.FixtureExtractor{}, ext.LWW{})
+	w, err := queue.NewWorker(st, ext.FixtureExtractor{}, ext.LWW{}, workmem.NewDisabled())
 	if err != nil {
 		t.Fatalf("new worker: %v", err)
 	}
@@ -792,7 +793,7 @@ func TestExtractRunClaimLWWWithinPass(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(ctx, t)
 
-	w, err := queue.NewWorker(st, ext.FixtureExtractor{}, ext.LWW{})
+	w, err := queue.NewWorker(st, ext.FixtureExtractor{}, ext.LWW{}, workmem.NewDisabled())
 	if err != nil {
 		t.Fatalf("new worker: %v", err)
 	}
@@ -877,7 +878,7 @@ func TestExtractRunWorkerFieldMergeComposition(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(ctx, t)
 
-	w, err := queue.NewWorker(st, ext.FixtureExtractor{}, ext.FieldMerge{})
+	w, err := queue.NewWorker(st, ext.FixtureExtractor{}, ext.FieldMerge{}, workmem.NewDisabled())
 	if err != nil {
 		t.Fatalf("new worker: %v", err)
 	}

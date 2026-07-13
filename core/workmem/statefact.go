@@ -58,17 +58,34 @@ type statePayload struct {
 	Value     json.RawMessage `json:"value"`
 }
 
-// ParseStateFact decodes and validates an event payload as a state fact. It returns:
+// ParseStateFact decodes and validates an event payload as a state fact, applying the value-size cap. It
+// returns:
 //   - (fact, nil)                     for a well-formed, in-limits kind:"state" payload;
 //   - (zero, ErrNotStateFact)         for a payload whose kind is not "state" (an ordinary event);
 //   - (zero, *InvalidStateFactError)  for a kind:"state" payload that is malformed or out of limits.
 //
 // maxValueBytes bounds the value's size; <= 0 uses DefaultMaxValueBytes. raw must already be well-formed
-// JSON (the request decoder guarantees it).
+// JSON (the request decoder guarantees it). It is the ingestion-boundary check; a consumer re-reading an
+// already-stored fact uses DecodeStateFact instead.
 func ParseStateFact(raw []byte, maxValueBytes int) (StateFact, error) {
+	fact, err := DecodeStateFact(raw)
+	if err != nil {
+		return StateFact{}, err
+	}
 	if maxValueBytes <= 0 {
 		maxValueBytes = DefaultMaxValueBytes
 	}
+	if len(fact.Value) > maxValueBytes {
+		return StateFact{}, &InvalidStateFactError{Field: "value", Reason: fmt.Sprintf("exceeds %d bytes", maxValueBytes)}
+	}
+	return fact, nil
+}
+
+// DecodeStateFact decodes and validates a state fact WITHOUT the value-size cap. That cap is an
+// ingestion-boundary concern (ParseStateFact applies it once, at the door); a consumer re-reading a fact
+// already stored in the event log only needs to decode it — re-capping could drop a fact the server
+// accepted under a since-lowered limit. Same ErrNotStateFact / *InvalidStateFactError contract otherwise.
+func DecodeStateFact(raw []byte) (StateFact, error) {
 	var p statePayload
 	if err := json.Unmarshal(raw, &p); err != nil || p.Kind != StateKind {
 		// Not readable as a state payload, or a different kind: leave it to the normal path. Kind is a
@@ -86,9 +103,6 @@ func ParseStateFact(raw []byte, maxValueBytes int) (StateFact, error) {
 	}
 	if len(p.Value) == 0 {
 		return StateFact{}, &InvalidStateFactError{Field: "value", Reason: "is required"}
-	}
-	if len(p.Value) > maxValueBytes {
-		return StateFact{}, &InvalidStateFactError{Field: "value", Reason: fmt.Sprintf("exceeds %d bytes", maxValueBytes)}
 	}
 	return StateFact{Entity: entity, Predicate: predicate, Value: p.Value}, nil
 }

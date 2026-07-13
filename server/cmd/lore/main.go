@@ -121,14 +121,24 @@ func workerCmd() *cobra.Command {
 				return err
 			}
 
-			w, err := core.NewWorker(ctx, core.Config{
-				DatabaseURL: cfg.DatabaseURL,
-				APIKey:      cfg.APIKey,
-			}, core.WithExtractor(extractor))
+			// Open the working-memory stripe (same config as serve): the worker routes kind:"state" events
+			// to it when healthy, and to a durable claim otherwise. Unset disables it; a malformed URL is
+			// fatal; unreachable degrades. The worker takes ownership and closes it.
+			wm, err := workmem.Open(ctx, cfg.ValkeyURL)
 			if err != nil {
 				return err
 			}
-			defer w.Close()
+			slog.InfoContext(ctx, "working memory", slog.String("mode", wm.Mode().String()))
+
+			w, err := core.NewWorker(ctx, core.Config{
+				DatabaseURL: cfg.DatabaseURL,
+				APIKey:      cfg.APIKey,
+			}, core.WithExtractor(extractor), core.WithWorkmem(wm))
+			if err != nil {
+				wm.Close()
+				return err
+			}
+			defer w.Close() // closes the store and the working-memory stripe
 
 			slog.InfoContext(ctx, "starting worker", slog.String("version", core.Version))
 			return w.Start(ctx)
