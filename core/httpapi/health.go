@@ -9,6 +9,10 @@ type Health struct {
 	Version string `json:"version"`
 	DB      string `json:"db"`
 	Queue   string `json:"queue"`
+	// Workmem is the working-memory stripe's mode: "ok", "degraded", or "disabled". It is reported for
+	// visibility but never affects Status — the stripe is optional and Postgres stays authoritative, so a
+	// degraded or absent cache must not fail the instance.
+	Workmem string `json:"workmem"`
 }
 
 // handleHealthz reports process version and dependency health. It returns 200
@@ -23,7 +27,7 @@ type Health struct {
 // /readyz (dependencies ok) when we add that deployment target.
 func (a *API) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	h := Health{Status: "ok", Version: a.version, DB: "ok", Queue: "ok"}
+	h := Health{Status: "ok", Version: a.version, DB: "ok", Queue: "ok", Workmem: a.workmem.Mode().String()}
 
 	if err := a.db.Ping(ctx); err != nil {
 		h.DB = "error"

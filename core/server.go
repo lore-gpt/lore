@@ -12,6 +12,7 @@ import (
 	"github.com/lore-gpt/lore/core/httpapi"
 	"github.com/lore-gpt/lore/core/queue"
 	"github.com/lore-gpt/lore/core/store"
+	"github.com/lore-gpt/lore/core/workmem"
 )
 
 // Config is the composition input shared by the server and worker. The OSS
@@ -21,6 +22,9 @@ type Config struct {
 	Addr        string // HTTP listen address for the server, e.g. ":8080"
 	DatabaseURL string // Postgres DSN
 	APIKey      string // bearer token required on /v1 routes
+	// WorkmemMaxValueBytes bounds a working-memory (kind:"state") fact's value at ingestion; 0 uses the
+	// package default.
+	WorkmemMaxValueBytes int
 }
 
 // extensions holds the swappable extension-point implementations. Phase 0 wires
@@ -31,6 +35,9 @@ type extensions struct {
 	adjudicator ext.Adjudicator
 	metering    ext.MeteringSink
 	extractor   ext.Extractor
+	// workmem is optional infrastructure, not a swappable ext seam: the run-scoped working-memory store.
+	// It defaults to a disabled no-op, so a composition without a cache runs unchanged.
+	workmem workmem.Store
 }
 
 func defaultExtensions() extensions {
@@ -39,12 +46,15 @@ func defaultExtensions() extensions {
 		adjudicator: ext.LWW{},
 		metering:    ext.NoopMetering{},
 		extractor:   ext.FixtureExtractor{},
+		workmem:     workmem.NewDisabled(),
 	}
 }
 
 // resolveExtensions applies opts over the OSS defaults and rejects a nil
 // override so a misconfigured composition fails at construction, not at first
-// use in Phase 1.
+// use in Phase 1. workmem is optional: a nil override coerces to the disabled
+// no-op rather than failing the boot, so a caller can pass an unconditionally
+// opened store without a nil check.
 func resolveExtensions(opts []Option) (extensions, error) {
 	e := defaultExtensions()
 	for _, o := range opts {
@@ -52,6 +62,9 @@ func resolveExtensions(opts []Option) (extensions, error) {
 	}
 	if e.policy == nil || e.adjudicator == nil || e.metering == nil || e.extractor == nil {
 		return extensions{}, errors.New("core: extension point set to nil")
+	}
+	if e.workmem == nil {
+		e.workmem = workmem.NewDisabled()
 	}
 	return e, nil
 }
@@ -90,14 +103,23 @@ func WithExtractor(x ext.Extractor) Option {
 	return func(e *extensions) { e.extractor = x }
 }
 
+// WithWorkmem injects the working-memory store. The OSS binary opens it from
+// LORE_VALKEY_URL; when that is unset the store is disabled and hot facts fall
+// through to durable extraction. Tests inject an in-memory store. A nil argument
+// coerces to the disabled no-op.
+func WithWorkmem(s workmem.Store) Option {
+	return func(e *extensions) { e.workmem = s }
+}
+
 // Server is the HTTP-serving composition: the store, an insert-only queue
 // client, and the HTTP API. It enqueues extraction jobs but structurally cannot
 // work them — that is the Worker's role.
 type Server struct {
-	store *store.Store
-	queue *queue.Queue
-	http  *http.Server
-	ext   extensions
+	store   *store.Store
+	queue   *queue.Queue
+	http    *http.Server
+	ext     extensions
+	workmem workmem.Store
 }
 
 // NewServer composes the HTTP server from cfg, defaulting the extension points
@@ -120,12 +142,14 @@ func NewServer(ctx context.Context, cfg Config, opts ...Option) (*Server, error)
 	}
 
 	api := httpapi.New(httpapi.Config{
-		Pool:     st.Pool,
-		Enqueuer: q,
-		DB:       st,
-		Queue:    q,
-		APIKey:   cfg.APIKey,
-		Version:  Version,
+		Pool:                 st.Pool,
+		Enqueuer:             q,
+		DB:                   st,
+		Queue:                q,
+		APIKey:               cfg.APIKey,
+		Version:              Version,
+		Workmem:              e.workmem,
+		WorkmemMaxValueBytes: cfg.WorkmemMaxValueBytes,
 	})
 
 	return &Server{
@@ -136,7 +160,8 @@ func NewServer(ctx context.Context, cfg Config, opts ...Option) (*Server, error)
 			Handler:           api.Handler(),
 			ReadHeaderTimeout: 10 * time.Second,
 		},
-		ext: e,
+		ext:     e,
+		workmem: e.workmem,
 	}, nil
 }
 
@@ -164,7 +189,9 @@ func (s *Server) Start(ctx context.Context) error {
 	}
 }
 
-// Close releases the Server's resources (the database pool).
+// Close releases the Server's resources (the database pool and the working-memory
+// store's client and probe).
 func (s *Server) Close() {
 	s.store.Close()
+	s.workmem.Close()
 }

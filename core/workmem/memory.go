@@ -17,6 +17,11 @@ func (noopStore) GetAll(context.Context, string, string) ([]Entry, error) {
 func (noopStore) Mode() Mode { return Disabled }
 func (noopStore) Close()     {}
 
+// NewDisabled returns the no-op Store (Mode Disabled): Set drops the value and Get finds nothing, so hot
+// facts fall through to durable extraction. It is the safe default for a composition that never injects a
+// store, so callers never hold a nil Store.
+func NewDisabled() Store { return noopStore{} }
+
 // NewMemory returns an in-memory Store (always Healthy). It backs unit tests and any composition that
 // wants working memory without an external cache. It does not implement the idle TTL — expiry is a
 // property of the Valkey store, not the port.

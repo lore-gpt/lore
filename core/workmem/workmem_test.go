@@ -50,6 +50,24 @@ func TestOpenEmptyURLIsDisabled(t *testing.T) {
 	}
 }
 
+// TestOpenMalformedURLIsFatal locks the documented contract that a malformed URL fails the boot (the serve
+// command surfaces it), unlike an unreachable server (which degrades). ParseURL fails synchronously, so no
+// cache is needed — this stays a unit test.
+func TestOpenMalformedURLIsFatal(t *testing.T) {
+	for _, url := range []string{":::bad", "http://", "://nope"} {
+		s, err := Open(context.Background(), url)
+		if err == nil {
+			if s != nil {
+				s.Close()
+			}
+			t.Errorf("Open(%q) returned nil error, want a fatal config error", url)
+		}
+		if s != nil {
+			t.Errorf("Open(%q) returned a non-nil store, want nil on a malformed URL", url)
+		}
+	}
+}
+
 func TestMemoryStore(t *testing.T) {
 	ctx := context.Background()
 	s := NewMemory()

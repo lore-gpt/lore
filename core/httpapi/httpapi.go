@@ -17,6 +17,8 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/lore-gpt/lore/core/workmem"
 )
 
 // Enqueuer schedules the follow-up extraction for an accepted event. It runs on
@@ -43,27 +45,41 @@ type Config struct {
 	Queue    Pinger        // /healthz queue probe
 	APIKey   string        // bearer token required on /v1 routes
 	Version  string        // reported by /healthz
+	// Workmem is the working-memory store: a kind:"state" event is written through to it after commit,
+	// and /healthz reports its mode. A nil value coerces to the disabled no-op.
+	Workmem workmem.Store
+	// WorkmemMaxValueBytes bounds a state fact's value at ingestion; 0 uses the package default.
+	WorkmemMaxValueBytes int
 }
 
 // API holds the wired dependencies and builds the router.
 type API struct {
-	pool     *pgxpool.Pool
-	enqueuer Enqueuer
-	db       Pinger
-	queue    Pinger
-	apiKey   string
-	version  string
+	pool                 *pgxpool.Pool
+	enqueuer             Enqueuer
+	db                   Pinger
+	queue                Pinger
+	apiKey               string
+	version              string
+	workmem              workmem.Store
+	workmemMaxValueBytes int
 }
 
-// New returns an API bound to cfg.
+// New returns an API bound to cfg. A nil Workmem coerces to the disabled no-op so
+// handlers never hold a nil store.
 func New(cfg Config) *API {
+	wm := cfg.Workmem
+	if wm == nil {
+		wm = workmem.NewDisabled()
+	}
 	return &API{
-		pool:     cfg.Pool,
-		enqueuer: cfg.Enqueuer,
-		db:       cfg.DB,
-		queue:    cfg.Queue,
-		apiKey:   cfg.APIKey,
-		version:  cfg.Version,
+		pool:                 cfg.Pool,
+		enqueuer:             cfg.Enqueuer,
+		db:                   cfg.DB,
+		queue:                cfg.Queue,
+		apiKey:               cfg.APIKey,
+		version:              cfg.Version,
+		workmem:              wm,
+		workmemMaxValueBytes: cfg.WorkmemMaxValueBytes,
 	}
 }
 

@@ -7,6 +7,7 @@ import (
 
 	"github.com/lore-gpt/lore/core/queue"
 	"github.com/lore-gpt/lore/core/store"
+	"github.com/lore-gpt/lore/core/workmem"
 )
 
 // Worker is the job-processing composition: the store plus a queue client that
@@ -14,9 +15,10 @@ import (
 // Server, so a downstream build injects the same extension implementations into
 // both roles.
 type Worker struct {
-	store *store.Store
-	queue *queue.Queue
-	ext   extensions
+	store   *store.Store
+	queue   *queue.Queue
+	ext     extensions
+	workmem workmem.Store
 }
 
 // NewWorker composes the job worker from cfg. Phase 1 wires the extractor's
@@ -37,7 +39,7 @@ func NewWorker(ctx context.Context, cfg Config, opts ...Option) (*Worker, error)
 		return nil, fmt.Errorf("build worker queue: %w", err)
 	}
 
-	return &Worker{store: st, queue: q, ext: e}, nil
+	return &Worker{store: st, queue: q, ext: e, workmem: e.workmem}, nil
 }
 
 // Start begins working jobs until ctx is canceled, then stops gracefully.
@@ -58,7 +60,10 @@ func (w *Worker) Start(ctx context.Context) error {
 	return w.queue.Stop(stopCtx)
 }
 
-// Close releases the Worker's resources (the database pool).
+// Close releases the Worker's resources (the database pool and, when a downstream
+// build injects one via WithWorkmem, the working-memory store's client and probe).
+// The OSS worker's default is the disabled no-op, whose Close is a no-op.
 func (w *Worker) Close() {
 	w.store.Close()
+	w.workmem.Close()
 }
