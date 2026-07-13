@@ -6,6 +6,7 @@ package jobs
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sort"
@@ -123,7 +124,7 @@ func (w *ExtractRunWorker) Work(ctx context.Context, job *river.Job[ExtractRunAr
 		if state.ExtractionBatchCoveredSeq == nil {
 			return fmt.Errorf("extract_run: pending batch with no covered seq (corrupt run state)")
 		}
-		return w.collectBatch(ctx, job, projectID, runID, *state.ExtractionBatchID, *state.ExtractionBatchCoveredSeq)
+		return w.collectBatch(ctx, job, projectID, runID, state.CoveredSeq, *state.ExtractionBatchID, *state.ExtractionBatchCoveredSeq)
 	}
 
 	// Submit / realtime phase: debounce over the events past the checkpoint, then read them. Snoozing
@@ -193,13 +194,15 @@ func (w *ExtractRunWorker) Work(ctx context.Context, job *river.Job[ExtractRunAr
 			return fmt.Errorf("extract_run: extract: %w", err)
 		}
 	}
-	return w.persistAndDrain(ctx, job, projectID, runID, coveredSeq, bySeq, res)
+	return w.persistAndDrain(ctx, job, projectID, runID, state.CoveredSeq, coveredSeq, bySeq, res)
 }
 
 // collectBatch handles the economy collect phase: it polls the run's pending batch and, once the
 // provider has finished, re-reads the window the batch covered to rebuild provenance and persists the
 // result — advancing the checkpoint to the submit-time seq and clearing the batch state atomically.
-func (w *ExtractRunWorker) collectBatch(ctx context.Context, job *river.Job[ExtractRunArgs], projectID, runID pgtype.UUID, handle string, batchCoveredSeq int64) error {
+// expectedCoveredSeq is the checkpoint the collect started from (unchanged since submit, which moved only
+// the batch columns), which the persist compare-and-swaps on.
+func (w *ExtractRunWorker) collectBatch(ctx context.Context, job *river.Job[ExtractRunArgs], projectID, runID pgtype.UUID, expectedCoveredSeq int64, handle string, batchCoveredSeq int64) error {
 	batch, ok := w.extractor.(ext.BatchExtractor)
 	if !ok {
 		// A batch was submitted by an earlier attempt but this worker's extractor cannot collect it
@@ -237,26 +240,34 @@ func (w *ExtractRunWorker) collectBatch(ctx context.Context, job *river.Job[Extr
 		slog.Int("memories", len(res.Memories)),
 		slog.Int("claims", len(res.Claims)),
 		slog.Int("entities", len(res.Entities)))
-	return w.persistAndDrain(ctx, job, projectID, runID, batchCoveredSeq, bySeq, res)
+	return w.persistAndDrain(ctx, job, projectID, runID, expectedCoveredSeq, batchCoveredSeq, bySeq, res)
 }
 
 // persistAndDrain resolves the extractor's candidates against the read events, persists them while
-// advancing the checkpoint to coveredSeq (clearing any batch state in the same transaction), then
-// drains any tail that arrived while the pass ran.
-func (w *ExtractRunWorker) persistAndDrain(ctx context.Context, job *river.Job[ExtractRunArgs], projectID, runID pgtype.UUID, coveredSeq int64, bySeq map[int64]db.Event, res ext.ExtractResult) error {
+// advancing the checkpoint from expectedCoveredSeq to coveredSeq (clearing any batch state in the same
+// transaction), then drains any tail that arrived while the pass ran.
+func (w *ExtractRunWorker) persistAndDrain(ctx context.Context, job *river.Job[ExtractRunArgs], projectID, runID pgtype.UUID, expectedCoveredSeq, coveredSeq int64, bySeq map[int64]db.Event, res ext.ExtractResult) error {
 	memories, entities, claims := resolveCandidates(ctx, job.Args.RunID, bySeq, res)
 
 	// Persist the memories, entities, and claims and advance the checkpoint in one transaction: a
 	// committed pass moves the checkpoint past its events so they are never reprocessed, and a crashed
 	// one rolls it all back together.
 	if err := w.persister.Persist(ctx, PersistInput{
-		ProjectID:  projectID,
-		RunID:      runID,
-		CoveredSeq: coveredSeq,
-		Memories:   memories,
-		Entities:   entities,
-		Claims:     claims,
+		ProjectID:          projectID,
+		RunID:              runID,
+		ExpectedCoveredSeq: expectedCoveredSeq,
+		CoveredSeq:         coveredSeq,
+		Memories:           memories,
+		Entities:           entities,
+		Claims:             claims,
 	}); err != nil {
+		// A concurrent pass for this run advanced the checkpoint first: it owns this window and its tail,
+		// so this pass's writes were rolled back and there is nothing more to do.
+		if errors.Is(err, errCheckpointConflict) {
+			slog.InfoContext(ctx, "extract_run: checkpoint advanced concurrently; another pass owns the window",
+				slog.String("run_id", job.Args.RunID))
+			return nil
+		}
 		return fmt.Errorf("extract_run: persist: %w", err)
 	}
 

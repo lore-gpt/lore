@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/google/uuid"
@@ -12,6 +13,12 @@ import (
 
 	"github.com/lore-gpt/lore/core/store/db"
 )
+
+// uuidString renders a pgtype.UUID as its canonical string for logging. An invalid (zero) UUID renders
+// as the nil UUID, which is fine for a log line.
+func uuidString(u pgtype.UUID) string {
+	return uuid.UUID(u.Bytes).String()
+}
 
 // Persister commits one extraction pass: it writes the distilled memories, entities, and claims and
 // advances the run's checkpoint, all in a single transaction. That atomicity is what makes a
@@ -28,16 +35,20 @@ type Persister interface {
 }
 
 // PersistInput is one committed unit of extraction for a run: the distilled memories, the entities
-// they mention, and the structured claims — plus the checkpoint to advance to. CoveredSeq is the
-// highest seq the pass READ (gated events included), so archived machine chatter is marked consumed
-// and never re-read. Claims must be ordered by SourceSeq so subject conflicts resolve last-write-wins.
+// they mention, and the structured claims — plus the checkpoint move. CoveredSeq is the highest seq the
+// pass READ (gated events included), so archived machine chatter is marked consumed and never re-read.
+// ExpectedCoveredSeq is the checkpoint value the pass started from; the persister advances the checkpoint
+// with a compare-and-swap on it, so a concurrent pass that already advanced this run makes the advance a
+// no-op and this pass rolls back rather than double-writing. Claims must be ordered by SourceSeq so
+// subject conflicts resolve last-write-wins.
 type PersistInput struct {
-	ProjectID  pgtype.UUID
-	RunID      pgtype.UUID
-	CoveredSeq int64
-	Memories   []MemoryWrite
-	Entities   []EntityWrite
-	Claims     []ClaimWrite
+	ProjectID          pgtype.UUID
+	RunID              pgtype.UUID
+	ExpectedCoveredSeq int64
+	CoveredSeq         int64
+	Memories           []MemoryWrite
+	Entities           []EntityWrite
+	Claims             []ClaimWrite
 }
 
 // MemoryWrite is one memory ready to store, with provenance already resolved from the source event:
@@ -88,13 +99,28 @@ func NewPGPersister(store tenantRunner) *PGPersister {
 }
 
 // Persist writes the pass's entities, memories, and claims and advances the run checkpoint in one
-// transaction. Entities are registered first so claims resolve their subjects; memories are indexed by
-// source seq so a claim from the same event links to its memory; claims apply last-write-wins per
-// subject (supersede the active claim, then insert). The checkpoint advance is guarded to only move
-// forward, so a duplicate pass is a no-op rather than a regression.
+// transaction. It first serialises the per-entity critical section by locking every entity the pass
+// touches, so a concurrent pass over a shared entity waits rather than racing. Entities are registered
+// so claims resolve their subjects; each memory is deduplicated against the project's live memories
+// (identical content merges into the existing row rather than inserting a duplicate) and indexed by
+// source seq so a same-event claim links to it; claims apply last-write-wins per subject (supersede the
+// active claim, then insert). The checkpoint advance is a compare-and-swap on the value the pass started
+// from, so a concurrent double-delivery leaves exactly one set of rows and one advance: the loser's
+// advance matches no row and it rolls back with errCheckpointConflict.
 func (p *PGPersister) Persist(ctx context.Context, in PersistInput) error {
 	return p.store.WithProject(ctx, in.ProjectID, func(tx pgx.Tx) error {
 		q := db.New(tx)
+
+		// The entity context of this pass: every entity it touches (mentions and claim subjects). It both
+		// serialises the critical section (the lock set) and scopes dedup (folded into each memory's
+		// fingerprint), so identical text in a different entity context is not merged.
+		names := entityNames(in)
+
+		// Serialise the whole per-entity critical section before any write: lock every entity this pass
+		// touches, all at once, deadlock-free.
+		if err := acquireEntityLocks(ctx, q, uuidString(in.RunID), in.ProjectID, names); err != nil {
+			return err
+		}
 
 		// Register mentioned entities up front so their names resolve to ids for the claims below.
 		entityIDs := make(map[string]pgtype.UUID, len(in.Entities))
@@ -106,20 +132,20 @@ func (p *PGPersister) Persist(ctx context.Context, in PersistInput) error {
 			entityIDs[e.Name] = id
 		}
 
-		// Insert memories, indexing the first memory per source event so a same-event claim can link
-		// to it (a claim from an event with no memory is stored standalone, memory_id NULL).
+		// Deduplicate then persist memories, indexing the first memory per source event so a same-event
+		// claim can link to it (a claim from an event with no memory is stored standalone, memory_id
+		// NULL). A duplicate restatement merges into the existing memory instead of inserting a new row.
 		memoryBySeq := make(map[int64]pgtype.UUID, len(in.Memories))
+		var inserted, mergedCount int
 		for _, m := range in.Memories {
-			agent := m.CreatedByAgent
-			id, err := q.InsertMemory(ctx, db.InsertMemoryParams{
-				ProjectID:      in.ProjectID,
-				Kind:           m.Kind,
-				Content:        m.Content,
-				SourceEventID:  m.SourceEventID,
-				CreatedByAgent: &agent,
-			})
+			id, merged, err := consolidateMemory(ctx, q, in.ProjectID, names, m)
 			if err != nil {
-				return fmt.Errorf("insert memory: %w", err)
+				return err
+			}
+			if merged {
+				mergedCount++
+			} else {
+				inserted++
 			}
 			if _, ok := memoryBySeq[m.SourceSeq]; !ok {
 				memoryBySeq[m.SourceSeq] = id
@@ -169,13 +195,28 @@ func (p *PGPersister) Persist(ctx context.Context, in PersistInput) error {
 			}
 		}
 
-		if _, err := q.AdvanceCoveredSeq(ctx, db.AdvanceCoveredSeqParams{
-			ProjectID:  in.ProjectID,
-			RunID:      in.RunID,
-			CoveredSeq: in.CoveredSeq,
-		}); err != nil {
+		// Advance the checkpoint with a compare-and-swap on the value the pass started from. A match moves
+		// it forward and commits everything above with it; a mismatch (another pass advanced this run
+		// first) touches no row, so this pass rolls back its writes and reports the conflict.
+		rows, err := q.AdvanceCoveredSeq(ctx, db.AdvanceCoveredSeqParams{
+			NewCoveredSeq:      in.CoveredSeq,
+			RunID:              in.RunID,
+			ProjectID:          in.ProjectID,
+			ExpectedCoveredSeq: in.ExpectedCoveredSeq,
+		})
+		if err != nil {
 			return fmt.Errorf("advance checkpoint: %w", err)
 		}
+		if rows == 0 {
+			return errCheckpointConflict
+		}
+
+		slog.InfoContext(ctx, "consolidation pass persisted",
+			slog.String("run_id", uuidString(in.RunID)),
+			slog.Int("memories_inserted", inserted),
+			slog.Int("memories_merged", mergedCount),
+			slog.Int("claims", len(in.Claims)),
+			slog.Int("entities", len(in.Entities)))
 		return nil
 	})
 }
