@@ -7,7 +7,10 @@ VALUES ($1)
 RETURNING id, name, created_at;
 
 -- name: InsertProject :one
--- lore:tenant-exempt: creates the tenant (projects) row itself — there is no project to scope by
+-- lore:tenant-exempt: creates the tenant (projects) row itself — there is no project to scope by.
+-- The RETURNING list is a fixed subset (not the whole row): later migrations add columns to projects,
+-- and listing only long-standing columns keeps this insert runnable at any schema version a migration
+-- test down-migrates to. That is why it returns a bespoke InsertProjectRow, not the db.Project model.
 INSERT INTO projects (org_id, name)
 VALUES ($1, $2)
 RETURNING id, org_id, name, created_at, active_model_id, retain_events_days, retain_memories_days;

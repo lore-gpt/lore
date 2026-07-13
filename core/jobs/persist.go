@@ -20,6 +20,11 @@ import (
 // is reprocessed cleanly. PGPersister is the OSS implementation; tests supply a fake.
 type Persister interface {
 	Persist(ctx context.Context, in PersistInput) error
+	// SetRunBatch records the handle and covered seq of a just-submitted economy-mode batch on the
+	// run, so a later job attempt can collect it. It is a separate tenant-scoped write from Persist
+	// because a batch's submit and collect happen in different attempts; AdvanceCoveredSeq clears the
+	// recorded state when the collected pass commits.
+	SetRunBatch(ctx context.Context, projectID, runID pgtype.UUID, handle string, coveredSeq int64) error
 }
 
 // PersistInput is one committed unit of extraction for a run: the distilled memories, the entities
@@ -170,6 +175,28 @@ func (p *PGPersister) Persist(ctx context.Context, in PersistInput) error {
 			CoveredSeq: in.CoveredSeq,
 		}); err != nil {
 			return fmt.Errorf("advance checkpoint: %w", err)
+		}
+		return nil
+	})
+}
+
+// SetRunBatch records a submitted batch's handle and covered seq on the run inside a tenant-scoped
+// transaction, so a later attempt can collect it. A zero-row update means the run is not visible in
+// the project (deleted, or a scoping error) — surfaced as an error rather than silently orphaning the
+// submitted batch.
+func (p *PGPersister) SetRunBatch(ctx context.Context, projectID, runID pgtype.UUID, handle string, coveredSeq int64) error {
+	return p.store.WithProject(ctx, projectID, func(tx pgx.Tx) error {
+		rows, err := db.New(tx).SetRunBatch(ctx, db.SetRunBatchParams{
+			BatchID:         &handle,
+			BatchCoveredSeq: &coveredSeq,
+			RunID:           runID,
+			ProjectID:       projectID,
+		})
+		if err != nil {
+			return fmt.Errorf("set run batch: %w", err)
+		}
+		if rows == 0 {
+			return fmt.Errorf("set run batch: run not found in project")
 		}
 		return nil
 	})

@@ -13,7 +13,9 @@ import (
 
 const advanceCoveredSeq = `-- name: AdvanceCoveredSeq :execrows
 UPDATE runs
-SET covered_seq = $1
+SET covered_seq = $1,
+    extraction_batch_id = NULL,
+    extraction_batch_covered_seq = NULL
 WHERE id = $2
   AND project_id = $3
   AND covered_seq < $1
@@ -25,10 +27,13 @@ type AdvanceCoveredSeqParams struct {
 	ProjectID  pgtype.UUID `json:"project_id"`
 }
 
-// Advance a run's extraction checkpoint to the highest seq the pass consumed, never backward. The
-// covered_seq < guard keeps it monotonic and makes a duplicate advance a no-op (0 rows). This runs
-// in the same transaction as the pass's memory writes, so the checkpoint and the rows it accounts
-// for commit together — the atomicity that makes a coalesced pass idempotent.
+// Advance a run's extraction checkpoint to the highest seq the pass consumed, never backward, and
+// clear any pending batch state in the same single-row UPDATE. A committed pass has no batch in
+// flight; the batch columns are already NULL for a realtime pass, so clearing them is a no-op there
+// and drops the recorded handle for a collected economy pass. The covered_seq < guard keeps the
+// checkpoint monotonic and makes a duplicate advance a no-op (0 rows). This runs in the same
+// transaction as the pass's memory writes, so the checkpoint, the rows it accounts for, and the batch
+// clear commit together — the atomicity that makes a coalesced pass idempotent.
 func (q *Queries) AdvanceCoveredSeq(ctx context.Context, arg AdvanceCoveredSeqParams) (int64, error) {
 	result, err := q.db.Exec(ctx, advanceCoveredSeq, arg.CoveredSeq, arg.RunID, arg.ProjectID)
 	if err != nil {
@@ -72,6 +77,36 @@ func (q *Queries) GetEvent(ctx context.Context, arg GetEventParams) (Event, erro
 		&i.Seq,
 		&i.ProjectID,
 	)
+	return i, err
+}
+
+const getRunExtractionState = `-- name: GetRunExtractionState :one
+SELECT r.extraction_batch_id,
+       r.extraction_batch_covered_seq,
+       (SELECT extraction_mode FROM projects WHERE projects.id = r.project_id) AS extraction_mode
+FROM runs r
+WHERE r.id = $1 AND r.project_id = $2
+`
+
+type GetRunExtractionStateParams struct {
+	RunID     pgtype.UUID `json:"run_id"`
+	ProjectID pgtype.UUID `json:"project_id"`
+}
+
+type GetRunExtractionStateRow struct {
+	ExtractionBatchID         *string `json:"extraction_batch_id"`
+	ExtractionBatchCoveredSeq *int64  `json:"extraction_batch_covered_seq"`
+	ExtractionMode            string  `json:"extraction_mode"`
+}
+
+// The run's extraction mode (from its project) and any pending batch, in one project-scoped read. The
+// mode comes via a scalar subquery so the statement stays single-table (runs) for the generated return
+// type; a NULL extraction_batch_id means no batch is in flight and the pass is in its submit/realtime
+// phase, while a non-NULL one means an earlier attempt submitted a batch that is awaiting collection.
+func (q *Queries) GetRunExtractionState(ctx context.Context, arg GetRunExtractionStateParams) (GetRunExtractionStateRow, error) {
+	row := q.db.QueryRow(ctx, getRunExtractionState, arg.RunID, arg.ProjectID)
+	var i GetRunExtractionStateRow
+	err := row.Scan(&i.ExtractionBatchID, &i.ExtractionBatchCoveredSeq, &i.ExtractionMode)
 	return i, err
 }
 
@@ -188,4 +223,33 @@ func (q *Queries) RunExtractionReadiness(ctx context.Context, arg RunExtractionR
 	var i RunExtractionReadinessRow
 	err := row.Scan(&i.EventCount, &i.IdleSeconds)
 	return i, err
+}
+
+const setRunBatch = `-- name: SetRunBatch :execrows
+UPDATE runs
+SET extraction_batch_id = $1,
+    extraction_batch_covered_seq = $2
+WHERE id = $3 AND project_id = $4
+`
+
+type SetRunBatchParams struct {
+	BatchID         *string     `json:"batch_id"`
+	BatchCoveredSeq *int64      `json:"batch_covered_seq"`
+	RunID           pgtype.UUID `json:"run_id"`
+	ProjectID       pgtype.UUID `json:"project_id"`
+}
+
+// Record the handle and covered seq of the batch a run's economy-mode pass just submitted, so a later
+// attempt collects it. Project-scoped. AdvanceCoveredSeq clears these when the collected pass commits.
+func (q *Queries) SetRunBatch(ctx context.Context, arg SetRunBatchParams) (int64, error) {
+	result, err := q.db.Exec(ctx, setRunBatch,
+		arg.BatchID,
+		arg.BatchCoveredSeq,
+		arg.RunID,
+		arg.ProjectID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
