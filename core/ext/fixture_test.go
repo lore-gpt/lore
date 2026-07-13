@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"testing"
 	"time"
 )
@@ -212,5 +213,95 @@ func TestFixtureExtractorErrorInjection(t *testing.T) {
 	})
 }
 
-// Compile-time proof the OSS default satisfies the Extractor interface.
-var _ Extractor = FixtureExtractor{}
+func TestFixtureExtractorBatchRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	// A window mixing every candidate kind, including a valueless claim (nil Value) and a temporal
+	// one — the batch path must reproduce the synchronous result exactly, nil-ness and all.
+	in := ExtractInput{
+		ProjectID: "p", RunID: "r",
+		Events: []InputEvent{
+			evt(1, "a", `{"memory":"batched fact"}`),
+			evt(2, "b", `{"tool":"log"}`),                           // gated-style noise contributes nothing
+			evt(3, "a", `{"claim":{"entity":"e","predicate":"p"}}`), // valueless → Value must stay nil
+			evt(4, "a", `{"claim":{"entity":"deploy","predicate":"status","value":"done","event_time":"2026-01-02T03:04:05Z"}}`),
+			evt(5, "a", `{"entities":[{"name":"E","type":"svc","aliases":["e1","e2"]}]}`),
+		},
+	}
+
+	handle, err := FixtureExtractor{}.SubmitBatch(ctx, in)
+	if err != nil {
+		t.Fatalf("SubmitBatch: %v", err)
+	}
+	if handle == "" {
+		t.Fatal("SubmitBatch returned an empty handle")
+	}
+
+	res, done, err := FixtureExtractor{}.CollectBatch(ctx, handle)
+	if err != nil {
+		t.Fatalf("CollectBatch: %v", err)
+	}
+	if !done {
+		t.Fatal("CollectBatch done = false, want the fixture batch to be immediately ready")
+	}
+
+	// The batch path must distil exactly what the synchronous path would — every field, not just
+	// counts. A result round-trip would fail this on the valueless claim (nil Value becoming JSON null).
+	want, err := FixtureExtractor{}.Extract(ctx, in)
+	if err != nil {
+		t.Fatalf("Extract: %v", err)
+	}
+	if !reflect.DeepEqual(res, want) {
+		t.Fatalf("batch result != sync result\n batch = %+v\n  sync = %+v", res, want)
+	}
+
+	// Pin the fidelity-critical case explicitly: the valueless claim's Value stays nil (the write path
+	// drops a nil value but keeps a literal JSON null — the two must never be conflated).
+	if len(res.Claims) != 2 {
+		t.Fatalf("claims = %d, want 2", len(res.Claims))
+	}
+	if res.Claims[0].SourceSeq != 3 || res.Claims[0].Value != nil {
+		t.Errorf("valueless claim = %+v (value=%q), want seq 3 and a nil value", res.Claims[0], res.Claims[0].Value)
+	}
+	if res.Claims[1].SourceSeq != 4 || string(res.Claims[1].Value) != `"done"` || res.Claims[1].EventTime == nil {
+		t.Errorf("valued claim = %+v (value=%q), want seq 4, value \"done\", non-nil event_time", res.Claims[1], res.Claims[1].Value)
+	}
+}
+
+func TestFixtureExtractorBatchErrorSurfacesAtCollect(t *testing.T) {
+	ctx := context.Background()
+	// Submission succeeds; the extraction failure surfaces at collect (modelling a failed batch item),
+	// with no partial result and done=false.
+	in := ExtractInput{Events: []InputEvent{
+		evt(1, "a", `{"memory":"discarded"}`),
+		evt(2, "a", `{"fixture_error":"unavailable"}`),
+	}}
+	handle, err := FixtureExtractor{}.SubmitBatch(ctx, in)
+	if err != nil {
+		t.Fatalf("SubmitBatch: %v (submission should not fail; extraction errors surface at collect)", err)
+	}
+
+	res, done, err := FixtureExtractor{}.CollectBatch(ctx, handle)
+	if !errors.Is(err, ErrExtractorUnavailable) {
+		t.Fatalf("CollectBatch err = %v, want ErrExtractorUnavailable", err)
+	}
+	if done {
+		t.Error("CollectBatch done = true on error, want false")
+	}
+	if len(res.Memories) != 0 || len(res.Claims) != 0 || len(res.Entities) != 0 {
+		t.Errorf("a failed collect must return no partial result, got %+v", res)
+	}
+}
+
+func TestFixtureExtractorCollectBatchRejectsBadHandle(t *testing.T) {
+	var f FixtureExtractor
+	_, _, err := f.CollectBatch(context.Background(), "not-base64!!")
+	if err == nil {
+		t.Error("CollectBatch with a malformed handle = nil error, want an error")
+	}
+}
+
+// Compile-time proof the OSS default satisfies the Extractor interface and the optional batch one.
+var (
+	_ Extractor      = FixtureExtractor{}
+	_ BatchExtractor = FixtureExtractor{}
+)

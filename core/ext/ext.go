@@ -73,6 +73,23 @@ type Extractor interface {
 	Extract(ctx context.Context, in ExtractInput) (ExtractResult, error)
 }
 
+// BatchExtractor is an optional capability an Extractor may also implement for latency-tolerant
+// batch extraction: submit a window now, collect the distilled result later. It lets the coalesced
+// job release its worker slot while the provider processes the window out of band (e.g. a Batch API
+// with minutes of latency), trading freshness for cost. An Extractor that does not implement this
+// runs only the synchronous Extract path. The two calls span separate job attempts, so the handle
+// is the only state carried between them — the caller persists it and re-derives everything else.
+type BatchExtractor interface {
+	// SubmitBatch submits one window for asynchronous extraction and returns an opaque handle the
+	// caller persists and later passes to CollectBatch. A provider or transport failure returns an
+	// error (e.g. ErrExtractorUnavailable) and no handle; the caller retries the submission.
+	SubmitBatch(ctx context.Context, in ExtractInput) (handle string, err error)
+	// CollectBatch reports whether the batch named by handle has finished. When done is false the
+	// result is empty and the caller polls again later; when done is true it returns the distilled
+	// result. A provider or transport failure returns an error (e.g. ErrExtractorUnavailable).
+	CollectBatch(ctx context.Context, handle string) (res ExtractResult, done bool, err error)
+}
+
 // ExtractInput is one extraction pass over a run's events. Events are ordered by Seq — extraction
 // and provenance are keyed on Seq, never on a client clock.
 type ExtractInput struct {
