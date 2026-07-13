@@ -280,6 +280,107 @@ func TestExtractRunWorker_PersistsWithProvenance(t *testing.T) {
 	}
 }
 
+// TestExtractRunWorker_PersistsClaimsAndEntities proves the worker forwards entities as-is and
+// resolves each claim's provenance (source event) from its seq, drops a claim naming a seq outside
+// the window, and sorts claims by SourceSeq so the persister applies last-write-wins deterministically.
+func TestExtractRunWorker_PersistsClaimsAndEntities(t *testing.T) {
+	ev1ID := pgUUID(t, "aaaaaaaa-0000-0000-0000-000000000001")
+	ev2ID := pgUUID(t, "aaaaaaaa-0000-0000-0000-000000000002")
+	src := &fakeSource{
+		events: []db.Event{
+			{ID: ev1ID, Seq: 1, AgentID: "planner", Payload: []byte(`{"memory":"m"}`)},
+			{ID: ev2ID, Seq: 2, AgentID: "tester", Payload: []byte(`{"claim":{}}`)},
+		},
+		readiness: ready(2),
+	}
+	spy := &spyExtractor{result: ext.ExtractResult{
+		Memories: []ext.CandidateMemory{{Kind: "semantic", Content: "m", SourceSeq: 1}},
+		Entities: []ext.EntityMention{{Name: "auth", Type: "service", Aliases: []string{"auth-svc"}}},
+		Claims: []ext.CandidateClaim{
+			// Out of seq order on purpose; the worker must sort them to seq [1,2] before persisting.
+			{Entity: "auth", Predicate: "status", Value: []byte(`"up"`), SourceSeq: 2},
+			{Entity: "auth", Predicate: "status", Value: []byte(`"down"`), SourceSeq: 1},
+			// Names a seq outside the window -> dropped.
+			{Entity: "ghost", Predicate: "x", Value: []byte(`1`), SourceSeq: 999},
+			// No value (malformed) -> dropped rather than crash the NOT NULL jsonb insert.
+			{Entity: "novalue", Predicate: "p", Value: nil, SourceSeq: 1},
+		},
+	}}
+	per := &spyPersister{}
+	w := jobs.NewExtractRunWorker(src, spy, per, jobs.DefaultDebounce())
+	job := &river.Job[jobs.ExtractRunArgs]{Args: jobs.ExtractRunArgs{ProjectID: uuid.NewString(), RunID: uuid.NewString()}}
+
+	if err := w.Work(context.Background(), job); err != nil {
+		t.Fatalf("Work: %v", err)
+	}
+	if per.calls != 1 {
+		t.Fatalf("persister calls = %d, want 1", per.calls)
+	}
+	in := per.last
+
+	// Entities forwarded as-is.
+	if len(in.Entities) != 1 || in.Entities[0].Name != "auth" || in.Entities[0].Type != "service" {
+		t.Fatalf("entities = %+v, want one {auth, service}", in.Entities)
+	}
+	if len(in.Entities[0].Aliases) != 1 || in.Entities[0].Aliases[0] != "auth-svc" {
+		t.Errorf("entity aliases = %v, want [auth-svc]", in.Entities[0].Aliases)
+	}
+
+	// Memory carries its SourceSeq so the persister can link a same-event claim to it.
+	if len(in.Memories) != 1 || in.Memories[0].SourceSeq != 1 {
+		t.Fatalf("memories = %+v, want one with SourceSeq 1", in.Memories)
+	}
+
+	// The out-of-window and valueless claims are dropped; the remaining two are sorted by SourceSeq
+	// (1 then 2) with provenance resolved to the source event.
+	if len(in.Claims) != 2 {
+		t.Fatalf("claims = %d, want 2 (the seq-999 and no-value claims are dropped)", len(in.Claims))
+	}
+	if in.Claims[0].SourceSeq != 1 || in.Claims[1].SourceSeq != 2 {
+		t.Errorf("claim order = [%d,%d], want [1,2] (sorted for LWW)", in.Claims[0].SourceSeq, in.Claims[1].SourceSeq)
+	}
+	if string(in.Claims[0].Value) != `"down"` || string(in.Claims[1].Value) != `"up"` {
+		t.Errorf("claim values = [%s,%s], want [\"down\",\"up\"] in seq order", in.Claims[0].Value, in.Claims[1].Value)
+	}
+	if in.Claims[0].SourceEventID != ev1ID || in.Claims[1].SourceEventID != ev2ID {
+		t.Errorf("claim provenance = [%v,%v], want [event1, event2]", in.Claims[0].SourceEventID, in.Claims[1].SourceEventID)
+	}
+}
+
+// TestExtractRunWorker_ClaimValueGuard proves the value guard's exact boundary: a claim with no value
+// or a non-well-formed JSON value is dropped (so it cannot abort the NOT NULL jsonb insert and strand
+// the coalesced pass), while a JSON `null` literal — non-empty and valid — is kept.
+func TestExtractRunWorker_ClaimValueGuard(t *testing.T) {
+	ev := pgUUID(t, "bbbbbbbb-0000-0000-0000-000000000001")
+	src := &fakeSource{
+		events:    []db.Event{{ID: ev, Seq: 1, AgentID: "a", Payload: []byte(`{}`)}},
+		readiness: ready(1),
+	}
+	spy := &spyExtractor{result: ext.ExtractResult{
+		Claims: []ext.CandidateClaim{
+			{Entity: "e", Predicate: "empty", Value: nil, SourceSeq: 1},             // dropped: no value
+			{Entity: "e", Predicate: "bad", Value: []byte(`up`), SourceSeq: 1},      // dropped: invalid JSON
+			{Entity: "e", Predicate: "nullok", Value: []byte(`null`), SourceSeq: 1}, // kept: JSON null is valid
+		},
+	}}
+	per := &spyPersister{}
+	w := jobs.NewExtractRunWorker(src, spy, per, jobs.DefaultDebounce())
+	job := &river.Job[jobs.ExtractRunArgs]{Args: jobs.ExtractRunArgs{ProjectID: uuid.NewString(), RunID: uuid.NewString()}}
+
+	if err := w.Work(context.Background(), job); err != nil {
+		t.Fatalf("Work: %v", err)
+	}
+	if per.calls != 1 {
+		t.Fatalf("persister calls = %d, want 1", per.calls)
+	}
+	if len(per.last.Claims) != 1 {
+		t.Fatalf("persisted claims = %d, want 1 (only the JSON-null claim survives)", len(per.last.Claims))
+	}
+	if per.last.Claims[0].Predicate != "nullok" || string(per.last.Claims[0].Value) != "null" {
+		t.Errorf("kept claim = {%q, %s}, want {nullok, null}", per.last.Claims[0].Predicate, per.last.Claims[0].Value)
+	}
+}
+
 // TestExtractRunWorker_DropsOutOfWindowCandidate proves a candidate naming a seq outside the window
 // (a misbehaving extractor) is dropped rather than stored without provenance — but the checkpoint
 // still advances, so the pass does not loop on the same events.

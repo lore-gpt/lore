@@ -1,12 +1,27 @@
--- name: InsertClaim :one
-INSERT INTO claims (memory_id, project_id, entity_id, predicate, value, event_time)
-VALUES ($1, $2, $3, $4, $5, $6)
-RETURNING id, memory_id, project_id, entity_id, predicate, value, event_time, superseded_by, created_at;
+-- name: InsertClaim :exec
+-- Insert one claim with an explicit id. The write path pre-generates the id so it can point a
+-- superseded claim at this replacement before this row exists (see SupersedeActiveClaimBySubject);
+-- the self-FK is deferred, so the pointer is validated at commit. memory_id is nullable — a standalone
+-- claim (no co-produced memory) has none — while source_event_id carries provenance on every claim.
+INSERT INTO claims (id, memory_id, project_id, entity_id, predicate, value, event_time, source_event_id)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8);
 
--- Supersede only a currently-active claim; the row count lets the caller detect a
--- no-op (the claim was already superseded), keeping the one-active-per-subject
--- invariant enforceable from the write path rather than from the index alone.
+-- name: SupersedeActiveClaimBySubject :execrows
+-- Close the currently-active claim for a subject (project, entity, predicate) by pointing it at its
+-- replacement, so a new active claim for the same subject can be inserted without violating
+-- claims_active_subject_key. At most one row matches (the partial-unique index guarantees it), so the
+-- rowcount is 0 (first assertion) or 1 (last-write-wins supersession). The replacement id need not
+-- exist yet — superseded_by is DEFERRABLE, validated at commit once the caller inserts it next.
+UPDATE claims
+SET superseded_by = sqlc.arg(superseded_by)
+WHERE project_id = sqlc.arg(project_id)
+  AND entity_id = sqlc.arg(entity_id)
+  AND predicate = sqlc.arg(predicate)
+  AND superseded_by IS NULL;
+
 -- name: SupersedeClaim :execrows
+-- Supersede a specific claim by id (only if still active), scoped to its project. Distinct from
+-- SupersedeActiveClaimBySubject, which closes whichever claim is active for a subject.
 UPDATE claims
 SET superseded_by = $2
 WHERE id = $1 AND superseded_by IS NULL AND project_id = $3;

@@ -11,43 +11,72 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
-const insertClaim = `-- name: InsertClaim :one
-INSERT INTO claims (memory_id, project_id, entity_id, predicate, value, event_time)
-VALUES ($1, $2, $3, $4, $5, $6)
-RETURNING id, memory_id, project_id, entity_id, predicate, value, event_time, superseded_by, created_at
+const insertClaim = `-- name: InsertClaim :exec
+INSERT INTO claims (id, memory_id, project_id, entity_id, predicate, value, event_time, source_event_id)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 `
 
 type InsertClaimParams struct {
-	MemoryID  pgtype.UUID        `json:"memory_id"`
-	ProjectID pgtype.UUID        `json:"project_id"`
-	EntityID  pgtype.UUID        `json:"entity_id"`
-	Predicate string             `json:"predicate"`
-	Value     []byte             `json:"value"`
-	EventTime pgtype.Timestamptz `json:"event_time"`
+	ID            pgtype.UUID        `json:"id"`
+	MemoryID      pgtype.UUID        `json:"memory_id"`
+	ProjectID     pgtype.UUID        `json:"project_id"`
+	EntityID      pgtype.UUID        `json:"entity_id"`
+	Predicate     string             `json:"predicate"`
+	Value         []byte             `json:"value"`
+	EventTime     pgtype.Timestamptz `json:"event_time"`
+	SourceEventID pgtype.UUID        `json:"source_event_id"`
 }
 
-func (q *Queries) InsertClaim(ctx context.Context, arg InsertClaimParams) (Claim, error) {
-	row := q.db.QueryRow(ctx, insertClaim,
+// Insert one claim with an explicit id. The write path pre-generates the id so it can point a
+// superseded claim at this replacement before this row exists (see SupersedeActiveClaimBySubject);
+// the self-FK is deferred, so the pointer is validated at commit. memory_id is nullable — a standalone
+// claim (no co-produced memory) has none — while source_event_id carries provenance on every claim.
+func (q *Queries) InsertClaim(ctx context.Context, arg InsertClaimParams) error {
+	_, err := q.db.Exec(ctx, insertClaim,
+		arg.ID,
 		arg.MemoryID,
 		arg.ProjectID,
 		arg.EntityID,
 		arg.Predicate,
 		arg.Value,
 		arg.EventTime,
+		arg.SourceEventID,
 	)
-	var i Claim
-	err := row.Scan(
-		&i.ID,
-		&i.MemoryID,
-		&i.ProjectID,
-		&i.EntityID,
-		&i.Predicate,
-		&i.Value,
-		&i.EventTime,
-		&i.SupersededBy,
-		&i.CreatedAt,
+	return err
+}
+
+const supersedeActiveClaimBySubject = `-- name: SupersedeActiveClaimBySubject :execrows
+UPDATE claims
+SET superseded_by = $1
+WHERE project_id = $2
+  AND entity_id = $3
+  AND predicate = $4
+  AND superseded_by IS NULL
+`
+
+type SupersedeActiveClaimBySubjectParams struct {
+	SupersededBy pgtype.UUID `json:"superseded_by"`
+	ProjectID    pgtype.UUID `json:"project_id"`
+	EntityID     pgtype.UUID `json:"entity_id"`
+	Predicate    string      `json:"predicate"`
+}
+
+// Close the currently-active claim for a subject (project, entity, predicate) by pointing it at its
+// replacement, so a new active claim for the same subject can be inserted without violating
+// claims_active_subject_key. At most one row matches (the partial-unique index guarantees it), so the
+// rowcount is 0 (first assertion) or 1 (last-write-wins supersession). The replacement id need not
+// exist yet — superseded_by is DEFERRABLE, validated at commit once the caller inserts it next.
+func (q *Queries) SupersedeActiveClaimBySubject(ctx context.Context, arg SupersedeActiveClaimBySubjectParams) (int64, error) {
+	result, err := q.db.Exec(ctx, supersedeActiveClaimBySubject,
+		arg.SupersededBy,
+		arg.ProjectID,
+		arg.EntityID,
+		arg.Predicate,
 	)
-	return i, err
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const supersedeClaim = `-- name: SupersedeClaim :execrows
@@ -62,9 +91,8 @@ type SupersedeClaimParams struct {
 	ProjectID    pgtype.UUID `json:"project_id"`
 }
 
-// Supersede only a currently-active claim; the row count lets the caller detect a
-// no-op (the claim was already superseded), keeping the one-active-per-subject
-// invariant enforceable from the write path rather than from the index alone.
+// Supersede a specific claim by id (only if still active), scoped to its project. Distinct from
+// SupersedeActiveClaimBySubject, which closes whichever claim is active for a subject.
 func (q *Queries) SupersedeClaim(ctx context.Context, arg SupersedeClaimParams) (int64, error) {
 	result, err := q.db.Exec(ctx, supersedeClaim, arg.ID, arg.SupersededBy, arg.ProjectID)
 	if err != nil {

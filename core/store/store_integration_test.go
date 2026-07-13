@@ -297,11 +297,11 @@ func TestMigration0003VersionsClaimsScopes(t *testing.T) {
 	// A subject is (project_id, entity_id, predicate). entity_id is a free-standing
 	// uuid until the entity registry migration adds a reference.
 	entityID := randomUUID(ctx, t, st.Pool)
-	first, err := q.InsertClaim(ctx, db.InsertClaimParams{
-		MemoryID: mem, ProjectID: proj.ID, EntityID: entityID,
+	firstID := randomUUID(ctx, t, st.Pool)
+	if err := q.InsertClaim(ctx, db.InsertClaimParams{
+		ID: firstID, MemoryID: mem, ProjectID: proj.ID, EntityID: entityID,
 		Predicate: "status", Value: []byte(`"open"`),
-	})
-	if err != nil {
+	}); err != nil {
 		t.Fatalf("insert first claim: %v", err)
 	}
 
@@ -324,7 +324,7 @@ func TestMigration0003VersionsClaimsScopes(t *testing.T) {
 		t.Fatalf("begin swap tx: %v", err)
 	}
 	rows, err := q.WithTx(tx).SupersedeClaim(ctx, db.SupersedeClaimParams{
-		ID: first.ID, SupersededBy: replacementID, ProjectID: first.ProjectID,
+		ID: firstID, SupersededBy: replacementID, ProjectID: proj.ID,
 	})
 	if err != nil {
 		_ = tx.Rollback(ctx)
@@ -360,7 +360,7 @@ func TestMigration0003VersionsClaimsScopes(t *testing.T) {
 	}
 	var supersededBy pgtype.UUID
 	if err := st.Pool.QueryRow(ctx,
-		`SELECT superseded_by FROM claims WHERE id = $1`, first.ID).Scan(&supersededBy); err != nil {
+		`SELECT superseded_by FROM claims WHERE id = $1`, firstID).Scan(&supersededBy); err != nil {
 		t.Fatalf("read superseded_by: %v", err)
 	}
 	if supersededBy != replacementID {
