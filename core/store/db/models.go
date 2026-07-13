@@ -28,16 +28,17 @@ type AuditLog struct {
 }
 
 type Claim struct {
-	ID            pgtype.UUID        `json:"id"`
-	MemoryID      pgtype.UUID        `json:"memory_id"`
-	ProjectID     pgtype.UUID        `json:"project_id"`
-	EntityID      pgtype.UUID        `json:"entity_id"`
-	Predicate     string             `json:"predicate"`
-	Value         []byte             `json:"value"`
-	EventTime     pgtype.Timestamptz `json:"event_time"`
-	SupersededBy  pgtype.UUID        `json:"superseded_by"`
-	CreatedAt     pgtype.Timestamptz `json:"created_at"`
-	SourceEventID pgtype.UUID        `json:"source_event_id"`
+	ID               pgtype.UUID        `json:"id"`
+	MemoryID         pgtype.UUID        `json:"memory_id"`
+	ProjectID        pgtype.UUID        `json:"project_id"`
+	EntityID         pgtype.UUID        `json:"entity_id"`
+	Predicate        string             `json:"predicate"`
+	Value            []byte             `json:"value"`
+	EventTime        pgtype.Timestamptz `json:"event_time"`
+	SupersededBy     pgtype.UUID        `json:"superseded_by"`
+	CreatedAt        pgtype.Timestamptz `json:"created_at"`
+	SourceEventID    pgtype.UUID        `json:"source_event_id"`
+	ResolutionReason *string            `json:"resolution_reason"`
 }
 
 type Embedding struct {

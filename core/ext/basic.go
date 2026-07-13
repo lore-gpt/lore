@@ -20,16 +20,21 @@ func (BasicScopePolicy) Authorize(_ context.Context, scopes []string, action str
 	return ErrPermissionDenied
 }
 
-// LWW is the OSS default Adjudicator: last write wins. The value with the newer
-// timestamp survives; an equal or newer incoming write wins the tie.
+// lwwReason and fieldMergeReason identify the policy that produced a resolution; the write path records
+// the identifier alongside the change.
+const (
+	lwwReason        = "last-write-wins"
+	fieldMergeReason = "field-merge"
+)
+
+// LWW is the OSS default Adjudicator: last write wins. Ordering is arrival order — the incoming write is
+// the later one (the caller applies writes in arrival order), so it always survives. The conflict's seqs
+// are per-run and not comparable across runs, so LWW deliberately does not consult them.
 type LWW struct{}
 
 // Resolve implements Adjudicator.
 func (LWW) Resolve(_ context.Context, c Conflict) (Resolution, error) {
-	if c.CurrentAt.After(c.IncomingAt) {
-		return Resolution{Value: c.Current}, nil
-	}
-	return Resolution{Value: c.Incoming}, nil
+	return Resolution{Value: c.Incoming, Reason: lwwReason}, nil
 }
 
 // FieldMerge is an OSS Adjudicator that shallow-merges two JSON objects, with
@@ -51,7 +56,7 @@ func (FieldMerge) Resolve(ctx context.Context, c Conflict) (Resolution, error) {
 	if err != nil {
 		return Resolution{}, fmt.Errorf("ext: merge conflict values: %w", err)
 	}
-	return Resolution{Value: merged}, nil
+	return Resolution{Value: merged, Reason: fieldMergeReason}, nil
 }
 
 // decodeObject unmarshals raw as a JSON object. It reports false when raw is not

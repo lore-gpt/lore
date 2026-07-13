@@ -4,6 +4,7 @@ package queue_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 	"time"
@@ -78,7 +79,7 @@ func TestPGPersisterSetRunBatch(t *testing.T) {
 		t.Fatalf("insert run: %v", err)
 	}
 
-	p := jobs.NewPGPersister(st)
+	p := jobs.NewPGPersister(st, ext.LWW{})
 	if err := p.SetRunBatch(ctx, proj.ID, run.ID, "batch_xyz", 9); err != nil {
 		t.Fatalf("SetRunBatch: %v", err)
 	}
@@ -133,7 +134,7 @@ func TestExtractRunWorkerEconomyBatchPath(t *testing.T) {
 	// Call Work directly: the fixture batch is immediately ready, so the two attempts run back to back
 	// deterministically without waiting on River to reschedule the poll snooze (River's snooze handling
 	// is proven by the debounce tests). IdleWindow 0 lets the debounce process the run at once.
-	worker := jobs.NewExtractRunWorker(db.New(st.Pool), ext.FixtureExtractor{}, jobs.NewPGPersister(st),
+	worker := jobs.NewExtractRunWorker(db.New(st.Pool), ext.FixtureExtractor{}, jobs.NewPGPersister(st, ext.LWW{}),
 		jobs.Debounce{IdleWindow: 0, MaxEvents: 1, BatchPoll: time.Millisecond})
 	job := &river.Job[jobs.ExtractRunArgs]{Args: jobs.ExtractRunArgs{
 		ProjectID: uuid.UUID(proj.ID.Bytes).String(),
@@ -248,7 +249,7 @@ func TestExtractRunWorkerProcessesRun(t *testing.T) {
 	st := migratedStore(ctx, t)
 
 	rec := &recordingExtractor{ch: make(chan ext.ExtractInput, 1)}
-	w, err := queue.NewWorker(st, rec)
+	w, err := queue.NewWorker(st, rec, ext.LWW{})
 	if err != nil {
 		t.Fatalf("new worker: %v", err)
 	}
@@ -318,7 +319,7 @@ func TestExtractRunWorkerRetriesOnExtractorError(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(ctx, t)
 
-	w, err := queue.NewWorker(st, ext.FixtureExtractor{})
+	w, err := queue.NewWorker(st, ext.FixtureExtractor{}, ext.LWW{})
 	if err != nil {
 		t.Fatalf("new worker: %v", err)
 	}
@@ -400,7 +401,7 @@ func TestExtractRunWorkerDebouncesUntilIdle(t *testing.T) {
 	st := migratedStore(ctx, t)
 
 	rec := &recordingExtractor{ch: make(chan ext.ExtractInput, 1)}
-	w, err := queue.NewWorker(st, rec) // DefaultDebounce: 2s idle window
+	w, err := queue.NewWorker(st, rec, ext.LWW{}) // DefaultDebounce: 2s idle window
 	if err != nil {
 		t.Fatalf("new worker: %v", err)
 	}
@@ -557,7 +558,7 @@ func TestExtractRunPersistsMemory(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(ctx, t)
 
-	w, err := queue.NewWorker(st, ext.FixtureExtractor{})
+	w, err := queue.NewWorker(st, ext.FixtureExtractor{}, ext.LWW{})
 	if err != nil {
 		t.Fatalf("new worker: %v", err)
 	}
@@ -643,7 +644,7 @@ func TestExtractRunCheckpointProcessesEachEventOnce(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(ctx, t)
 
-	w, err := queue.NewWorker(st, ext.FixtureExtractor{})
+	w, err := queue.NewWorker(st, ext.FixtureExtractor{}, ext.LWW{})
 	if err != nil {
 		t.Fatalf("new worker: %v", err)
 	}
@@ -713,7 +714,7 @@ func TestExtractRunPersistsClaimAndEntity(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(ctx, t)
 
-	w, err := queue.NewWorker(st, ext.FixtureExtractor{})
+	w, err := queue.NewWorker(st, ext.FixtureExtractor{}, ext.LWW{})
 	if err != nil {
 		t.Fatalf("new worker: %v", err)
 	}
@@ -791,7 +792,7 @@ func TestExtractRunClaimLWWWithinPass(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(ctx, t)
 
-	w, err := queue.NewWorker(st, ext.FixtureExtractor{})
+	w, err := queue.NewWorker(st, ext.FixtureExtractor{}, ext.LWW{})
 	if err != nil {
 		t.Fatalf("new worker: %v", err)
 	}
@@ -863,5 +864,63 @@ func TestExtractRunClaimLWWWithinPass(t *testing.T) {
 	}
 	if supersededPointsAt != activeID {
 		t.Errorf("superseded claim points at %v, want the active replacement %v", supersededPointsAt, activeID)
+	}
+}
+
+// TestExtractRunWorkerFieldMergeComposition proves the composed Adjudicator reaches the persister through
+// the FULL worker wiring: with FieldMerge injected via queue.NewWorker, two object-valued claims about one
+// subject in a coalesced pass MERGE, rather than the later one simply replacing the earlier (which the
+// default LWW would do). This closes the composition-level gap — a regression that drops the threaded
+// adjudicator at the worker boundary (hardcoding LWW) is caught end to end, not just in the persister
+// unit-of-integration test.
+func TestExtractRunWorkerFieldMergeComposition(t *testing.T) {
+	ctx := context.Background()
+	st := migratedStore(ctx, t)
+
+	w, err := queue.NewWorker(st, ext.FixtureExtractor{}, ext.FieldMerge{})
+	if err != nil {
+		t.Fatalf("new worker: %v", err)
+	}
+	if err := w.Start(ctx); err != nil {
+		t.Fatalf("start worker: %v", err)
+	}
+	t.Cleanup(func() {
+		stopCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_ = w.Stop(stopCtx)
+	})
+
+	proj, run := seedProjectRun(ctx, t, st)
+	q := db.New(st.Pool)
+	// Two events assert the same subject with OBJECT values, both before the enqueue so they coalesce into
+	// one window. FieldMerge combines them (incoming overrides); LWW would keep only the second.
+	for _, payload := range []string{
+		`{"claim":{"entity":"cfg","predicate":"opts","value":{"a":1,"b":2}}}`,
+		`{"claim":{"entity":"cfg","predicate":"opts","value":{"b":3,"c":4}}}`,
+	} {
+		if _, err := q.InsertEvent(ctx, db.InsertEventParams{RunID: run.ID, AgentID: "a", Payload: []byte(payload)}); err != nil {
+			t.Fatalf("insert event: %v", err)
+		}
+	}
+
+	enqueueExtract(ctx, t, w, st, uuid.UUID(proj.ID.Bytes).String(), uuid.UUID(run.ID.Bytes).String())
+	waitForCompletedExtractJobs(ctx, t, st, 1, 20*time.Second)
+
+	var activeValue []byte
+	if err := st.Pool.QueryRow(ctx,
+		`SELECT c.value FROM claims c JOIN entities e ON e.id = c.entity_id
+		  WHERE c.project_id = $1 AND e.name = 'cfg' AND c.predicate = 'opts' AND c.superseded_by IS NULL`,
+		proj.ID).Scan(&activeValue); err != nil {
+		t.Fatalf("read active claim: %v", err)
+	}
+	var got map[string]int
+	if err := json.Unmarshal(activeValue, &got); err != nil {
+		t.Fatalf("active claim value is not an object: %v (%s)", err, activeValue)
+	}
+	want := map[string]int{"a": 1, "b": 3, "c": 4}
+	for k, v := range want {
+		if got[k] != v {
+			t.Errorf("merged key %q = %d, want %d — FieldMerge did not reach the persister through the worker composition", k, got[k], v)
+		}
 	}
 }

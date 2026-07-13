@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"testing"
-	"time"
 )
 
 func TestBasicScopePolicy(t *testing.T) {
@@ -39,27 +38,25 @@ func TestBasicScopePolicy(t *testing.T) {
 
 func TestLWW(t *testing.T) {
 	ctx := context.Background()
-	older := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-	newer := older.Add(time.Hour)
 
-	t.Run("current newer wins", func(t *testing.T) {
-		r, err := LWW{}.Resolve(ctx, Conflict{
-			Current: []byte(`"cur"`), Incoming: []byte(`"inc"`),
-			CurrentAt: newer, IncomingAt: older,
-		})
-		if err != nil || string(r.Value) != `"cur"` {
-			t.Errorf("Resolve = %q, %v; want \"cur\"", r.Value, err)
-		}
+	// Arrival order: the incoming write always wins. The per-run seqs ride along for audit only and must
+	// NOT flip the decision — here current carries a deliberately HIGHER seq (from a different run), and
+	// incoming still wins, proving cross-run seqs are not compared.
+	r, err := LWW{}.Resolve(ctx, Conflict{
+		ProjectID: "p",
+		Current:   []byte(`"cur"`), Incoming: []byte(`"inc"`),
+		CurrentSource:  Provenance{RunID: "runA", Seq: 100},
+		IncomingSource: Provenance{RunID: "runB", Seq: 1},
 	})
-	t.Run("incoming wins ties and newer", func(t *testing.T) {
-		r, err := LWW{}.Resolve(ctx, Conflict{
-			Current: []byte(`"cur"`), Incoming: []byte(`"inc"`),
-			CurrentAt: older, IncomingAt: older, // tie -> incoming
-		})
-		if err != nil || string(r.Value) != `"inc"` {
-			t.Errorf("Resolve = %q, %v; want \"inc\"", r.Value, err)
-		}
-	})
+	if err != nil {
+		t.Fatalf("Resolve error: %v", err)
+	}
+	if string(r.Value) != `"inc"` {
+		t.Errorf("LWW value = %q, want the incoming (arrival order; seqs are audit-only, not compared)", r.Value)
+	}
+	if r.Reason != lwwReason {
+		t.Errorf("LWW reason = %q, want %q", r.Reason, lwwReason)
+	}
 }
 
 func TestFieldMerge(t *testing.T) {
@@ -83,16 +80,20 @@ func TestFieldMerge(t *testing.T) {
 				t.Errorf("key %q = %d, want %d", k, got[k], v)
 			}
 		}
+		if r.Reason != fieldMergeReason {
+			t.Errorf("merge reason = %q, want %q", r.Reason, fieldMergeReason)
+		}
 	})
 
-	t.Run("non-object falls back to LWW", func(t *testing.T) {
-		older := time.Unix(0, 0)
+	t.Run("non-object falls back to LWW (incoming wins)", func(t *testing.T) {
 		r, err := FieldMerge{}.Resolve(ctx, Conflict{
 			Current: []byte(`[1,2]`), Incoming: []byte(`{"a":1}`),
-			CurrentAt: older.Add(time.Hour), IncomingAt: older,
 		})
-		if err != nil || string(r.Value) != `[1,2]` {
-			t.Errorf("Resolve = %q, %v; want current (LWW fallback)", r.Value, err)
+		if err != nil || string(r.Value) != `{"a":1}` {
+			t.Errorf("Resolve = %q, %v; want incoming (LWW fallback is arrival-order)", r.Value, err)
+		}
+		if r.Reason != lwwReason {
+			t.Errorf("fallback reason = %q, want %q (fell back to LWW)", r.Reason, lwwReason)
 		}
 	})
 }
