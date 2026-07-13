@@ -20,6 +20,7 @@ import (
 	"github.com/lore-gpt/lore/core/queue"
 	"github.com/lore-gpt/lore/core/store"
 	"github.com/lore-gpt/lore/server/internal/config"
+	"github.com/lore-gpt/lore/server/internal/extraction"
 )
 
 func main() {
@@ -100,10 +101,18 @@ func workerCmd() *cobra.Command {
 			ctx, stop := signalContext()
 			defer stop()
 
+			// Choose the extraction provider from configuration and inject it into
+			// the worker. A misconfiguration (e.g. anthropic without a key) fails
+			// here, before the worker starts consuming jobs.
+			extractor, err := extraction.Build(ctx, cfg.ExtractionProvider, cfg.AnthropicAPIKey, cfg.ExtractionModel)
+			if err != nil {
+				return err
+			}
+
 			w, err := core.NewWorker(ctx, core.Config{
 				DatabaseURL: cfg.DatabaseURL,
 				APIKey:      cfg.APIKey,
-			})
+			}, core.WithExtractor(extractor))
 			if err != nil {
 				return err
 			}

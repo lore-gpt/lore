@@ -16,6 +16,14 @@ type Config struct {
 	APIKey      string // LORE_API_KEY (required)
 	Addr        string // LORE_ADDR (default ":8080")
 	ValkeyURL   string // LORE_VALKEY_URL (Phase 0: started in compose but unused)
+
+	// Extraction worker settings (used by `lore worker`; ignored by serve/migrate).
+	ExtractionProvider string // LORE_EXTRACTION_PROVIDER: "" (offline fixture) | "fixture" | "anthropic"
+	ExtractionModel    string // LORE_EXTRACTION_MODEL: optional model override for the provider
+	// AnthropicAPIKey is the provider's own key (BYOK), read from the ecosystem's
+	// native ANTHROPIC_API_KEY rather than a LORE_-prefixed name so an operator who
+	// already exports it needs no extra configuration.
+	AnthropicAPIKey string // ANTHROPIC_API_KEY
 }
 
 // Load reads the configuration from the environment, applies defaults, and
@@ -26,6 +34,10 @@ func Load() (Config, error) {
 		APIKey:      strings.TrimSpace(os.Getenv("LORE_API_KEY")),
 		Addr:        getenv("LORE_ADDR", ":8080"),
 		ValkeyURL:   strings.TrimSpace(os.Getenv("LORE_VALKEY_URL")),
+
+		ExtractionProvider: strings.TrimSpace(os.Getenv("LORE_EXTRACTION_PROVIDER")),
+		ExtractionModel:    strings.TrimSpace(os.Getenv("LORE_EXTRACTION_MODEL")),
+		AnthropicAPIKey:    strings.TrimSpace(os.Getenv("ANTHROPIC_API_KEY")),
 	}
 
 	for _, req := range []struct{ name, val string }{

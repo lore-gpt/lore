@@ -67,4 +67,29 @@ func TestLoadDefaultsAndOverrides(t *testing.T) {
 			t.Errorf("ValkeyURL = %q, want empty when unset", c.ValkeyURL)
 		}
 	})
+
+	t.Run("extraction settings read from env", func(t *testing.T) {
+		t.Setenv("LORE_EXTRACTION_PROVIDER", "anthropic")
+		t.Setenv("LORE_EXTRACTION_MODEL", "claude-haiku-4-5")
+		t.Setenv("ANTHROPIC_API_KEY", "sk-test")
+		c, err := Load()
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if c.ExtractionProvider != "anthropic" || c.ExtractionModel != "claude-haiku-4-5" || c.AnthropicAPIKey != "sk-test" {
+			t.Errorf("extraction config = %+v", c)
+		}
+	})
+
+	t.Run("extraction provider empty when unset", func(t *testing.T) {
+		t.Setenv("LORE_EXTRACTION_PROVIDER", "")
+		t.Setenv("ANTHROPIC_API_KEY", "")
+		c, err := Load()
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if c.ExtractionProvider != "" || c.AnthropicAPIKey != "" {
+			t.Errorf("extraction config = %+v, want empty when unset", c)
+		}
+	})
 }
