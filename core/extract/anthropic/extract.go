@@ -13,6 +13,10 @@
 //   - Prompt-cache discipline. The fixed instruction + schema prefix carries a
 //     cache breakpoint and goes first; the variable events go last. Repeated
 //     passes reuse the cached prefix, so only the events count as fresh input.
+//
+// It also implements ext.BatchExtractor: the same request submitted to the Batch
+// API for latency-tolerant "economy" extraction (submit now, collect later),
+// which a run opts into via its project's extraction mode.
 package anthropic
 
 import (
@@ -45,6 +49,10 @@ const defaultMaxTokens = 4096
 // the extraction-result shape.
 const toolName = "record_extraction"
 
+// batchCustomID identifies the single request in a one-request Message Batch, so a collected result
+// can be matched back to it (results may return out of request order).
+const batchCustomID = "extraction"
+
 // Config configures the Anthropic-backed Extractor.
 type Config struct {
 	// APIKey is the operator's Anthropic API key (BYOK). Required.
@@ -63,12 +71,18 @@ type Config struct {
 	MaxRetries *int
 }
 
-// Extractor is an ext.Extractor backed by the Anthropic Messages API.
+// Extractor is an ext.Extractor backed by the Anthropic Messages API. It also implements
+// ext.BatchExtractor, submitting the same request to the Batch API for latency-tolerant extraction.
 type Extractor struct {
 	client    anthropicsdk.Client
 	model     anthropicsdk.Model
 	maxTokens int64
 }
+
+var (
+	_ ext.Extractor      = (*Extractor)(nil)
+	_ ext.BatchExtractor = (*Extractor)(nil)
+)
 
 // New builds an Anthropic-backed Extractor from cfg. It returns an error when no
 // API key is supplied so a misconfigured worker fails at construction rather than
@@ -112,57 +126,146 @@ func (e *Extractor) Extract(ctx context.Context, in ext.ExtractInput) (ext.Extra
 	if len(in.Events) == 0 {
 		return ext.ExtractResult{}, nil
 	}
-
-	userJSON, err := marshalEvents(in.Events)
+	parts, err := buildParts(in)
 	if err != nil {
-		return ext.ExtractResult{}, fmt.Errorf("extract/anthropic: encode events: %w", err)
+		return ext.ExtractResult{}, err
 	}
 
 	msg, err := e.client.Messages.New(ctx, anthropicsdk.MessageNewParams{
 		Model:       e.model,
 		MaxTokens:   e.maxTokens,
 		Temperature: param.NewOpt(0.0), // extraction should be as deterministic as the model allows
-		// Fixed prefix first, with a cache breakpoint: the tools and system prompt
-		// are identical across passes, so the breakpoint lets each pass reuse the
-		// cached prefix and pay fresh input only for the events.
-		System: []anthropicsdk.TextBlockParam{{
-			Text:         systemPrompt,
-			CacheControl: anthropicsdk.NewCacheControlEphemeralParam(),
-		}},
-		Tools:      []anthropicsdk.ToolUnionParam{{OfTool: &extractionTool}},
-		ToolChoice: anthropicsdk.ToolChoiceParamOfTool(toolName),
-		// Variable content last: the events for this window.
-		Messages: []anthropicsdk.MessageParam{
-			anthropicsdk.NewUserMessage(anthropicsdk.NewTextBlock(userJSON)),
-		},
+		System:      parts.system,
+		Tools:       parts.tools,
+		ToolChoice:  parts.toolChoice,
+		Messages:    parts.messages,
 	})
 	if err != nil {
 		return ext.ExtractResult{}, mapError(err)
 	}
+	return e.decodeResult(msg, in.Events)
+}
 
-	// A truncated response is not a complete extraction. On max_tokens the tool
-	// input is valid JSON but only partial — the model emitted fewer candidates
-	// than it meant to. Persisting it as if complete would advance the run's
-	// checkpoint past events whose distillate was silently dropped: unrecoverable
-	// loss. Surface it as a transient miss so the coalesced job retries rather than
-	// committing a partial pass. (The durable fix is the generous MaxTokens ceiling
-	// plus the bounded window; this guards the rare overflow.)
+// requestParts holds the pieces shared by the synchronous and batch requests: the fixed system+schema
+// prefix (with a cache breakpoint), the forced extraction tool, and the events as the trailing user
+// message. Building them once keeps the two paths identical on the wire.
+type requestParts struct {
+	system     []anthropicsdk.TextBlockParam
+	tools      []anthropicsdk.ToolUnionParam
+	toolChoice anthropicsdk.ToolChoiceUnionParam
+	messages   []anthropicsdk.MessageParam
+}
+
+// buildParts assembles the request pieces from one window: the fixed prefix goes first with a cache
+// breakpoint so repeated passes reuse the cached tools+system, and the variable events go last.
+func buildParts(in ext.ExtractInput) (requestParts, error) {
+	userJSON, err := marshalEvents(in.Events)
+	if err != nil {
+		return requestParts{}, fmt.Errorf("extract/anthropic: encode events: %w", err)
+	}
+	return requestParts{
+		system: []anthropicsdk.TextBlockParam{{
+			Text:         systemPrompt,
+			CacheControl: anthropicsdk.NewCacheControlEphemeralParam(),
+		}},
+		tools:      []anthropicsdk.ToolUnionParam{{OfTool: &extractionTool}},
+		toolChoice: anthropicsdk.ToolChoiceParamOfTool(toolName),
+		messages:   []anthropicsdk.MessageParam{anthropicsdk.NewUserMessage(anthropicsdk.NewTextBlock(userJSON))},
+	}, nil
+}
+
+// decodeResult turns a completed message into an ExtractResult. It rejects a max_tokens-truncated
+// response as a transient miss — the tool input is valid JSON but only partial, and persisting it as
+// complete would advance the checkpoint past silently-dropped candidates — and requires the forced
+// tool_use block. events is used only for the single-event provenance fallback; it is nil on the batch
+// path (the collected result carries no window), where the write path's out-of-window drop is the net.
+func (e *Extractor) decodeResult(msg *anthropicsdk.Message, events []ext.InputEvent) (ext.ExtractResult, error) {
 	if msg.StopReason == anthropicsdk.StopReasonMaxTokens {
 		return ext.ExtractResult{}, fmt.Errorf("%w: response truncated at max_tokens (%d)", ext.ErrExtractorUnavailable, e.maxTokens)
 	}
-
 	raw, ok := toolInput(msg, toolName)
 	if !ok {
-		// The model was forced to call the tool; a response without the tool_use
-		// block is unusable. Treat it as a transient provider miss so the job retries.
+		// The model was forced to call the tool; a response without the tool_use block is unusable.
 		return ext.ExtractResult{}, fmt.Errorf("%w: response carried no %s tool call", ext.ErrExtractorUnavailable, toolName)
 	}
-
 	var out wireResult
 	if err := json.Unmarshal(raw, &out); err != nil {
 		return ext.ExtractResult{}, fmt.Errorf("extract/anthropic: decode tool input: %w", err)
 	}
-	return out.toResult(in.Events), nil
+	return out.toResult(events), nil
+}
+
+// SubmitBatch implements ext.BatchExtractor: it submits the window as a one-request Message Batch and
+// returns the batch id as the opaque handle for CollectBatch. The request is identical to Extract's,
+// so the same prompt-cache and structured-output discipline applies. A transient provider or transport
+// failure returns ext.ErrExtractorUnavailable.
+func (e *Extractor) SubmitBatch(ctx context.Context, in ext.ExtractInput) (string, error) {
+	if len(in.Events) == 0 {
+		return "", fmt.Errorf("extract/anthropic: submit batch on an empty window")
+	}
+	parts, err := buildParts(in)
+	if err != nil {
+		return "", err
+	}
+
+	batch, err := e.client.Messages.Batches.New(ctx, anthropicsdk.MessageBatchNewParams{
+		Requests: []anthropicsdk.MessageBatchNewParamsRequest{{
+			CustomID: batchCustomID,
+			Params: anthropicsdk.MessageBatchNewParamsRequestParams{
+				Model:       e.model,
+				MaxTokens:   e.maxTokens,
+				Temperature: param.NewOpt(0.0),
+				System:      parts.system,
+				Tools:       parts.tools,
+				ToolChoice:  parts.toolChoice,
+				Messages:    parts.messages,
+			},
+		}},
+	})
+	if err != nil {
+		return "", mapError(err)
+	}
+	return batch.ID, nil
+}
+
+// CollectBatch implements ext.BatchExtractor: it reports whether the batch named by handle has ended
+// and, once it has, streams the results and decodes the one matching our request. A batch still
+// processing returns done=false so the caller polls again; a transient provider or transport failure
+// returns ext.ErrExtractorUnavailable; a batch whose single request did not succeed (errored, canceled,
+// expired) returns an error naming the outcome.
+func (e *Extractor) CollectBatch(ctx context.Context, handle string) (ext.ExtractResult, bool, error) {
+	batch, err := e.client.Messages.Batches.Get(ctx, handle)
+	if err != nil {
+		return ext.ExtractResult{}, false, mapError(err)
+	}
+	if batch.ProcessingStatus != anthropicsdk.MessageBatchProcessingStatusEnded {
+		return ext.ExtractResult{}, false, nil // still processing; the caller polls again later.
+	}
+
+	stream := e.client.Messages.Batches.ResultsStreaming(ctx, handle)
+	defer func() { _ = stream.Close() }()
+	for stream.Next() {
+		item := stream.Current()
+		if item.CustomID != batchCustomID {
+			continue
+		}
+		if item.Result.Type != "succeeded" {
+			// errored / canceled / expired: the request will not yield a result. Surface it rather than
+			// treat an absent result as empty.
+			return ext.ExtractResult{}, false, fmt.Errorf("extract/anthropic: batch request did not succeed: %s", item.Result.Type)
+		}
+		msg := item.Result.Message
+		res, err := e.decodeResult(&msg, nil)
+		if err != nil {
+			return ext.ExtractResult{}, false, err
+		}
+		return res, true, nil
+	}
+	if err := stream.Err(); err != nil {
+		return ext.ExtractResult{}, false, mapError(err)
+	}
+	// The batch ended but streamed no result for our request: a provider inconsistency, so retry.
+	return ext.ExtractResult{}, false, fmt.Errorf("%w: batch %q returned no result for %q", ext.ErrExtractorUnavailable, handle, batchCustomID)
 }
 
 // wireEventInput is one event as presented to the model: its per-run seq (which
