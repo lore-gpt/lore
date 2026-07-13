@@ -104,6 +104,12 @@ func (p *spyPersister) Persist(_ context.Context, in jobs.PersistInput) error {
 	return nil
 }
 
+// SetRunBatch satisfies the Persister interface; the worker's economy path exercises it in a later
+// increment, so here it is a no-op.
+func (p *spyPersister) SetRunBatch(_ context.Context, _, _ pgtype.UUID, _ string, _ int64) error {
+	return nil
+}
+
 // ready is a readiness that always processes (idle far past any window).
 func ready(count int64) db.RunExtractionReadinessRow {
 	return db.RunExtractionReadinessRow{EventCount: count, IdleSeconds: 3600}

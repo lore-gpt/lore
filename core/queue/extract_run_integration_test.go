@@ -13,6 +13,7 @@ import (
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 
 	"github.com/lore-gpt/lore/core/ext"
+	"github.com/lore-gpt/lore/core/jobs"
 	"github.com/lore-gpt/lore/core/queue"
 	"github.com/lore-gpt/lore/core/store"
 	"github.com/lore-gpt/lore/core/store/db"
@@ -52,6 +53,47 @@ func migratedStore(ctx context.Context, t *testing.T) *store.Store {
 		t.Fatalf("river migrate: %v", err)
 	}
 	return st
+}
+
+// TestPGPersisterSetRunBatch proves the persister's batch-state write: it records the handle and
+// covered seq on the run through a tenant-scoped transaction, and surfaces an error (rather than
+// silently orphaning the batch) when the run is not visible in the project.
+func TestPGPersisterSetRunBatch(t *testing.T) {
+	ctx := context.Background()
+	st := migratedStore(ctx, t)
+	q := db.New(st.Pool)
+
+	org, err := q.InsertOrganization(ctx, "acme")
+	if err != nil {
+		t.Fatalf("insert org: %v", err)
+	}
+	proj, err := q.InsertProject(ctx, db.InsertProjectParams{OrgID: org.ID, Name: "a"})
+	if err != nil {
+		t.Fatalf("insert project: %v", err)
+	}
+	run, err := q.InsertRun(ctx, proj.ID)
+	if err != nil {
+		t.Fatalf("insert run: %v", err)
+	}
+
+	p := jobs.NewPGPersister(st)
+	if err := p.SetRunBatch(ctx, proj.ID, run.ID, "batch_xyz", 9); err != nil {
+		t.Fatalf("SetRunBatch: %v", err)
+	}
+	state, err := q.GetRunExtractionState(ctx, db.GetRunExtractionStateParams{RunID: run.ID, ProjectID: proj.ID})
+	if err != nil {
+		t.Fatalf("GetRunExtractionState: %v", err)
+	}
+	if state.ExtractionBatchID == nil || *state.ExtractionBatchID != "batch_xyz" ||
+		state.ExtractionBatchCoveredSeq == nil || *state.ExtractionBatchCoveredSeq != 9 {
+		t.Errorf("pending batch = {id:%v seq:%v}, want {batch_xyz 9}", state.ExtractionBatchID, state.ExtractionBatchCoveredSeq)
+	}
+
+	// A run absent from the project updates no row; the persister errors rather than losing the batch.
+	absent := pgtype.UUID{Bytes: uuid.New(), Valid: true}
+	if err := p.SetRunBatch(ctx, proj.ID, absent, "batch_none", 1); err == nil {
+		t.Error("SetRunBatch for an absent run = nil error, want an error")
+	}
 }
 
 // TestExtractRunCoalesces proves the per-run unique job: many enqueues for one run collapse into a
@@ -334,7 +376,7 @@ func TestExtractRunWorkerDebouncesUntilIdle(t *testing.T) {
 // seedProjectRun creates the org -> project -> run chain and provisions the project's memory
 // partition. memories is LIST-partitioned with no default partition, so a write for an
 // un-provisioned project fails loud; provisioning is a project-setup step, not the write path's job.
-func seedProjectRun(ctx context.Context, t *testing.T, st *store.Store) (db.Project, db.InsertRunRow) {
+func seedProjectRun(ctx context.Context, t *testing.T, st *store.Store) (db.InsertProjectRow, db.InsertRunRow) {
 	t.Helper()
 	q := db.New(st.Pool)
 	org, err := q.InsertOrganization(ctx, "acme")

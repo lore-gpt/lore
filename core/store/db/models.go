@@ -147,13 +147,16 @@ type Project struct {
 	ActiveModelID      *string            `json:"active_model_id"`
 	RetainEventsDays   *int32             `json:"retain_events_days"`
 	RetainMemoriesDays *int32             `json:"retain_memories_days"`
+	ExtractionMode     string             `json:"extraction_mode"`
 }
 
 type Run struct {
-	ID         pgtype.UUID        `json:"id"`
-	ProjectID  pgtype.UUID        `json:"project_id"`
-	Status     string             `json:"status"`
-	StartedAt  pgtype.Timestamptz `json:"started_at"`
-	LastSeq    int64              `json:"last_seq"`
-	CoveredSeq int64              `json:"covered_seq"`
+	ID                        pgtype.UUID        `json:"id"`
+	ProjectID                 pgtype.UUID        `json:"project_id"`
+	Status                    string             `json:"status"`
+	StartedAt                 pgtype.Timestamptz `json:"started_at"`
+	LastSeq                   int64              `json:"last_seq"`
+	CoveredSeq                int64              `json:"covered_seq"`
+	ExtractionBatchID         *string            `json:"extraction_batch_id"`
+	ExtractionBatchCoveredSeq *int64             `json:"extraction_batch_covered_seq"`
 }

@@ -45,15 +45,39 @@ WHERE events.project_id = $1 AND events.run_id = $2
   AND events.seq > (SELECT covered_seq FROM runs WHERE runs.id = $2);
 
 -- name: AdvanceCoveredSeq :execrows
--- Advance a run's extraction checkpoint to the highest seq the pass consumed, never backward. The
--- covered_seq < guard keeps it monotonic and makes a duplicate advance a no-op (0 rows). This runs
--- in the same transaction as the pass's memory writes, so the checkpoint and the rows it accounts
--- for commit together — the atomicity that makes a coalesced pass idempotent.
+-- Advance a run's extraction checkpoint to the highest seq the pass consumed, never backward, and
+-- clear any pending batch state in the same single-row UPDATE. A committed pass has no batch in
+-- flight; the batch columns are already NULL for a realtime pass, so clearing them is a no-op there
+-- and drops the recorded handle for a collected economy pass. The covered_seq < guard keeps the
+-- checkpoint monotonic and makes a duplicate advance a no-op (0 rows). This runs in the same
+-- transaction as the pass's memory writes, so the checkpoint, the rows it accounts for, and the batch
+-- clear commit together — the atomicity that makes a coalesced pass idempotent.
 UPDATE runs
-SET covered_seq = sqlc.arg(covered_seq)
+SET covered_seq = sqlc.arg(covered_seq),
+    extraction_batch_id = NULL,
+    extraction_batch_covered_seq = NULL
 WHERE id = sqlc.arg(run_id)
   AND project_id = sqlc.arg(project_id)
   AND covered_seq < sqlc.arg(covered_seq);
+
+-- name: GetRunExtractionState :one
+-- The run's extraction mode (from its project) and any pending batch, in one project-scoped read. The
+-- mode comes via a scalar subquery so the statement stays single-table (runs) for the generated return
+-- type; a NULL extraction_batch_id means no batch is in flight and the pass is in its submit/realtime
+-- phase, while a non-NULL one means an earlier attempt submitted a batch that is awaiting collection.
+SELECT r.extraction_batch_id,
+       r.extraction_batch_covered_seq,
+       (SELECT extraction_mode FROM projects WHERE projects.id = r.project_id) AS extraction_mode
+FROM runs r
+WHERE r.id = sqlc.arg(run_id) AND r.project_id = sqlc.arg(project_id);
+
+-- name: SetRunBatch :execrows
+-- Record the handle and covered seq of the batch a run's economy-mode pass just submitted, so a later
+-- attempt collects it. Project-scoped. AdvanceCoveredSeq clears these when the collected pass commits.
+UPDATE runs
+SET extraction_batch_id = sqlc.arg(batch_id),
+    extraction_batch_covered_seq = sqlc.arg(batch_covered_seq)
+WHERE id = sqlc.arg(run_id) AND project_id = sqlc.arg(project_id);
 
 -- name: CountAllEvents :one
 -- lore:tenant-exempt: global by design; must run under a bypass role (readonly/ops), NOT lore_app — RLS would silently scope it

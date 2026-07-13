@@ -62,10 +62,23 @@ type InsertProjectParams struct {
 	Name  string      `json:"name"`
 }
 
-// lore:tenant-exempt: creates the tenant (projects) row itself — there is no project to scope by
-func (q *Queries) InsertProject(ctx context.Context, arg InsertProjectParams) (Project, error) {
+type InsertProjectRow struct {
+	ID                 pgtype.UUID        `json:"id"`
+	OrgID              pgtype.UUID        `json:"org_id"`
+	Name               string             `json:"name"`
+	CreatedAt          pgtype.Timestamptz `json:"created_at"`
+	ActiveModelID      *string            `json:"active_model_id"`
+	RetainEventsDays   *int32             `json:"retain_events_days"`
+	RetainMemoriesDays *int32             `json:"retain_memories_days"`
+}
+
+// lore:tenant-exempt: creates the tenant (projects) row itself — there is no project to scope by.
+// The RETURNING list is a fixed subset (not the whole row): later migrations add columns to projects,
+// and listing only long-standing columns keeps this insert runnable at any schema version a migration
+// test down-migrates to. That is why it returns a bespoke InsertProjectRow, not the db.Project model.
+func (q *Queries) InsertProject(ctx context.Context, arg InsertProjectParams) (InsertProjectRow, error) {
 	row := q.db.QueryRow(ctx, insertProject, arg.OrgID, arg.Name)
-	var i Project
+	var i InsertProjectRow
 	err := row.Scan(
 		&i.ID,
 		&i.OrgID,
