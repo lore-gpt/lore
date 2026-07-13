@@ -3,6 +3,7 @@ package jobs
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -11,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
+	"github.com/lore-gpt/lore/core/ext"
 	"github.com/lore-gpt/lore/core/store/db"
 )
 
@@ -18,6 +20,23 @@ import (
 // as the nil UUID, which is fine for a log line.
 func uuidString(u pgtype.UUID) string {
 	return uuid.UUID(u.Bytes).String()
+}
+
+// derefSeq returns the provenance seq, or 0 when it is absent (a claim with no source event). seq is
+// 1-based, so 0 unambiguously reads as "no source".
+func derefSeq(seq *int64) int64 {
+	if seq == nil {
+		return 0
+	}
+	return *seq
+}
+
+// conflictReason is the audit line stamped on a superseded claim: the policy that decided, and the
+// winning (incoming) and losing (superseded) claims with their run/seq provenance.
+func conflictReason(policy string, winnerID, winnerRun pgtype.UUID, winnerSeq int64, loserID, loserRun pgtype.UUID, loserSeq *int64) string {
+	return fmt.Sprintf("%s: claim %s (run %s seq %d) supersedes claim %s (run %s seq %d)",
+		policy, uuidString(winnerID), uuidString(winnerRun), winnerSeq,
+		uuidString(loserID), uuidString(loserRun), derefSeq(loserSeq))
 }
 
 // Persister commits one extraction pass: it writes the distilled memories, entities, and claims and
@@ -88,14 +107,17 @@ type tenantRunner interface {
 	WithProject(ctx context.Context, projectID pgtype.UUID, fn func(pgx.Tx) error) error
 }
 
-// PGPersister persists an extraction pass to Postgres inside a tenant-scoped transaction.
+// PGPersister persists an extraction pass to Postgres inside a tenant-scoped transaction. It resolves
+// claim conflicts through the injected Adjudicator (the OSS default is last-write-wins).
 type PGPersister struct {
-	store tenantRunner
+	store       tenantRunner
+	adjudicator ext.Adjudicator
 }
 
-// NewPGPersister builds the OSS persister over a tenant-scoped transaction runner (the store).
-func NewPGPersister(store tenantRunner) *PGPersister {
-	return &PGPersister{store: store}
+// NewPGPersister builds the OSS persister over a tenant-scoped transaction runner (the store) and the
+// conflict-resolution policy. A downstream build injects a different Adjudicator without forking the persister.
+func NewPGPersister(store tenantRunner, adjudicator ext.Adjudicator) *PGPersister {
+	return &PGPersister{store: store, adjudicator: adjudicator}
 }
 
 // Persist writes the pass's entities, memories, and claims and advances the run checkpoint in one
@@ -152,9 +174,11 @@ func (p *PGPersister) Persist(ctx context.Context, in PersistInput) error {
 			}
 		}
 
-		// Claims in SourceSeq order: resolve the subject, supersede the current active claim for that
-		// subject (last-write-wins), then insert the new one. Pre-generating the id lets the supersede
-		// point at this replacement before it exists (the self-FK is deferred, validated at commit).
+		// Claims in SourceSeq order: resolve the subject, and if an active claim already asserts it, run
+		// the conflict through the Adjudicator (default last-write-wins). The resolved value becomes the
+		// new active claim; the old one is superseded and stamped with the policy's reason. Pre-generating
+		// the id lets the supersede point at this replacement before it exists (the self-FK is deferred,
+		// validated at commit).
 		for _, c := range in.Claims {
 			entityID, ok := entityIDs[c.Entity]
 			if !ok {
@@ -168,13 +192,42 @@ func (p *PGPersister) Persist(ctx context.Context, in PersistInput) error {
 			}
 
 			claimID := pgtype.UUID{Bytes: uuid.New(), Valid: true}
-			if _, err := q.SupersedeActiveClaimBySubject(ctx, db.SupersedeActiveClaimBySubjectParams{
-				SupersededBy: claimID,
-				ProjectID:    in.ProjectID,
-				EntityID:     entityID,
-				Predicate:    c.Predicate,
-			}); err != nil {
-				return fmt.Errorf("supersede active claim: %w", err)
+			value := c.Value
+
+			active, err := q.GetActiveClaimBySubject(ctx, db.GetActiveClaimBySubjectParams{
+				ProjectID: in.ProjectID,
+				EntityID:  entityID,
+				Predicate: c.Predicate,
+			})
+			switch {
+			case err == nil:
+				// A conflict: resolve it, store the resolved value, and supersede the old claim with the
+				// policy's reason. Provenance rides along for the reason only — never to order the two.
+				res, aerr := p.adjudicator.Resolve(ctx, ext.Conflict{
+					ProjectID:      uuidString(in.ProjectID),
+					Current:        active.Value,
+					Incoming:       c.Value,
+					CurrentSource:  ext.Provenance{RunID: uuidString(active.RunID), Seq: derefSeq(active.Seq)},
+					IncomingSource: ext.Provenance{RunID: uuidString(in.RunID), Seq: c.SourceSeq},
+				})
+				if aerr != nil {
+					return fmt.Errorf("adjudicate claim conflict: %w", aerr)
+				}
+				value = res.Value
+				reason := conflictReason(res.Reason, claimID, in.RunID, c.SourceSeq, active.ID, active.RunID, active.Seq)
+				if _, err := q.SupersedeActiveClaimBySubject(ctx, db.SupersedeActiveClaimBySubjectParams{
+					SupersededBy:     claimID,
+					ResolutionReason: &reason,
+					ProjectID:        in.ProjectID,
+					EntityID:         entityID,
+					Predicate:        c.Predicate,
+				}); err != nil {
+					return fmt.Errorf("supersede active claim: %w", err)
+				}
+			case errors.Is(err, pgx.ErrNoRows):
+				// First assertion of this subject: nothing to supersede or adjudicate.
+			default:
+				return fmt.Errorf("read active claim: %w", err)
 			}
 
 			var eventTime pgtype.Timestamptz
@@ -187,7 +240,7 @@ func (p *PGPersister) Persist(ctx context.Context, in PersistInput) error {
 				ProjectID:     in.ProjectID,
 				EntityID:      entityID,
 				Predicate:     c.Predicate,
-				Value:         c.Value,
+				Value:         value,
 				EventTime:     eventTime,
 				SourceEventID: c.SourceEventID,
 			}); err != nil {

@@ -6,14 +6,31 @@
 INSERT INTO claims (id, memory_id, project_id, entity_id, predicate, value, event_time, source_event_id)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8);
 
+-- name: GetActiveClaimBySubject :one
+-- The currently-active claim for a subject (project, entity, predicate), with its value and the
+-- provenance (run + per-run seq) of the event it was distilled from. The write path reads it before
+-- resolving a conflict: a policy needs the stored value (e.g. FieldMerge combines it with the incoming
+-- one), and the provenance feeds the recorded reason. At most one row is active (the partial-unique
+-- index guarantees it); no active claim returns pgx.ErrNoRows. run_id/seq are NULL for a manual claim
+-- with no source event. The events join is project-scoped so it stays within the tenant.
+SELECT c.id, c.value, e.run_id, e.seq
+FROM claims c
+LEFT JOIN events e ON e.id = c.source_event_id AND e.project_id = c.project_id
+WHERE c.project_id = sqlc.arg(project_id)
+  AND c.entity_id = sqlc.arg(entity_id)
+  AND c.predicate = sqlc.arg(predicate)
+  AND c.superseded_by IS NULL;
+
 -- name: SupersedeActiveClaimBySubject :execrows
 -- Close the currently-active claim for a subject (project, entity, predicate) by pointing it at its
--- replacement, so a new active claim for the same subject can be inserted without violating
+-- replacement and stamping the resolution reason on it (the superseded row is the one whose state
+-- changed), so a new active claim for the same subject can be inserted without violating
 -- claims_active_subject_key. At most one row matches (the partial-unique index guarantees it), so the
--- rowcount is 0 (first assertion) or 1 (last-write-wins supersession). The replacement id need not
+-- rowcount is 0 (first assertion) or 1 (a policy resolved a conflict). The replacement id need not
 -- exist yet — superseded_by is DEFERRABLE, validated at commit once the caller inserts it next.
 UPDATE claims
-SET superseded_by = sqlc.arg(superseded_by)
+SET superseded_by = sqlc.arg(superseded_by),
+    resolution_reason = sqlc.arg(resolution_reason)
 WHERE project_id = sqlc.arg(project_id)
   AND entity_id = sqlc.arg(entity_id)
   AND predicate = sqlc.arg(predicate)

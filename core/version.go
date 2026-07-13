@@ -1,8 +1,8 @@
 // Package core is the open-core import surface of the Lore server.
 //
-// Everything a downstream binary (including the closed-source lore-cloud
-// build) needs to compose a server lives under core/ and its subpackages.
-// The OSS binary wires these together in server/cmd/lore.
+// Everything a downstream binary (including a closed-source one) needs to
+// compose a server lives under core/ and its subpackages. The OSS binary wires
+// these together in server/cmd/lore.
 package core
 
 // Version is the single source of truth for the Lore build version. It is

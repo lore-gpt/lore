@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
+	"github.com/lore-gpt/lore/core/ext"
 	"github.com/lore-gpt/lore/core/jobs"
 	"github.com/lore-gpt/lore/core/store/db"
 )
@@ -101,7 +102,7 @@ func TestPGPersisterDedupsIdenticalMemory(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(ctx, t)
 	proj, run := seedProjectRun(ctx, t, st)
-	p := jobs.NewPGPersister(st)
+	p := jobs.NewPGPersister(st, ext.LWW{})
 
 	in := jobs.PersistInput{
 		ProjectID:          proj.ID,
@@ -189,7 +190,7 @@ func TestPGPersisterAdvancesEmptyWindow(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(ctx, t)
 	proj, run := seedProjectRun(ctx, t, st)
-	p := jobs.NewPGPersister(st)
+	p := jobs.NewPGPersister(st, ext.LWW{})
 
 	if err := p.Persist(ctx, jobs.PersistInput{ProjectID: proj.ID, RunID: run.ID, ExpectedCoveredSeq: 0, CoveredSeq: 4}); err != nil {
 		t.Fatalf("persist empty window: %v", err)
@@ -215,7 +216,7 @@ func TestPGPersisterDedupScopedByEntityContext(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(ctx, t)
 	proj, run := seedProjectRun(ctx, t, st)
-	p := jobs.NewPGPersister(st)
+	p := jobs.NewPGPersister(st, ext.LWW{})
 
 	const content = "shared insight"
 	pass := func(expected, covered int64, entity string) error {
@@ -269,7 +270,7 @@ func TestPGPersisterConcurrentDoubleDelivery(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(ctx, t)
 	proj, run := seedProjectRun(ctx, t, st)
-	p := jobs.NewPGPersister(st)
+	p := jobs.NewPGPersister(st, ext.LWW{})
 
 	mkInput := func() jobs.PersistInput {
 		return jobs.PersistInput{
@@ -360,7 +361,7 @@ func TestPGPersisterCrashRedoSingleSet(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(ctx, t)
 	proj, run := seedProjectRun(ctx, t, st)
-	p := jobs.NewPGPersister(st)
+	p := jobs.NewPGPersister(st, ext.LWW{})
 
 	// A pass whose second memory has an invalid kind fails at that insert, after the first memory was
 	// written — standing in for a crash partway through the transaction.

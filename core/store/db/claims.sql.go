@@ -11,6 +11,47 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const getActiveClaimBySubject = `-- name: GetActiveClaimBySubject :one
+SELECT c.id, c.value, e.run_id, e.seq
+FROM claims c
+LEFT JOIN events e ON e.id = c.source_event_id AND e.project_id = c.project_id
+WHERE c.project_id = $1
+  AND c.entity_id = $2
+  AND c.predicate = $3
+  AND c.superseded_by IS NULL
+`
+
+type GetActiveClaimBySubjectParams struct {
+	ProjectID pgtype.UUID `json:"project_id"`
+	EntityID  pgtype.UUID `json:"entity_id"`
+	Predicate string      `json:"predicate"`
+}
+
+type GetActiveClaimBySubjectRow struct {
+	ID    pgtype.UUID `json:"id"`
+	Value []byte      `json:"value"`
+	RunID pgtype.UUID `json:"run_id"`
+	Seq   *int64      `json:"seq"`
+}
+
+// The currently-active claim for a subject (project, entity, predicate), with its value and the
+// provenance (run + per-run seq) of the event it was distilled from. The write path reads it before
+// resolving a conflict: a policy needs the stored value (e.g. FieldMerge combines it with the incoming
+// one), and the provenance feeds the recorded reason. At most one row is active (the partial-unique
+// index guarantees it); no active claim returns pgx.ErrNoRows. run_id/seq are NULL for a manual claim
+// with no source event. The events join is project-scoped so it stays within the tenant.
+func (q *Queries) GetActiveClaimBySubject(ctx context.Context, arg GetActiveClaimBySubjectParams) (GetActiveClaimBySubjectRow, error) {
+	row := q.db.QueryRow(ctx, getActiveClaimBySubject, arg.ProjectID, arg.EntityID, arg.Predicate)
+	var i GetActiveClaimBySubjectRow
+	err := row.Scan(
+		&i.ID,
+		&i.Value,
+		&i.RunID,
+		&i.Seq,
+	)
+	return i, err
+}
+
 const insertClaim = `-- name: InsertClaim :exec
 INSERT INTO claims (id, memory_id, project_id, entity_id, predicate, value, event_time, source_event_id)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
@@ -47,28 +88,32 @@ func (q *Queries) InsertClaim(ctx context.Context, arg InsertClaimParams) error 
 
 const supersedeActiveClaimBySubject = `-- name: SupersedeActiveClaimBySubject :execrows
 UPDATE claims
-SET superseded_by = $1
-WHERE project_id = $2
-  AND entity_id = $3
-  AND predicate = $4
+SET superseded_by = $1,
+    resolution_reason = $2
+WHERE project_id = $3
+  AND entity_id = $4
+  AND predicate = $5
   AND superseded_by IS NULL
 `
 
 type SupersedeActiveClaimBySubjectParams struct {
-	SupersededBy pgtype.UUID `json:"superseded_by"`
-	ProjectID    pgtype.UUID `json:"project_id"`
-	EntityID     pgtype.UUID `json:"entity_id"`
-	Predicate    string      `json:"predicate"`
+	SupersededBy     pgtype.UUID `json:"superseded_by"`
+	ResolutionReason *string     `json:"resolution_reason"`
+	ProjectID        pgtype.UUID `json:"project_id"`
+	EntityID         pgtype.UUID `json:"entity_id"`
+	Predicate        string      `json:"predicate"`
 }
 
 // Close the currently-active claim for a subject (project, entity, predicate) by pointing it at its
-// replacement, so a new active claim for the same subject can be inserted without violating
+// replacement and stamping the resolution reason on it (the superseded row is the one whose state
+// changed), so a new active claim for the same subject can be inserted without violating
 // claims_active_subject_key. At most one row matches (the partial-unique index guarantees it), so the
-// rowcount is 0 (first assertion) or 1 (last-write-wins supersession). The replacement id need not
+// rowcount is 0 (first assertion) or 1 (a policy resolved a conflict). The replacement id need not
 // exist yet — superseded_by is DEFERRABLE, validated at commit once the caller inserts it next.
 func (q *Queries) SupersedeActiveClaimBySubject(ctx context.Context, arg SupersedeActiveClaimBySubjectParams) (int64, error) {
 	result, err := q.db.Exec(ctx, supersedeActiveClaimBySubject,
 		arg.SupersededBy,
+		arg.ResolutionReason,
 		arg.ProjectID,
 		arg.EntityID,
 		arg.Predicate,

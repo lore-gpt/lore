@@ -1,8 +1,7 @@
 // Package ext defines Lore's compile-time extension points: the small interfaces
-// a downstream build — including the closed-source cloud build — swaps out to
-// change authorization, conflict resolution, and metering without forking the
-// core. Composition happens at compile time via core.NewServer options, not a
-// runtime plugin system.
+// a downstream build swaps out to change authorization, conflict resolution, and
+// metering without forking the core. Composition happens at compile time via
+// core.NewServer options, not a runtime plugin system.
 //
 // Phase 0 ships the interfaces and their OSS default implementations only; the
 // server composes them but does not yet invoke them on the request path. Each
@@ -17,7 +16,7 @@ import (
 )
 
 // PolicyEngine authorizes an action against the scopes granted to a caller.
-// OSS default: BasicScopePolicy (scope-tag match). The cloud build swaps in a
+// OSS default: BasicScopePolicy (scope-tag match). A downstream build swaps in a
 // rule engine with conditional and time-bound grants.
 type PolicyEngine interface {
 	// Authorize returns nil when scopes permit action, or ErrPermissionDenied
@@ -26,30 +25,47 @@ type PolicyEngine interface {
 }
 
 // Adjudicator resolves a conflict between a stored value and an incoming write.
-// OSS defaults: LWW and FieldMerge. The cloud build swaps in an LLM adjudicator
-// or a manual-review queue.
+// OSS defaults: LWW and FieldMerge. A downstream build swaps in a more advanced
+// resolution policy.
 type Adjudicator interface {
-	// Resolve returns the value that should survive the conflict.
+	// Resolve returns the value that should survive the conflict, plus a short identifier of the policy
+	// that decided (the write path records it with the resolution). Ordering is arrival order — Incoming
+	// is the write being applied now, so a last-write-wins policy returns it. The per-side provenance is
+	// for the recorded reason and for a policy that dispatches per project; it is never used to order the
+	// two, because Seq is monotonic only within a run and so is not comparable across runs.
 	Resolve(ctx context.Context, c Conflict) (Resolution, error)
 }
 
-// Conflict is two competing versions of the same opaque value, with the time
-// each was written so a last-write-wins policy can order them.
+// Conflict is two competing values for one subject. ProjectID scopes it to a tenant, so a policy can
+// dispatch on the project's configuration. CurrentSource and IncomingSource say where each value came
+// from — the run and its per-run sequence — for the recorded reason and audit trail, NOT for ordering:
+// seq is monotonic only within a run, so cross-run seqs are not comparable, and the incoming value is the
+// later arrival by construction (the caller applies writes in arrival order).
 type Conflict struct {
-	Current    []byte
-	Incoming   []byte
-	CurrentAt  time.Time
-	IncomingAt time.Time
+	ProjectID      string
+	Current        []byte
+	Incoming       []byte
+	CurrentSource  Provenance
+	IncomingSource Provenance
 }
 
-// Resolution is the surviving value chosen by an Adjudicator.
+// Provenance is where a conflicting value came from: the run and its per-run sequence. It labels a value
+// for audit; it is not an ordering key (see Conflict).
+type Provenance struct {
+	RunID string
+	Seq   int64
+}
+
+// Resolution is the surviving value chosen by an Adjudicator, with a short identifier of the policy that
+// produced it (e.g. "last-write-wins", "field-merge") that the write path records alongside the change.
 type Resolution struct {
-	Value []byte
+	Value  []byte
+	Reason string
 }
 
 // MeteringSink records a usage measurement. OSS default: NoopMetering — a
-// self-hosted deployment reads usage from its local pack logs. The cloud build
-// swaps in a billing usage pipeline.
+// self-hosted deployment reads usage from its local pack logs. A downstream build
+// swaps in a usage-metering pipeline.
 type MeteringSink interface {
 	// Record reports one usage measurement. It must not block the request path;
 	// implementations buffer or drop rather than wait.
