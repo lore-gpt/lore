@@ -119,6 +119,7 @@ components:
         - version
         - db
         - queue
+        - workmem
       properties:
         status:
           type: string
@@ -132,6 +133,14 @@ components:
         queue:
           type: string
           example: ok
+        workmem:
+          type: string
+          description: >-
+            Working-memory stripe mode. Reported for visibility only; it never
+            affects status, since the stripe is optional and the durable store
+            stays authoritative.
+          enum: [ok, degraded, disabled]
+          example: disabled
     CreateEventRequest:
       type: object
       required:
@@ -149,6 +158,21 @@ components:
         payload:
           type: object
           additionalProperties: true
+          description: >-
+            Opaque event body. As a convention, an event with `kind: "state"`
+            carries one hot coordination fact for working memory and is written
+            through to the low-latency stripe so a same-run reader sees it
+            immediately: `{"kind":"state","entity":"<subject>","predicate":"<attr>","value":<any JSON>}`.
+            entity and predicate are required, non-empty, at most 256 bytes, and
+            free of control characters; value is bounded by the server's
+            configured limit. A malformed state fact is rejected with 400
+            invalid_state_fact. Any other payload is stored and distilled by the
+            normal extraction path.
+          example:
+            kind: state
+            entity: auth-service
+            predicate: status
+            value: up
     CreateEventResponse:
       type: object
       required:

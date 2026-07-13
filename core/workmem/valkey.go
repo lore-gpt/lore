@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -38,7 +39,8 @@ func Open(ctx context.Context, url string) (Store, error) {
 	}
 	opt.Dialer.Timeout = opTimeout // bound the dial so an unreachable server degrades fast, not blocks
 	s := &valkeyStore{opt: opt, ttl: DefaultIdleTTL, stop: make(chan struct{}), done: make(chan struct{})}
-	s.probe(ctx) // initial connect+ping: sets Healthy, or Degraded without failing the boot
+	s.probe(ctx)              // initial connect+ping: sets Healthy, or Degraded without failing the boot
+	s.initialized.Store(true) // arm transition logging: the boot state is announced by the caller, not here
 	go s.probeLoop()
 	return s, nil
 }
@@ -48,13 +50,30 @@ func Open(ctx context.Context, url string) (Store, error) {
 // expires together once writes stop. The client is created lazily and rebuilt if the initial dial failed,
 // so a cache that is down at boot (or comes back later) is handled without failing anything.
 type valkeyStore struct {
-	opt     valkey.ClientOption
-	ttl     time.Duration
-	mu      sync.Mutex    // guards client creation
-	client  valkey.Client // nil until the first successful connect
-	healthy atomic.Bool
-	stop    chan struct{}
-	done    chan struct{}
+	opt         valkey.ClientOption
+	ttl         time.Duration
+	mu          sync.Mutex    // guards client creation
+	client      valkey.Client // nil until the first successful connect
+	healthy     atomic.Bool
+	initialized atomic.Bool // true once boot is done, so setHealthy logs only real (post-boot) transitions
+	stop        chan struct{}
+	done        chan struct{}
+	closeOnce   sync.Once // Close is idempotent: a store shared across roles must not double-close the stop channel
+}
+
+// setHealthy records reachability and logs a transition once — a WARN when the stripe goes unreachable, an
+// INFO when it recovers — so operators see a state change without a per-op log flood (Degraded skips stay
+// silent). The boot probe runs before initialized is armed, so the initial state is announced by the
+// caller, not double-logged here.
+func (s *valkeyStore) setHealthy(healthy bool) {
+	if s.healthy.Swap(healthy) == healthy || !s.initialized.Load() {
+		return
+	}
+	if healthy {
+		slog.Info("working memory reachable")
+	} else {
+		slog.Warn("working memory unreachable; hot facts fall through to durable extraction")
+	}
 }
 
 func (s *valkeyStore) runHashKey(projectID, runID string) string {
@@ -82,12 +101,12 @@ func (s *valkeyStore) ensureClient() valkey.Client {
 func (s *valkeyStore) probe(ctx context.Context) {
 	c := s.ensureClient()
 	if c == nil {
-		s.healthy.Store(false)
+		s.setHealthy(false)
 		return
 	}
 	pctx, cancel := context.WithTimeout(ctx, opTimeout)
 	defer cancel()
-	s.healthy.Store(c.Do(pctx, c.B().Ping().Build()).Error() == nil)
+	s.setHealthy(c.Do(pctx, c.B().Ping().Build()).Error() == nil)
 }
 
 func (s *valkeyStore) probeLoop() {
@@ -114,7 +133,7 @@ func (s *valkeyStore) Mode() Mode {
 func (s *valkeyStore) Set(ctx context.Context, k Key, v Value) error {
 	c := s.ensureClient()
 	if c == nil {
-		s.healthy.Store(false)
+		s.setHealthy(false)
 		return fmt.Errorf("workmem: set: cache unreachable")
 	}
 	blob, err := json.Marshal(v)
@@ -128,31 +147,31 @@ func (s *valkeyStore) Set(ctx context.Context, k Key, v Value) error {
 	}
 	for _, res := range c.DoMulti(ctx, cmds...) {
 		if err := res.Error(); err != nil {
-			s.healthy.Store(false)
+			s.setHealthy(false)
 			return fmt.Errorf("workmem: set: %w", err)
 		}
 	}
-	s.healthy.Store(true)
+	s.setHealthy(true)
 	return nil
 }
 
 func (s *valkeyStore) Get(ctx context.Context, k Key) (Value, bool, error) {
 	c := s.ensureClient()
 	if c == nil {
-		s.healthy.Store(false)
+		s.setHealthy(false)
 		return Value{}, false, fmt.Errorf("workmem: get: cache unreachable")
 	}
 	res := c.Do(ctx, c.B().Hget().Key(s.runHashKey(k.ProjectID, k.RunID)).Field(field(k.Entity, k.Predicate)).Build())
 	blob, err := res.AsBytes()
 	if valkey.IsValkeyNil(err) {
-		s.healthy.Store(true) // a reachable round-trip that simply found no field
+		s.setHealthy(true) // a reachable round-trip that simply found no field
 		return Value{}, false, nil
 	}
 	if err != nil {
-		s.healthy.Store(false)
+		s.setHealthy(false)
 		return Value{}, false, fmt.Errorf("workmem: get: %w", err)
 	}
-	s.healthy.Store(true)
+	s.setHealthy(true)
 	var v Value
 	if err := json.Unmarshal(blob, &v); err != nil {
 		return Value{}, false, fmt.Errorf("workmem: unmarshal value: %w", err)
@@ -163,16 +182,16 @@ func (s *valkeyStore) Get(ctx context.Context, k Key) (Value, bool, error) {
 func (s *valkeyStore) GetAll(ctx context.Context, projectID, runID string) ([]Entry, error) {
 	c := s.ensureClient()
 	if c == nil {
-		s.healthy.Store(false)
+		s.setHealthy(false)
 		return nil, fmt.Errorf("workmem: getall: cache unreachable")
 	}
 	res := c.Do(ctx, c.B().Hgetall().Key(s.runHashKey(projectID, runID)).Build())
 	raw, err := res.AsStrMap()
 	if err != nil {
-		s.healthy.Store(false)
+		s.setHealthy(false)
 		return nil, fmt.Errorf("workmem: getall: %w", err)
 	}
-	s.healthy.Store(true)
+	s.setHealthy(true)
 	out := make([]Entry, 0, len(raw))
 	for f, blob := range raw {
 		entity, predicate, ok := parseField(f)
@@ -189,11 +208,13 @@ func (s *valkeyStore) GetAll(ctx context.Context, projectID, runID string) ([]En
 }
 
 func (s *valkeyStore) Close() {
-	close(s.stop)
-	<-s.done
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.client != nil {
-		s.client.Close()
-	}
+	s.closeOnce.Do(func() {
+		close(s.stop)
+		<-s.done
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		if s.client != nil {
+			s.client.Close()
+		}
+	})
 }

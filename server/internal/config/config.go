@@ -7,6 +7,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 )
 
@@ -15,7 +16,11 @@ type Config struct {
 	DatabaseURL string // LORE_DATABASE_URL (required)
 	APIKey      string // LORE_API_KEY (required)
 	Addr        string // LORE_ADDR (default ":8080")
-	ValkeyURL   string // LORE_VALKEY_URL (Phase 0: started in compose but unused)
+	ValkeyURL   string // LORE_VALKEY_URL (working-memory cache; unset disables the stripe)
+
+	// WorkmemMaxValueBytes bounds a working-memory (kind:"state") fact's value at ingestion.
+	// LORE_WORKMEM_MAX_VALUE_BYTES; 0 (unset/invalid) uses the package default.
+	WorkmemMaxValueBytes int
 
 	// Extraction worker settings (used by `lore worker`; ignored by serve/migrate).
 	ExtractionProvider string // LORE_EXTRACTION_PROVIDER: "" (offline fixture) | "fixture" | "anthropic"
@@ -34,6 +39,8 @@ func Load() (Config, error) {
 		APIKey:      strings.TrimSpace(os.Getenv("LORE_API_KEY")),
 		Addr:        getenv("LORE_ADDR", ":8080"),
 		ValkeyURL:   strings.TrimSpace(os.Getenv("LORE_VALKEY_URL")),
+
+		WorkmemMaxValueBytes: getenvInt("LORE_WORKMEM_MAX_VALUE_BYTES"),
 
 		ExtractionProvider: strings.TrimSpace(os.Getenv("LORE_EXTRACTION_PROVIDER")),
 		ExtractionModel:    strings.TrimSpace(os.Getenv("LORE_EXTRACTION_MODEL")),
@@ -58,4 +65,16 @@ func getenv(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// getenvInt returns the value of key parsed as an int, or 0 when it is unset,
+// empty, or not a valid integer. A downstream consumer treats 0 as "use the
+// default", so a misconfigured value degrades to the default rather than failing
+// the boot.
+func getenvInt(key string) int {
+	n, err := strconv.Atoi(strings.TrimSpace(os.Getenv(key)))
+	if err != nil {
+		return 0
+	}
+	return n
 }

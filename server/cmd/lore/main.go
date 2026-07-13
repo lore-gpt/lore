@@ -19,6 +19,7 @@ import (
 	"github.com/lore-gpt/lore/core"
 	"github.com/lore-gpt/lore/core/queue"
 	"github.com/lore-gpt/lore/core/store"
+	"github.com/lore-gpt/lore/core/workmem"
 	"github.com/lore-gpt/lore/server/internal/config"
 	"github.com/lore-gpt/lore/server/internal/extraction"
 )
@@ -68,15 +69,26 @@ func serveCmd() *cobra.Command {
 				}
 			}
 
-			srv, err := core.NewServer(ctx, core.Config{
-				Addr:        cfg.Addr,
-				DatabaseURL: cfg.DatabaseURL,
-				APIKey:      cfg.APIKey,
-			})
+			// Open the working-memory stripe from config. An unset URL disables it (hot facts fall through
+			// to durable extraction); a malformed URL is fatal; an unreachable server degrades but does not
+			// fail the boot. The server takes ownership and closes it.
+			wm, err := workmem.Open(ctx, cfg.ValkeyURL)
 			if err != nil {
 				return err
 			}
-			defer srv.Close()
+			slog.InfoContext(ctx, "working memory", slog.String("mode", wm.Mode().String()))
+
+			srv, err := core.NewServer(ctx, core.Config{
+				Addr:                 cfg.Addr,
+				DatabaseURL:          cfg.DatabaseURL,
+				APIKey:               cfg.APIKey,
+				WorkmemMaxValueBytes: cfg.WorkmemMaxValueBytes,
+			}, core.WithWorkmem(wm))
+			if err != nil {
+				wm.Close()
+				return err
+			}
+			defer srv.Close() // closes the store and the working-memory stripe
 
 			slog.InfoContext(ctx, "starting server",
 				slog.String("addr", cfg.Addr), slog.String("version", core.Version))

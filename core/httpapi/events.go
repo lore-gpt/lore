@@ -1,19 +1,27 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/lore-gpt/lore/core/store/db"
+	"github.com/lore-gpt/lore/core/workmem"
 )
 
 // maxEventBody caps the request body so a single event cannot exhaust memory.
 const maxEventBody = 1 << 20 // 1 MiB
+
+// workmemWriteTimeout bounds the post-commit hot-lane write so a cache that died since the last health
+// probe costs one request a little latency (and flips the stripe to Degraded) rather than stalling it.
+const workmemWriteTimeout = 200 * time.Millisecond
 
 // CreateEventRequest is the POST /v1/events body (spec CreateEventRequest).
 type CreateEventRequest struct {
@@ -60,6 +68,16 @@ func (a *API) handleCreateEvent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A kind:"state" event carries one hot fact for working memory. Validate it loudly at the door so a
+	// malformed or oversized fact is rejected here rather than silently corrupting the run's working set.
+	// Any other payload is opaque and passes through unchanged.
+	fact, ferr := workmem.ParseStateFact(req.Payload, a.workmemMaxValueBytes)
+	stateFact := ferr == nil
+	if ferr != nil && !errors.Is(ferr, workmem.ErrNotStateFact) {
+		writeError(w, r, http.StatusBadRequest, "invalid_state_fact", ferr.Error())
+		return
+	}
+
 	tx, err := a.pool.Begin(ctx)
 	if err != nil {
 		writeError(w, r, http.StatusInternalServerError, "internal", "could not begin transaction")
@@ -99,7 +117,44 @@ func (a *API) handleCreateEvent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Write a state fact through to the hot lane after the event is durable, so a same-run reader sees it
+	// immediately — the synchronous half of read-your-writes. The order is deliberate: commit, then write
+	// through, then respond. Writing through before commit could surface a value a failed commit rolls back
+	// (a phantom); responding before the write-through would let a same-run reader race it. Only attempted
+	// when the stripe is Healthy, so a disabled or degraded cache adds no latency. If the process crashes
+	// after commit but before the write-through, the fact is missing from the hot lane yet safe in the
+	// durable event log — the next extraction pass reconstructs it.
+	if stateFact && a.workmem.Mode() == workmem.Healthy {
+		a.writeThroughState(ctx, event, fact)
+	}
+
 	writeJSON(w, r, http.StatusAccepted, CreateEventResponse{EventID: eventID, Seq: event.Seq})
+}
+
+// writeThroughState best-effort writes a state fact to working memory, bounded by its own short timeout so
+// a cache that died since the last health probe degrades quickly instead of stalling the request. A
+// failure is logged with identifiers only — never the value — and swallowed: the durable event log is the
+// backstop, so ingestion never fails on the hot lane.
+func (a *API) writeThroughState(ctx context.Context, event db.Event, fact workmem.StateFact) {
+	// Detach from the request context first: the event is already committed, so a client that disconnects
+	// while awaiting the 202 must not cancel this best-effort write — a caller-side cancel says nothing about
+	// cache reachability and would otherwise flip the shared stripe to Degraded for every concurrent run. The
+	// own timeout still bounds (and degrades) a genuinely slow or dead cache.
+	wctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), workmemWriteTimeout)
+	defer cancel()
+
+	k := workmem.Key{
+		ProjectID: uuid.UUID(event.ProjectID.Bytes).String(),
+		RunID:     uuid.UUID(event.RunID.Bytes).String(),
+		Entity:    fact.Entity,
+		Predicate: fact.Predicate,
+	}
+	if err := a.workmem.Set(wctx, k, workmem.Value{Value: fact.Value, Seq: event.Seq, Agent: event.AgentID}); err != nil {
+		slog.WarnContext(ctx, "workmem_writethrough_failed",
+			slog.String("project_id", k.ProjectID),
+			slog.String("run_id", k.RunID),
+			slog.Int64("seq", event.Seq))
+	}
 }
 
 // handleRecall is the Phase 1 read path. Phase 0 answers 501 so the route and
