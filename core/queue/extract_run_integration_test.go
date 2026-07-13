@@ -4,11 +4,13 @@ package queue_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/riverqueue/river"
 	"github.com/testcontainers/testcontainers-go"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 
@@ -93,6 +95,99 @@ func TestPGPersisterSetRunBatch(t *testing.T) {
 	absent := pgtype.UUID{Bytes: uuid.New(), Valid: true}
 	if err := p.SetRunBatch(ctx, proj.ID, absent, "batch_none", 1); err == nil {
 		t.Error("SetRunBatch for an absent run = nil error, want an error")
+	}
+}
+
+// TestExtractRunWorkerEconomyBatchPath proves the two-phase economy flow against real Postgres: the
+// first pass submits the window to the (fixture) batch and records it on the run without persisting;
+// the second pass collects the ready batch, persists the distilled memory with provenance, advances
+// the checkpoint to the submit-time seq, and clears the batch state.
+func TestExtractRunWorkerEconomyBatchPath(t *testing.T) {
+	ctx := context.Background()
+	st := migratedStore(ctx, t)
+	q := db.New(st.Pool)
+
+	org, err := q.InsertOrganization(ctx, "acme")
+	if err != nil {
+		t.Fatalf("insert org: %v", err)
+	}
+	proj, err := q.InsertProject(ctx, db.InsertProjectParams{OrgID: org.ID, Name: "a"})
+	if err != nil {
+		t.Fatalf("insert project: %v", err)
+	}
+	if err := store.CreateProjectPartitions(ctx, st.Pool, proj.ID); err != nil {
+		t.Fatalf("create partitions: %v", err)
+	}
+	if _, err := st.Pool.Exec(ctx, `UPDATE projects SET extraction_mode = 'economy' WHERE id = $1`, proj.ID); err != nil {
+		t.Fatalf("set economy mode: %v", err)
+	}
+	run, err := q.InsertRun(ctx, proj.ID)
+	if err != nil {
+		t.Fatalf("insert run: %v", err)
+	}
+	ev, err := q.InsertEvent(ctx, db.InsertEventParams{RunID: run.ID, AgentID: "planner", Payload: []byte(`{"memory":"batched via economy"}`)})
+	if err != nil {
+		t.Fatalf("insert event: %v", err)
+	}
+
+	// Call Work directly: the fixture batch is immediately ready, so the two attempts run back to back
+	// deterministically without waiting on River to reschedule the poll snooze (River's snooze handling
+	// is proven by the debounce tests). IdleWindow 0 lets the debounce process the run at once.
+	worker := jobs.NewExtractRunWorker(db.New(st.Pool), ext.FixtureExtractor{}, jobs.NewPGPersister(st),
+		jobs.Debounce{IdleWindow: 0, MaxEvents: 1, BatchPoll: time.Millisecond})
+	job := &river.Job[jobs.ExtractRunArgs]{Args: jobs.ExtractRunArgs{
+		ProjectID: uuid.UUID(proj.ID.Bytes).String(),
+		RunID:     uuid.UUID(run.ID.Bytes).String(),
+	}}
+
+	memoryCount := func() int64 {
+		t.Helper()
+		var n int64
+		if err := st.Pool.QueryRow(ctx, `SELECT count(*) FROM memories WHERE project_id = $1`, proj.ID).Scan(&n); err != nil {
+			t.Fatalf("count memories: %v", err)
+		}
+		return n
+	}
+	runState := func() db.GetRunExtractionStateRow {
+		t.Helper()
+		s, err := q.GetRunExtractionState(ctx, db.GetRunExtractionStateParams{RunID: run.ID, ProjectID: proj.ID})
+		if err != nil {
+			t.Fatalf("GetRunExtractionState: %v", err)
+		}
+		return s
+	}
+
+	// Pass 1: submit. Records the pending batch on the run and snoozes; nothing persisted yet.
+	err = worker.Work(ctx, job)
+	var snooze *river.JobSnoozeError
+	if !errors.As(err, &snooze) {
+		t.Fatalf("economy submit should snooze to poll, got %v", err)
+	}
+	if s := runState(); s.ExtractionBatchID == nil {
+		t.Fatal("submit should record a pending batch handle on the run")
+	} else if s.ExtractionBatchCoveredSeq == nil || *s.ExtractionBatchCoveredSeq != ev.Seq {
+		t.Errorf("batch covered seq = %v, want %d", s.ExtractionBatchCoveredSeq, ev.Seq)
+	}
+	if n := memoryCount(); n != 0 {
+		t.Errorf("submit must not persist yet, memory count = %d", n)
+	}
+
+	// Pass 2: collect. Persists the distilled memory, advances the checkpoint, clears the batch.
+	if err := worker.Work(ctx, job); err != nil {
+		t.Fatalf("collect pass: %v", err)
+	}
+	if n := memoryCount(); n != 1 {
+		t.Fatalf("collected batch should persist the memory, count = %d want 1", n)
+	}
+	if s := runState(); s.ExtractionBatchID != nil || s.ExtractionBatchCoveredSeq != nil {
+		t.Errorf("collect should clear the batch state, got id=%v seq=%v", s.ExtractionBatchID, s.ExtractionBatchCoveredSeq)
+	}
+	var covered int64
+	if err := st.Pool.QueryRow(ctx, `SELECT covered_seq FROM runs WHERE id = $1`, run.ID).Scan(&covered); err != nil {
+		t.Fatalf("read covered_seq: %v", err)
+	}
+	if covered != ev.Seq {
+		t.Errorf("covered_seq = %d, want %d (the batch's submit-time seq)", covered, ev.Seq)
 	}
 }
 

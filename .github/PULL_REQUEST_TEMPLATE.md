@@ -17,5 +17,5 @@ Closes #
 - [ ] Tests added/updated (or N/A)
 - [ ] Docs / RFC updated (or N/A)
 - [ ] No secrets, internal cloud endpoints, or commercial-layer code
-      (see [CONTRIBUTING → OSS and paid boundary](../CONTRIBUTING.md#the-oss-and-paid-boundary))
+      (see [CONTRIBUTING → OSS and paid boundary](CONTRIBUTING.md#the-oss-and-paid-boundary))
 - [ ] Architectural change? The design rationale is explained in the PR description

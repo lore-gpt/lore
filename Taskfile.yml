@@ -62,7 +62,7 @@ tasks:
   spec:lint:
     desc: Lint the OpenAPI spec (redocly).
     cmds:
-      - npx --yes @redocly/cli@{{.REDOCLY_VERSION}} lint spec/openapi.yaml
+      - npx --yes @redocly/cli@{{.REDOCLY_VERSION}} lint --config spec/redocly.yaml spec/openapi.yaml
 
   compose:up:
     desc: Start the local stack (ParadeDB, Valkey, MinIO, server, worker) and wait until healthy.
