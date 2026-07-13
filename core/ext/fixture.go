@@ -2,6 +2,7 @@ package ext
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"time"
@@ -100,4 +101,40 @@ func (FixtureExtractor) Extract(_ context.Context, in ExtractInput) (ExtractResu
 		}
 	}
 	return res, nil
+}
+
+// SubmitBatch implements BatchExtractor. The fixture has no real batch backend, so the handle simply
+// carries the window itself (base64-encoded JSON); the distillation happens in CollectBatch. Encoding
+// the input rather than a pre-computed result is deliberate: CollectBatch then runs the very same
+// Extract path, so the batch result is byte-for-byte identical to the synchronous one — round-tripping
+// the distilled candidates instead would lose fidelity (a nil claim value would resurface as JSON
+// null, which the write path treats differently). Submission itself never fails here; extraction
+// errors surface at collect, as they would for a real batch.
+func (FixtureExtractor) SubmitBatch(_ context.Context, in ExtractInput) (string, error) {
+	encoded, err := json.Marshal(in)
+	if err != nil {
+		return "", fmt.Errorf("ext: fixture batch encode: %w", err)
+	}
+	return base64.StdEncoding.EncodeToString(encoded), nil
+}
+
+// CollectBatch implements BatchExtractor. It decodes the window SubmitBatch stored in the handle and
+// distils it with Extract, so the result matches the synchronous path exactly. The fixture's batch is
+// always immediately ready; the not-ready (done=false) path is exercised by callers supplying their
+// own BatchExtractor. A window that would fail Extract (a fixture_error) fails here, modelling a
+// failed batch item.
+func (f FixtureExtractor) CollectBatch(ctx context.Context, handle string) (ExtractResult, bool, error) {
+	decoded, err := base64.StdEncoding.DecodeString(handle)
+	if err != nil {
+		return ExtractResult{}, false, fmt.Errorf("ext: fixture batch handle: %w", err)
+	}
+	var in ExtractInput
+	if err := json.Unmarshal(decoded, &in); err != nil {
+		return ExtractResult{}, false, fmt.Errorf("ext: fixture batch handle: %w", err)
+	}
+	res, err := f.Extract(ctx, in)
+	if err != nil {
+		return ExtractResult{}, false, err
+	}
+	return res, true, nil
 }
