@@ -96,9 +96,10 @@ func TestMigration0012ExtractionModeAndBatchState(t *testing.T) {
 		t.Errorf("pending batch = {id:%v seq:%v}, want {%q %d}", s.ExtractionBatchID, s.ExtractionBatchCoveredSeq, handle, covered)
 	}
 
-	// AdvanceCoveredSeq advances the checkpoint AND clears the batch state in one update.
+	// AdvanceCoveredSeq advances the checkpoint (from its still-0 start, since SetRunBatch moved only the
+	// batch columns) AND clears the batch state in one update.
 	if rows, err := q.AdvanceCoveredSeq(ctx, db.AdvanceCoveredSeqParams{
-		ProjectID: proj.ID, RunID: run.ID, CoveredSeq: covered,
+		ProjectID: proj.ID, RunID: run.ID, ExpectedCoveredSeq: 0, NewCoveredSeq: covered,
 	}); err != nil || rows != 1 {
 		t.Fatalf("AdvanceCoveredSeq to %d: rows=%d err=%v, want 1 row", covered, rows, err)
 	}

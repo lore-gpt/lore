@@ -11,9 +11,68 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const findActiveMemoryByContentHash = `-- name: FindActiveMemoryByContentHash :one
+SELECT id, version, content
+FROM memories
+WHERE project_id = $1 AND content_hash = $2
+  AND superseded_by IS NULL AND valid_to IS NULL
+ORDER BY id
+LIMIT 1
+`
+
+type FindActiveMemoryByContentHashParams struct {
+	ProjectID   pgtype.UUID `json:"project_id"`
+	ContentHash []byte      `json:"content_hash"`
+}
+
+type FindActiveMemoryByContentHashRow struct {
+	ID      pgtype.UUID `json:"id"`
+	Version int32       `json:"version"`
+	Content string      `json:"content"`
+}
+
+// The live memory in a project with a given content fingerprint, if any — the dedup probe the
+// consolidation path runs before inserting a distilled memory. Returns its id, version, and content so a
+// merge can bump the version and snapshot the memory's retained content into memory_versions. Scoped to
+// live rows by the same predicate as memories_content_hash_idx, so the partial index serves it and
+// superseded/expired history never matches. At most one row is live per fingerprint in practice (the path
+// merges rather than inserting a second), but the query does not rely on that: it returns the lowest id
+// so the choice is deterministic. No match returns pgx.ErrNoRows, the caller's "insert fresh" signal.
+func (q *Queries) FindActiveMemoryByContentHash(ctx context.Context, arg FindActiveMemoryByContentHashParams) (FindActiveMemoryByContentHashRow, error) {
+	row := q.db.QueryRow(ctx, findActiveMemoryByContentHash, arg.ProjectID, arg.ContentHash)
+	var i FindActiveMemoryByContentHashRow
+	err := row.Scan(&i.ID, &i.Version, &i.Content)
+	return i, err
+}
+
+const incrementMemoryVersion = `-- name: IncrementMemoryVersion :one
+UPDATE memories
+SET version = version + 1
+WHERE project_id = $1 AND id = $2
+RETURNING version
+`
+
+type IncrementMemoryVersionParams struct {
+	ProjectID pgtype.UUID `json:"project_id"`
+	ID        pgtype.UUID `json:"id"`
+}
+
+// Bump a live memory's version when the consolidation path merges a duplicate restatement into it
+// instead of inserting a new row, returning the new version number. The caller writes a matching
+// memory_versions row (new version number, the memory's retained content, the reason, the re-observing
+// agent) in the same transaction, so the live row's version and the latest memory_versions row stay in
+// lock-step. Exact-content dedup leaves the content unchanged; a later increment that merges differing
+// content updates the live content to match the version it snapshots. Project-scoped.
+func (q *Queries) IncrementMemoryVersion(ctx context.Context, arg IncrementMemoryVersionParams) (int32, error) {
+	row := q.db.QueryRow(ctx, incrementMemoryVersion, arg.ProjectID, arg.ID)
+	var version int32
+	err := row.Scan(&version)
+	return version, err
+}
+
 const insertMemory = `-- name: InsertMemory :one
-INSERT INTO memories (project_id, kind, content, source_event_id, created_by_agent)
-VALUES ($1, $2, $3, $4, $5)
+INSERT INTO memories (project_id, kind, content, source_event_id, created_by_agent, content_hash)
+VALUES ($1, $2, $3, $4, $5, $6)
 RETURNING id
 `
 
@@ -23,15 +82,18 @@ type InsertMemoryParams struct {
 	Content        string      `json:"content"`
 	SourceEventID  pgtype.UUID `json:"source_event_id"`
 	CreatedByAgent *string     `json:"created_by_agent"`
+	ContentHash    []byte      `json:"content_hash"`
 }
 
 // Persist one distilled memory. project_id routes the row to its tenant partition, which must
 // already exist (memories is LIST-partitioned with no default partition, so an un-provisioned
 // project fails loud rather than silently mis-routing). Provenance — source_event_id and
 // created_by_agent — is resolved by the caller from the event the memory was distilled from;
-// source_event_id is nullable only for manual (non-extracted) writes. Everything else takes its
-// schema default: trust_tier 'normal', review_status 'auto_approved', version 1, valid_from now(),
-// empty entities/scope_keys — the single-schema basic behaviour the OSS build always writes.
+// source_event_id is nullable only for manual (non-extracted) writes. content_hash is the dedup
+// fingerprint (a hash of the kind, entity context, and normalized content) the consolidation path probes
+// on; NULL only for a path that opts out of dedup. Everything else takes its schema default: trust_tier 'normal',
+// review_status 'auto_approved', version 1, valid_from now(), empty entities/scope_keys — the
+// single-schema basic behaviour the OSS build always writes.
 func (q *Queries) InsertMemory(ctx context.Context, arg InsertMemoryParams) (pgtype.UUID, error) {
 	row := q.db.QueryRow(ctx, insertMemory,
 		arg.ProjectID,
@@ -39,6 +101,7 @@ func (q *Queries) InsertMemory(ctx context.Context, arg InsertMemoryParams) (pgt
 		arg.Content,
 		arg.SourceEventID,
 		arg.CreatedByAgent,
+		arg.ContentHash,
 	)
 	var id pgtype.UUID
 	err := row.Scan(&id)

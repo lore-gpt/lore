@@ -102,6 +102,7 @@ type Memory struct {
 	CreatedByAgent *string            `json:"created_by_agent"`
 	SourceEventID  pgtype.UUID        `json:"source_event_id"`
 	ScopeKeys      []string           `json:"scope_keys"`
+	ContentHash    []byte             `json:"content_hash"`
 }
 
 type MemoryScope struct {

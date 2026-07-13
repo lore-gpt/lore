@@ -45,27 +45,36 @@ WHERE events.project_id = $1 AND events.run_id = $2
   AND events.seq > (SELECT covered_seq FROM runs WHERE runs.id = $2);
 
 -- name: AdvanceCoveredSeq :execrows
--- Advance a run's extraction checkpoint to the highest seq the pass consumed, never backward, and
--- clear any pending batch state in the same single-row UPDATE. A committed pass has no batch in
--- flight; the batch columns are already NULL for a realtime pass, so clearing them is a no-op there
--- and drops the recorded handle for a collected economy pass. The covered_seq < guard keeps the
--- checkpoint monotonic and makes a duplicate advance a no-op (0 rows). This runs in the same
--- transaction as the pass's memory writes, so the checkpoint, the rows it accounts for, and the batch
--- clear commit together — the atomicity that makes a coalesced pass idempotent.
+-- Advance a run's extraction checkpoint to the highest seq the pass consumed and clear any pending
+-- batch state, in one single-row UPDATE, guarded by a compare-and-swap on the checkpoint's expected
+-- value: the pass reads covered_seq before it does its work and passes that value back as
+-- expected_covered_seq, so the advance commits only if no other pass moved the checkpoint in between.
+-- A mismatch updates 0 rows; the caller treats that as "another pass already advanced this run" and
+-- rolls back its own writes, so a concurrent double-delivery of the same window produces one set of
+-- memories and one advance, never two. (The compare-and-swap also subsumes the old monotonic guard:
+-- new_covered_seq is always past the expected value, so a match only ever moves the checkpoint
+-- forward.) The batch columns are already NULL for a realtime pass — clearing them is a no-op there —
+-- and drop the recorded handle for a collected economy pass. This runs in the same transaction as the
+-- pass's memory writes, so the checkpoint, the rows it accounts for, and the batch clear commit
+-- together — the atomicity that makes a coalesced pass idempotent.
 UPDATE runs
-SET covered_seq = sqlc.arg(covered_seq),
+SET covered_seq = sqlc.arg(new_covered_seq),
     extraction_batch_id = NULL,
     extraction_batch_covered_seq = NULL
 WHERE id = sqlc.arg(run_id)
   AND project_id = sqlc.arg(project_id)
-  AND covered_seq < sqlc.arg(covered_seq);
+  AND covered_seq = sqlc.arg(expected_covered_seq);
 
 -- name: GetRunExtractionState :one
--- The run's extraction mode (from its project) and any pending batch, in one project-scoped read. The
--- mode comes via a scalar subquery so the statement stays single-table (runs) for the generated return
--- type; a NULL extraction_batch_id means no batch is in flight and the pass is in its submit/realtime
--- phase, while a non-NULL one means an earlier attempt submitted a batch that is awaiting collection.
-SELECT r.extraction_batch_id,
+-- The run's extraction checkpoint, its extraction mode (from its project), and any pending batch, in
+-- one project-scoped read. covered_seq is the value the pass compare-and-swaps on when it advances the
+-- checkpoint (see AdvanceCoveredSeq), read here so the whole decision starts from one consistent view.
+-- The mode comes via a scalar subquery so the statement stays single-table (runs) for the generated
+-- return type; a NULL extraction_batch_id means no batch is in flight and the pass is in its
+-- submit/realtime phase, while a non-NULL one means an earlier attempt submitted a batch awaiting
+-- collection.
+SELECT r.covered_seq,
+       r.extraction_batch_id,
        r.extraction_batch_covered_seq,
        (SELECT extraction_mode FROM projects WHERE projects.id = r.project_id) AS extraction_mode
 FROM runs r
