@@ -3,6 +3,8 @@ package jobs
 import (
 	"encoding/json"
 	"fmt"
+
+	"github.com/lore-gpt/lore/core/workmem"
 )
 
 // maxExtractBytes caps the payload an event may carry and still be worth extracting; larger
@@ -38,4 +40,14 @@ func gatedReason(payload []byte) string {
 		}
 	}
 	return ""
+}
+
+// isStateEvent reports whether the payload declares kind:"state" — a hot working-memory fact that is
+// routed to the working-memory store (or a durable fallback) rather than distilled by the model. It is a
+// cheap top-level tag check; the full fact is decoded (and validated) only when the event is routed.
+func isStateEvent(payload []byte) bool {
+	var head struct {
+		Kind string `json:"kind"`
+	}
+	return json.Unmarshal(payload, &head) == nil && head.Kind == workmem.StateKind
 }

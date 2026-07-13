@@ -24,6 +24,7 @@ import (
 	"github.com/lore-gpt/lore/core/jobs"
 	"github.com/lore-gpt/lore/core/store"
 	"github.com/lore-gpt/lore/core/store/db"
+	"github.com/lore-gpt/lore/core/workmem"
 )
 
 // Queue owns a River client and the pool it runs on. Whether it can work jobs
@@ -48,8 +49,9 @@ func New(pool *pgxpool.Pool) (*Queue, error) {
 // queue: it reads events through the pool, distils them with the given Extractor,
 // persists the result (advancing the run checkpoint) through the store's
 // tenant-scoped transactions, and resolves claim conflicts with the given
-// Adjudicator. `lore worker` uses this and calls Start.
-func NewWorker(st *store.Store, extractor ext.Extractor, adjudicator ext.Adjudicator) (*Queue, error) {
+// Adjudicator. The working-memory store routes kind:"state" events (hot lane when
+// healthy, a durable claim otherwise). `lore worker` uses this and calls Start.
+func NewWorker(st *store.Store, extractor ext.Extractor, adjudicator ext.Adjudicator, wm workmem.Store) (*Queue, error) {
 	pool := st.Pool
 	workers := river.NewWorkers()
 	// The worker reads events straight through db.New(pool) but writes through the store's
@@ -59,7 +61,8 @@ func NewWorker(st *store.Store, extractor ext.Extractor, adjudicator ext.Adjudic
 	// store), or the tenant policies would return no rows and extraction would silently stall — the
 	// writes are already scoped, the reads are not yet.
 	river.AddWorker(workers, jobs.NewExtractRunWorker(
-		db.New(pool), extractor, jobs.NewPGPersister(st, adjudicator), jobs.DefaultDebounce()))
+		db.New(pool), extractor, jobs.NewPGPersister(st, adjudicator), jobs.DefaultDebounce(),
+		jobs.WithWorkmemStore(wm)))
 
 	client, err := river.NewClient(riverpgxv5.New(pool), &river.Config{
 		Queues: map[string]river.QueueConfig{

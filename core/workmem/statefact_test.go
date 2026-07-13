@@ -109,6 +109,27 @@ func TestParseStateFact(t *testing.T) {
 	}
 }
 
+// TestDecodeStateFactSkipsSizeCap proves DecodeStateFact validates the fact but does NOT apply the
+// value-size cap (ParseStateFact does) — a consumer re-reading an already-stored fact must not reject it
+// under a since-lowered limit.
+func TestDecodeStateFactSkipsSizeCap(t *testing.T) {
+	big := `{"kind":"state","entity":"e","predicate":"p","value":"` + strings.Repeat("x", DefaultMaxValueBytes+100) + `"}`
+	if _, err := DecodeStateFact([]byte(big)); err != nil {
+		t.Fatalf("DecodeStateFact rejected an oversized value: %v (it must skip the size cap)", err)
+	}
+	if _, err := ParseStateFact([]byte(big), DefaultMaxValueBytes); err == nil {
+		t.Error("ParseStateFact accepted an oversized value; the cap must apply at ingestion")
+	}
+	// A normal fact still decodes, and still enforces the subject rules.
+	fact, err := DecodeStateFact([]byte(`{"kind":"state","entity":"e","predicate":"p","value":"ok"}`))
+	if err != nil || fact.Entity != "e" || string(fact.Value) != `"ok"` {
+		t.Errorf("DecodeStateFact = %+v, err %v; want {e,p,\"ok\"}", fact, err)
+	}
+	if _, err := DecodeStateFact([]byte(`{"kind":"state","predicate":"p","value":1}`)); err == nil {
+		t.Error("DecodeStateFact accepted a missing entity; subject validation must still apply")
+	}
+}
+
 // TestParseStateFactDefaultValueLimit proves maxValueBytes <= 0 falls back to the package default rather
 // than rejecting every value.
 func TestParseStateFactDefaultValueLimit(t *testing.T) {

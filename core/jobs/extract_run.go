@@ -19,7 +19,12 @@ import (
 
 	"github.com/lore-gpt/lore/core/ext"
 	"github.com/lore-gpt/lore/core/store/db"
+	"github.com/lore-gpt/lore/core/workmem"
 )
+
+// workmemSetTimeout bounds a single hot-lane write from the worker so a stalled cache degrades the pass
+// quickly (falling the fact through to a durable claim) rather than hanging the job.
+const workmemSetTimeout = 2 * time.Second
 
 // ExtractRunArgs enqueues a coalesced extraction pass for one run. It is inserted on the event
 // insert's transaction whenever an event is appended; the unique constraint collapses a burst of
@@ -92,12 +97,32 @@ type ExtractRunWorker struct {
 	extractor ext.Extractor
 	persister Persister
 	debounce  Debounce
+	workmem   workmem.Store
+}
+
+// ExtractRunOption configures optional ExtractRunWorker dependencies.
+type ExtractRunOption func(*ExtractRunWorker)
+
+// WithWorkmemStore injects the working-memory store used to route kind:"state" events: a healthy stripe
+// takes the hot fact and skips extraction; a disabled or degraded one (or a failed write) preserves it as
+// a durable claim instead. Without it the worker defaults to the disabled no-op, so state facts become
+// durable claims.
+func WithWorkmemStore(s workmem.Store) ExtractRunOption {
+	return func(w *ExtractRunWorker) { w.workmem = s }
 }
 
 // NewExtractRunWorker builds the worker from its event source, extractor, persister, and debounce
-// window.
-func NewExtractRunWorker(source EventSource, extractor ext.Extractor, persister Persister, debounce Debounce) *ExtractRunWorker {
-	return &ExtractRunWorker{source: source, extractor: extractor, persister: persister, debounce: debounce}
+// window. Options inject optional dependencies (the working-memory store); by default the store is the
+// disabled no-op.
+func NewExtractRunWorker(source EventSource, extractor ext.Extractor, persister Persister, debounce Debounce, opts ...ExtractRunOption) *ExtractRunWorker {
+	w := &ExtractRunWorker{source: source, extractor: extractor, persister: persister, debounce: debounce, workmem: workmem.NewDisabled()}
+	for _, o := range opts {
+		o(w)
+	}
+	if w.workmem == nil {
+		w.workmem = workmem.NewDisabled()
+	}
+	return w
 }
 
 // Work runs one coalesced extraction pass for the job's run. A run may be in one of two phases: if an
@@ -149,12 +174,13 @@ func (w *ExtractRunWorker) Work(ctx context.Context, job *river.Job[ExtractRunAr
 		return nil // readiness saw pending events but none remain past the checkpoint: nothing to do.
 	}
 
-	window, bySeq, gated := gate(ctx, job.Args.RunID, events)
+	window, stateEvents, bySeq, gated := gate(ctx, job.Args.RunID, events)
 	coveredSeq := events[len(events)-1].Seq // events are seq-ordered; the last is the highest read.
 	slog.InfoContext(ctx, "extract_run window",
 		slog.String("run_id", job.Args.RunID),
 		slog.Int("events", len(events)),
 		slog.Int("gated", gated),
+		slog.Int("state", len(stateEvents)),
 		slog.Int("extracted", len(window)),
 		slog.String("mode", state.ExtractionMode))
 
@@ -194,7 +220,7 @@ func (w *ExtractRunWorker) Work(ctx context.Context, job *river.Job[ExtractRunAr
 			return fmt.Errorf("extract_run: extract: %w", err)
 		}
 	}
-	return w.persistAndDrain(ctx, job, projectID, runID, state.CoveredSeq, coveredSeq, bySeq, res)
+	return w.persistAndDrain(ctx, job, projectID, runID, state.CoveredSeq, coveredSeq, bySeq, stateEvents, res)
 }
 
 // collectBatch handles the economy collect phase: it polls the run's pending batch and, once the
@@ -227,11 +253,15 @@ func (w *ExtractRunWorker) collectBatch(ctx context.Context, job *river.Job[Extr
 		return fmt.Errorf("extract_run: collect list events: %w", err)
 	}
 	bySeq := make(map[int64]db.Event, len(events))
+	var stateEvents []db.Event
 	for _, e := range events {
 		if e.Seq > batchCoveredSeq {
 			break // seq-ordered: the rest arrived after the batch window.
 		}
 		bySeq[e.Seq] = e
+		if isStateEvent(e.Payload) {
+			stateEvents = append(stateEvents, e) // state facts were excluded from the batch; route them now.
+		}
 	}
 
 	slog.InfoContext(ctx, "extract_run batch collected",
@@ -240,14 +270,22 @@ func (w *ExtractRunWorker) collectBatch(ctx context.Context, job *river.Job[Extr
 		slog.Int("memories", len(res.Memories)),
 		slog.Int("claims", len(res.Claims)),
 		slog.Int("entities", len(res.Entities)))
-	return w.persistAndDrain(ctx, job, projectID, runID, expectedCoveredSeq, batchCoveredSeq, bySeq, res)
+	return w.persistAndDrain(ctx, job, projectID, runID, expectedCoveredSeq, batchCoveredSeq, bySeq, stateEvents, res)
 }
 
 // persistAndDrain resolves the extractor's candidates against the read events, persists them while
 // advancing the checkpoint from expectedCoveredSeq to coveredSeq (clearing any batch state in the same
 // transaction), then drains any tail that arrived while the pass ran.
-func (w *ExtractRunWorker) persistAndDrain(ctx context.Context, job *river.Job[ExtractRunArgs], projectID, runID pgtype.UUID, expectedCoveredSeq, coveredSeq int64, bySeq map[int64]db.Event, res ext.ExtractResult) error {
+func (w *ExtractRunWorker) persistAndDrain(ctx context.Context, job *river.Job[ExtractRunArgs], projectID, runID pgtype.UUID, expectedCoveredSeq, coveredSeq int64, bySeq map[int64]db.Event, stateEvents []db.Event, res ext.ExtractResult) error {
 	memories, entities, claims := resolveCandidates(ctx, job.Args.RunID, bySeq, res)
+
+	// Route kind:"state" events: a healthy stripe takes each hot fact (skipped here); a disabled/degraded
+	// stripe (or a failed write) turns it into a durable claim so it is not lost. The claims join the
+	// extracted ones and re-sort by SourceSeq so per-subject supersession stays last-write-wins.
+	if stateClaims := w.routeStateFacts(ctx, projectID, runID, stateEvents); len(stateClaims) > 0 {
+		claims = append(claims, stateClaims...)
+		sort.SliceStable(claims, func(i, j int) bool { return claims[i].SourceSeq < claims[j].SourceSeq })
+	}
 
 	// Persist the memories, entities, and claims and advance the checkpoint in one transaction: a
 	// committed pass moves the checkpoint past its events so they are never reprocessed, and a crashed
@@ -294,15 +332,78 @@ func (w *ExtractRunWorker) persistAndDrain(ctx context.Context, job *river.Job[E
 	return nil
 }
 
-// gate splits the read events into the extraction window (survivors) and archived machine chatter,
-// returning the window, an index of every event read (so a candidate's provenance resolves back to
-// its source event), and the count gated out.
-func gate(ctx context.Context, runID string, events []db.Event) ([]ext.InputEvent, map[int64]db.Event, int) {
-	window := make([]ext.InputEvent, 0, len(events))
-	bySeq := make(map[int64]db.Event, len(events))
-	gated := 0
+// routeStateFacts sends each kind:"state" event to the run's working memory and returns the durable-claim
+// fallbacks for the ones the hot lane could not take. Healthy stripe: write the fact and let the hot lane
+// own it. The write is an unguarded overwrite, so it converges a dropped event-time write-through
+// eventually, not immediately: a delayed pass could momentarily re-emit an older value over a newer
+// concurrent write-through for the same subject, but the checkpoint keeps that newer event pending, so the
+// next coalesced pass restores it (the hot lane is a best-effort cache; durability is never at risk).
+// Disabled, degraded, or a failed write: preserve the fact as a durable claim through the same
+// entity-upsert + last-write-wins path the extractor's claims use, so a same-run reader still sees it. The
+// event log is the durability floor,
+// so this fallback covers only writes made DURING an outage; hot state written before an outage cools when
+// the stripe expires it (a run-close snapshot to persist end-of-run state is future work). A malformed
+// state event is dropped rather than sent to the model — the server validates state facts at ingestion, so
+// this is only a non-standard or pre-validation event.
+func (w *ExtractRunWorker) routeStateFacts(ctx context.Context, projectID, runID pgtype.UUID, stateEvents []db.Event) []ClaimWrite {
+	if len(stateEvents) == 0 {
+		return nil
+	}
+	var claims []ClaimWrite
+	hotLane := 0
+	for _, e := range stateEvents { // seq-ordered, so a same-subject supersession stays last-write-wins.
+		fact, err := workmem.DecodeStateFact(e.Payload)
+		if err != nil {
+			slog.WarnContext(ctx, "extract_run: malformed state event dropped",
+				slog.String("run_id", uuidString(runID)), slog.Int64("seq", e.Seq))
+			continue
+		}
+		if w.workmem.Mode() == workmem.Healthy {
+			sctx, cancel := context.WithTimeout(ctx, workmemSetTimeout)
+			err := w.workmem.Set(sctx, workmem.Key{
+				ProjectID: uuidString(projectID),
+				RunID:     uuidString(runID),
+				Entity:    fact.Entity,
+				Predicate: fact.Predicate,
+			}, workmem.Value{Value: fact.Value, Seq: e.Seq, Agent: e.AgentID})
+			cancel()
+			if err == nil {
+				hotLane++
+				continue // the hot lane owns it; nothing durable.
+			}
+			// The write failed under a nominally-healthy stripe (which just flipped Degraded): fall through
+			// to a durable claim so the fact is not lost.
+		}
+		claims = append(claims, ClaimWrite{
+			Entity:        fact.Entity,
+			Predicate:     fact.Predicate,
+			Value:         fact.Value,
+			SourceEventID: e.ID,
+			SourceSeq:     e.Seq,
+		})
+	}
+	if hotLane > 0 || len(claims) > 0 {
+		slog.InfoContext(ctx, "extract_run state facts routed",
+			slog.String("run_id", uuidString(runID)),
+			slog.Int("hot_lane", hotLane),
+			slog.Int("durable", len(claims)))
+	}
+	return claims
+}
+
+// gate splits the read events three ways: kind:"state" events (routed to working memory, never the
+// model), archived machine chatter (kept raw, never the model), and the extraction window (survivors). It
+// returns the window, the state events, an index of every event read (so a candidate's provenance
+// resolves back to its source event), and the count gated out.
+func gate(ctx context.Context, runID string, events []db.Event) (window []ext.InputEvent, stateEvents []db.Event, bySeq map[int64]db.Event, gated int) {
+	window = make([]ext.InputEvent, 0, len(events))
+	bySeq = make(map[int64]db.Event, len(events))
 	for _, e := range events {
 		bySeq[e.Seq] = e
+		if isStateEvent(e.Payload) {
+			stateEvents = append(stateEvents, e) // routed to the hot lane or a durable claim, not the model.
+			continue
+		}
 		if reason := gatedReason(e.Payload); reason != "" {
 			gated++
 			slog.DebugContext(ctx, "extract gate: event archived",
@@ -313,7 +414,7 @@ func gate(ctx context.Context, runID string, events []db.Event) ([]ext.InputEven
 		}
 		window = append(window, ext.InputEvent{Seq: e.Seq, AgentID: e.AgentID, Payload: json.RawMessage(e.Payload)})
 	}
-	return window, bySeq, gated
+	return window, stateEvents, bySeq, gated
 }
 
 // resolveCandidates maps the extractor's candidates to writes, resolving each one's provenance from
