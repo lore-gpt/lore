@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"sort"
 	"time"
 
 	"github.com/google/uuid"
@@ -177,16 +178,59 @@ func (w *ExtractRunWorker) Work(ctx context.Context, job *river.Job[ExtractRunAr
 			Content:        m.Content,
 			SourceEventID:  src.ID,
 			CreatedByAgent: src.AgentID,
+			SourceSeq:      m.SourceSeq,
 		})
 	}
 
-	// Persist the memories and advance the checkpoint in one transaction: a committed pass moves the
-	// checkpoint past its events so they are never reprocessed, and a crashed one rolls both back.
+	// Entities carry through as-is (name/type/aliases); the persister registers them and resolves ids.
+	entities := make([]EntityWrite, 0, len(res.Entities))
+	for _, e := range res.Entities {
+		entities = append(entities, EntityWrite{Name: e.Name, Type: e.Type, Aliases: e.Aliases})
+	}
+
+	// Resolve each candidate claim's provenance the same way, dropping any that name a seq outside the
+	// window. Sort by SourceSeq so the persister's per-subject supersession is deterministic
+	// last-write-wins regardless of the extractor's output order.
+	claims := make([]ClaimWrite, 0, len(res.Claims))
+	for _, c := range res.Claims {
+		src, ok := bySeq[c.SourceSeq]
+		if !ok {
+			slog.WarnContext(ctx, "extract_run: candidate claim references a seq outside the window; dropped",
+				slog.String("run_id", job.Args.RunID),
+				slog.Int64("source_seq", c.SourceSeq))
+			continue
+		}
+		// A claim's value is a NOT NULL jsonb; a candidate whose value is empty or not well-formed JSON
+		// is malformed. Drop it rather than let it abort the whole coalesced pass at the insert (a
+		// deterministic failure would just retry to exhaustion and strand the checkpoint). A JSON
+		// `null` literal is a non-empty, valid value and is kept.
+		if len(c.Value) == 0 || !json.Valid(c.Value) {
+			slog.WarnContext(ctx, "extract_run: candidate claim has no valid JSON value; dropped",
+				slog.String("run_id", job.Args.RunID),
+				slog.Int64("source_seq", c.SourceSeq))
+			continue
+		}
+		claims = append(claims, ClaimWrite{
+			Entity:        c.Entity,
+			Predicate:     c.Predicate,
+			Value:         c.Value,
+			EventTime:     c.EventTime,
+			SourceEventID: src.ID,
+			SourceSeq:     c.SourceSeq,
+		})
+	}
+	sort.SliceStable(claims, func(i, j int) bool { return claims[i].SourceSeq < claims[j].SourceSeq })
+
+	// Persist the memories, entities, and claims and advance the checkpoint in one transaction: a
+	// committed pass moves the checkpoint past its events so they are never reprocessed, and a crashed
+	// one rolls it all back together.
 	if err := w.persister.Persist(ctx, PersistInput{
 		ProjectID:  projectID,
 		RunID:      runID,
 		CoveredSeq: coveredSeq,
 		Memories:   memories,
+		Entities:   entities,
+		Claims:     claims,
 	}); err != nil {
 		return fmt.Errorf("extract_run: persist: %w", err)
 	}
@@ -198,8 +242,8 @@ func (w *ExtractRunWorker) Work(ctx context.Context, job *river.Job[ExtractRunAr
 		slog.Int("extracted", len(window)),
 		slog.Int64("covered_seq", coveredSeq),
 		slog.Int("memories", len(memories)),
-		slog.Int("claims", len(res.Claims)),
-		slog.Int("entities", len(res.Entities)))
+		slog.Int("claims", len(claims)),
+		slog.Int("entities", len(entities)))
 
 	// Tail drain: events may have arrived while this pass ran — unique-by-state coalesced them into
 	// this running job, so they got no job of their own. If any remain past the advanced checkpoint,

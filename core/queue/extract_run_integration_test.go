@@ -567,3 +567,164 @@ func TestExtractRunCheckpointProcessesEachEventOnce(t *testing.T) {
 		t.Errorf("covered_seq = %d, want 2 (advanced across both events)", coveredSeq)
 	}
 }
+
+// TestExtractRunPersistsClaimAndEntity drives one event carrying a memory, a claim, and an entity
+// mention through the FixtureExtractor worker and asserts the entity is registered, the claim is
+// stored with its subject resolved to that entity, its provenance stamped (source event), and its
+// memory_id linked to the memory distilled from the same event.
+func TestExtractRunPersistsClaimAndEntity(t *testing.T) {
+	ctx := context.Background()
+	st := migratedStore(ctx, t)
+
+	w, err := queue.NewWorker(st, ext.FixtureExtractor{})
+	if err != nil {
+		t.Fatalf("new worker: %v", err)
+	}
+	if err := w.Start(ctx); err != nil {
+		t.Fatalf("start worker: %v", err)
+	}
+	t.Cleanup(func() {
+		stopCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_ = w.Stop(stopCtx)
+	})
+
+	proj, run := seedProjectRun(ctx, t, st)
+	q := db.New(st.Pool)
+	ev, err := q.InsertEvent(ctx, db.InsertEventParams{
+		RunID:   run.ID,
+		AgentID: "planner",
+		Payload: []byte(`{"memory":"deploy done","claim":{"entity":"payment-svc","predicate":"status","value":"up"},"entities":[{"name":"payment-svc","type":"service","aliases":["pay-svc"]}]}`),
+	})
+	if err != nil {
+		t.Fatalf("insert event: %v", err)
+	}
+
+	enqueueExtract(ctx, t, w, st, uuid.UUID(proj.ID.Bytes).String(), uuid.UUID(run.ID.Bytes).String())
+	// Memory and claim commit in one transaction, so once the memory appears the claim is present too.
+	waitForMemoryCount(ctx, t, st, proj.ID, 1, 20*time.Second)
+
+	// The entity was registered.
+	var entityID pgtype.UUID
+	var entityType string
+	var aliases []string
+	if err := st.Pool.QueryRow(ctx,
+		`SELECT id, type, aliases FROM entities WHERE project_id = $1 AND name = 'payment-svc'`, proj.ID).
+		Scan(&entityID, &entityType, &aliases); err != nil {
+		t.Fatalf("read entity: %v", err)
+	}
+	if entityType != "service" {
+		t.Errorf("entity type = %q, want service", entityType)
+	}
+	if len(aliases) != 1 || aliases[0] != "pay-svc" {
+		t.Errorf("entity aliases = %v, want [pay-svc]", aliases)
+	}
+
+	// The claim resolved its subject to that entity, carries its value/predicate, links to the
+	// same-event memory, and stamps provenance.
+	var claimEntity pgtype.UUID
+	var predicate string
+	var value []byte
+	var memoryLinked bool
+	var srcEvent pgtype.UUID
+	if err := st.Pool.QueryRow(ctx,
+		`SELECT entity_id, predicate, value, memory_id IS NOT NULL, source_event_id FROM claims WHERE project_id = $1`, proj.ID).
+		Scan(&claimEntity, &predicate, &value, &memoryLinked, &srcEvent); err != nil {
+		t.Fatalf("read claim: %v", err)
+	}
+	if claimEntity != entityID {
+		t.Errorf("claim entity_id = %v, want the registered entity %v", claimEntity, entityID)
+	}
+	if predicate != "status" || string(value) != `"up"` {
+		t.Errorf("claim = {%q, %s}, want {status, \"up\"}", predicate, value)
+	}
+	if !memoryLinked {
+		t.Error("claim from a memory-bearing event should link to that event's memory (memory_id set)")
+	}
+	if srcEvent != ev.ID {
+		t.Errorf("claim source_event_id = %v, want the source event %v", srcEvent, ev.ID)
+	}
+}
+
+// TestExtractRunClaimLWWWithinPass drives two events asserting the same subject with different values
+// through a single coalesced pass and proves last-write-wins by seq: the later claim is active and the
+// earlier is superseded. Both events are memory-less, so it also proves standalone claims persist with
+// memory_id NULL.
+func TestExtractRunClaimLWWWithinPass(t *testing.T) {
+	ctx := context.Background()
+	st := migratedStore(ctx, t)
+
+	w, err := queue.NewWorker(st, ext.FixtureExtractor{})
+	if err != nil {
+		t.Fatalf("new worker: %v", err)
+	}
+	if err := w.Start(ctx); err != nil {
+		t.Fatalf("start worker: %v", err)
+	}
+	t.Cleanup(func() {
+		stopCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_ = w.Stop(stopCtx)
+	})
+
+	proj, run := seedProjectRun(ctx, t, st)
+	q := db.New(st.Pool)
+	// Both events inserted before the enqueue, so the debounce coalesces them into one window (one
+	// pass) — the later (seq 2) must win.
+	if _, err := q.InsertEvent(ctx, db.InsertEventParams{RunID: run.ID, AgentID: "a", Payload: []byte(`{"claim":{"entity":"auth","predicate":"state","value":"active"}}`)}); err != nil {
+		t.Fatalf("insert event 1: %v", err)
+	}
+	if _, err := q.InsertEvent(ctx, db.InsertEventParams{RunID: run.ID, AgentID: "a", Payload: []byte(`{"claim":{"entity":"auth","predicate":"state","value":"done"}}`)}); err != nil {
+		t.Fatalf("insert event 2: %v", err)
+	}
+
+	enqueueExtract(ctx, t, w, st, uuid.UUID(proj.ID.Bytes).String(), uuid.UUID(run.ID.Bytes).String())
+	// No memory is produced, so wait on the pass completing (the persist committed by then).
+	waitForCompletedExtractJobs(ctx, t, st, 1, 20*time.Second)
+
+	// Exactly one active claim for the subject, valued by the later event, and it is standalone.
+	var activeID pgtype.UUID
+	var activeValue []byte
+	var activeMemoryLinked bool
+	if err := st.Pool.QueryRow(ctx,
+		`SELECT c.id, c.value, c.memory_id IS NOT NULL
+		   FROM claims c JOIN entities e ON e.id = c.entity_id
+		  WHERE c.project_id = $1 AND e.name = 'auth' AND c.predicate = 'state' AND c.superseded_by IS NULL`,
+		proj.ID).Scan(&activeID, &activeValue, &activeMemoryLinked); err != nil {
+		t.Fatalf("read active claim: %v", err)
+	}
+	if string(activeValue) != `"done"` {
+		t.Errorf("active claim value = %s, want \"done\" (last-write-wins by seq)", activeValue)
+	}
+	if activeMemoryLinked {
+		t.Error("a claim from a memory-less event should be standalone (memory_id NULL)")
+	}
+
+	// Two claims exist for the subject: one active, one superseded — the invariant the partial-unique
+	// index enforces, reached via the deferred supersede-then-insert swap.
+	var total, superseded int
+	if err := st.Pool.QueryRow(ctx,
+		`SELECT count(*), count(*) FILTER (WHERE c.superseded_by IS NOT NULL)
+		   FROM claims c JOIN entities e ON e.id = c.entity_id
+		  WHERE c.project_id = $1 AND e.name = 'auth' AND c.predicate = 'state'`,
+		proj.ID).Scan(&total, &superseded); err != nil {
+		t.Fatalf("count subject claims: %v", err)
+	}
+	if total != 2 || superseded != 1 {
+		t.Errorf("subject claims = %d (superseded %d), want 2 (1 superseded)", total, superseded)
+	}
+
+	// The superseded (earlier) claim points at the active replacement — the chain head — proving the
+	// deferred supersede-then-insert swap linked them, not merely that some row happens to be superseded.
+	var supersededPointsAt pgtype.UUID
+	if err := st.Pool.QueryRow(ctx,
+		`SELECT c.superseded_by
+		   FROM claims c JOIN entities e ON e.id = c.entity_id
+		  WHERE c.project_id = $1 AND e.name = 'auth' AND c.predicate = 'state' AND c.superseded_by IS NOT NULL`,
+		proj.ID).Scan(&supersededPointsAt); err != nil {
+		t.Fatalf("read superseded claim: %v", err)
+	}
+	if supersededPointsAt != activeID {
+		t.Errorf("superseded claim points at %v, want the active replacement %v", supersededPointsAt, activeID)
+	}
+}
