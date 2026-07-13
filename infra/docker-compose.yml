@@ -58,7 +58,7 @@ services:
     restart: unless-stopped
     build:
       context: ..
-      dockerfile: Dockerfile
+      dockerfile: infra/Dockerfile
     command: ["serve", "--auto-migrate"]
     environment:
       LORE_DATABASE_URL: postgres://lore:lore@paradedb:5432/lore?sslmode=disable
@@ -82,7 +82,7 @@ services:
     restart: unless-stopped
     build:
       context: ..
-      dockerfile: Dockerfile
+      dockerfile: infra/Dockerfile
     command: ["worker"]
     environment:
       LORE_DATABASE_URL: postgres://lore:lore@paradedb:5432/lore?sslmode=disable

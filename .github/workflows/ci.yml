@@ -134,8 +134,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      # Redocly reads redocly.yaml at the repo root for the ruleset.
-      - run: npx --yes @redocly/cli@2.38.0 lint spec/openapi.yaml
+      # The redocly ruleset lives next to the spec (spec/redocly.yaml).
+      - run: npx --yes @redocly/cli@2.38.0 lint --config spec/redocly.yaml spec/openapi.yaml
 
   docker-build:
     name: docker-build (image size · criterion 5)
@@ -143,7 +143,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: build distroless image
-        run: docker build -t lore:ci .
+        run: docker build -f infra/Dockerfile -t lore:ci .
       - name: assert image under 30 MB
         run: |
           size=$(docker image inspect lore:ci --format '{{.Size}}')

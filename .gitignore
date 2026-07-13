@@ -37,9 +37,10 @@ venv/
 *.sqlite
 docker-compose.override.yml
 
-# --- Editors / OS ---
+# --- Editors / OS / local AI tooling ---
 .idea/
 .vscode/
+.claude/
 *.swp
 .DS_Store
 Thumbs.db

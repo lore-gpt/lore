@@ -173,12 +173,12 @@ recall (vector + BM25 + entity), MCP server + TS/Python SDKs, minimal inspector.
 The full server is **Apache-2.0**: write/read pipeline, scope model, MCP server, SDKs, basic inspector.
 A hosted cloud and advanced governance (advanced ACL, curation workflow, analytics) fund the project.
 The boundary is public and stable — no surprises. See
-[the OSS and paid boundary](CONTRIBUTING.md#the-oss-and-paid-boundary).
+[the OSS and paid boundary](.github/CONTRIBUTING.md#the-oss-and-paid-boundary).
 
 ## Contributing
 
-RFCs, issues, and early design feedback are welcome — start with [CONTRIBUTING.md](CONTRIBUTING.md).
-Found a security issue? See [SECURITY.md](SECURITY.md).
+RFCs, issues, and early design feedback are welcome — start with [CONTRIBUTING.md](.github/CONTRIBUTING.md).
+Found a security issue? See [SECURITY.md](.github/SECURITY.md).
 
 ## License
 

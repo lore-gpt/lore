@@ -64,6 +64,9 @@ type fakeSource struct {
 	tailReadiness  db.RunExtractionReadinessRow
 	readinessCalls int
 	gotArg         db.ListRunEventsParams
+	// state defaults to the zero value: an empty mode (!= "economy", so the realtime path) and no
+	// pending batch — which is what the pre-existing realtime tests expect.
+	state db.GetRunExtractionStateRow
 }
 
 func (f *fakeSource) RunExtractionReadiness(_ context.Context, _ db.RunExtractionReadinessParams) (db.RunExtractionReadinessRow, error) {
@@ -77,6 +80,10 @@ func (f *fakeSource) RunExtractionReadiness(_ context.Context, _ db.RunExtractio
 func (f *fakeSource) ListRunEvents(_ context.Context, arg db.ListRunEventsParams) ([]db.Event, error) {
 	f.gotArg = arg
 	return f.events, nil
+}
+
+func (f *fakeSource) GetRunExtractionState(_ context.Context, _ db.GetRunExtractionStateParams) (db.GetRunExtractionStateRow, error) {
+	return f.state, nil
 }
 
 // spyExtractor records the window it was called with and returns a canned result.
@@ -96,6 +103,10 @@ func (s *spyExtractor) Extract(_ context.Context, in ext.ExtractInput) (ext.Extr
 type spyPersister struct {
 	calls int
 	last  jobs.PersistInput
+
+	batchCalls      int
+	batchHandle     string
+	batchCoveredSeq int64
 }
 
 func (p *spyPersister) Persist(_ context.Context, in jobs.PersistInput) error {
@@ -104,10 +115,54 @@ func (p *spyPersister) Persist(_ context.Context, in jobs.PersistInput) error {
 	return nil
 }
 
-// SetRunBatch satisfies the Persister interface; the worker's economy path exercises it in a later
-// increment, so here it is a no-op.
-func (p *spyPersister) SetRunBatch(_ context.Context, _, _ pgtype.UUID, _ string, _ int64) error {
+func (p *spyPersister) SetRunBatch(_ context.Context, _, _ pgtype.UUID, handle string, coveredSeq int64) error {
+	p.batchCalls++
+	p.batchHandle = handle
+	p.batchCoveredSeq = coveredSeq
 	return nil
+}
+
+// spyBatchExtractor implements both ext.Extractor and ext.BatchExtractor so a test can drive the
+// economy submit/collect phases. CollectBatch returns done=false until doneAfter calls have elapsed,
+// so a test can exercise the poll-then-complete path.
+type spyBatchExtractor struct {
+	result ext.ExtractResult
+
+	submitCalls int
+	submitGot   ext.ExtractInput
+	handle      string
+	submitErr   error
+
+	collectCalls int
+	collectGot   []string
+	doneAfter    int
+	collectErr   error
+}
+
+func (s *spyBatchExtractor) Extract(_ context.Context, in ext.ExtractInput) (ext.ExtractResult, error) {
+	s.submitGot = in // records the window on the synchronous (economy-fallback) path too
+	return s.result, nil
+}
+
+func (s *spyBatchExtractor) SubmitBatch(_ context.Context, in ext.ExtractInput) (string, error) {
+	s.submitCalls++
+	s.submitGot = in
+	if s.submitErr != nil {
+		return "", s.submitErr
+	}
+	return s.handle, nil
+}
+
+func (s *spyBatchExtractor) CollectBatch(_ context.Context, handle string) (ext.ExtractResult, bool, error) {
+	s.collectCalls++
+	s.collectGot = append(s.collectGot, handle)
+	if s.collectErr != nil {
+		return ext.ExtractResult{}, false, s.collectErr
+	}
+	if s.collectCalls <= s.doneAfter {
+		return ext.ExtractResult{}, false, nil
+	}
+	return s.result, true, nil
 }
 
 // ready is a readiness that always processes (idle far past any window).
@@ -470,5 +525,187 @@ func TestExtractRunWorker_BadUUIDFails(t *testing.T) {
 	job := &river.Job[jobs.ExtractRunArgs]{Args: jobs.ExtractRunArgs{ProjectID: "not-a-uuid", RunID: uuid.NewString()}}
 	if err := w.Work(context.Background(), job); err == nil {
 		t.Error("Work with a malformed project_id should error")
+	}
+}
+
+func economyState() db.GetRunExtractionStateRow {
+	return db.GetRunExtractionStateRow{ExtractionMode: "economy"}
+}
+
+func pendingBatchState(handle string, coveredSeq int64) db.GetRunExtractionStateRow {
+	return db.GetRunExtractionStateRow{ExtractionBatchID: &handle, ExtractionBatchCoveredSeq: &coveredSeq}
+}
+
+func TestExtractRunWorker_EconomySubmitsBatch(t *testing.T) {
+	src := &fakeSource{
+		events: []db.Event{
+			{Seq: 1, AgentID: "a", Payload: []byte(`{"memory":"keep"}`)},
+			{Seq: 2, AgentID: "a", Payload: []byte(`{"kind":"tool_log"}`)}, // gated, and the highest seq read
+		},
+		readiness: ready(2),
+		state:     economyState(),
+	}
+	batch := &spyBatchExtractor{handle: "batch_1"}
+	per := &spyPersister{}
+	w := jobs.NewExtractRunWorker(src, batch, per, jobs.DefaultDebounce())
+	job := &river.Job[jobs.ExtractRunArgs]{Args: jobs.ExtractRunArgs{ProjectID: uuid.NewString(), RunID: uuid.NewString()}}
+
+	err := w.Work(context.Background(), job)
+	// Economy submit defers collection: the pass snoozes to poll and must not persist yet.
+	var snooze *river.JobSnoozeError
+	if !errors.As(err, &snooze) {
+		t.Fatalf("economy submit should snooze to poll, got err %v", err)
+	}
+	if snooze.Duration != jobs.DefaultDebounce().BatchPoll {
+		t.Errorf("submit snooze = %v, want the batch poll interval %v", snooze.Duration, jobs.DefaultDebounce().BatchPoll)
+	}
+	if batch.submitCalls != 1 {
+		t.Fatalf("SubmitBatch calls = %d, want 1", batch.submitCalls)
+	}
+	// Only the ungated event reaches the batch; the checkpoint recorded is the highest seq READ (2).
+	if len(batch.submitGot.Events) != 1 || batch.submitGot.Events[0].Seq != 1 {
+		t.Errorf("submitted window = %+v, want just seq 1 (tool_log gated)", batch.submitGot.Events)
+	}
+	if per.batchCalls != 1 || per.batchHandle != "batch_1" || per.batchCoveredSeq != 2 {
+		t.Errorf("SetRunBatch = {calls:%d handle:%q covered:%d}, want {1 batch_1 2}", per.batchCalls, per.batchHandle, per.batchCoveredSeq)
+	}
+	if per.calls != 0 {
+		t.Error("economy submit must not persist yet (collection happens later)")
+	}
+	if batch.collectCalls != 0 {
+		t.Error("the submit phase must not collect")
+	}
+}
+
+func TestExtractRunWorker_EconomyAllGatedAdvancesCheckpoint(t *testing.T) {
+	src := &fakeSource{
+		events: []db.Event{
+			{Seq: 1, AgentID: "a", Payload: []byte(`{"kind":"tool_log"}`)},
+			{Seq: 2, AgentID: "a", Payload: []byte(`{"kind":"tool_log"}`)},
+		},
+		readiness: ready(2),
+		state:     economyState(),
+	}
+	batch := &spyBatchExtractor{handle: "unused"}
+	per := &spyPersister{}
+	w := jobs.NewExtractRunWorker(src, batch, per, jobs.DefaultDebounce())
+	job := &river.Job[jobs.ExtractRunArgs]{Args: jobs.ExtractRunArgs{ProjectID: uuid.NewString(), RunID: uuid.NewString()}}
+	if err := w.Work(context.Background(), job); err != nil {
+		t.Fatalf("Work: %v", err)
+	}
+	// An all-gated window has nothing to submit; it advances the checkpoint synchronously instead.
+	if batch.submitCalls != 0 || per.batchCalls != 0 {
+		t.Errorf("all-gated economy window must not submit a batch (submit=%d setBatch=%d)", batch.submitCalls, per.batchCalls)
+	}
+	if per.calls != 1 || per.last.CoveredSeq != 2 {
+		t.Errorf("checkpoint should advance to 2 synchronously; persist calls=%d covered=%d", per.calls, per.last.CoveredSeq)
+	}
+	if len(per.last.Memories) != 0 {
+		t.Errorf("an all-gated window yields no memories, got %d", len(per.last.Memories))
+	}
+}
+
+func TestExtractRunWorker_EconomyFallsBackWithoutBatchCapability(t *testing.T) {
+	src := &fakeSource{
+		events:    []db.Event{{Seq: 1, AgentID: "a", Payload: []byte(`{"memory":"keep"}`)}},
+		readiness: ready(1),
+		state:     economyState(),
+	}
+	spy := &spyExtractor{} // a plain Extractor, NOT batch-capable
+	per := &spyPersister{}
+	w := jobs.NewExtractRunWorker(src, spy, per, jobs.DefaultDebounce())
+	job := &river.Job[jobs.ExtractRunArgs]{Args: jobs.ExtractRunArgs{ProjectID: uuid.NewString(), RunID: uuid.NewString()}}
+	if err := w.Work(context.Background(), job); err != nil {
+		t.Fatalf("Work: %v", err)
+	}
+	// Economy mode with a non-batch extractor falls back to a synchronous pass rather than stalling.
+	if spy.calls != 1 {
+		t.Errorf("expected a synchronous Extract fallback, extractor calls=%d", spy.calls)
+	}
+	if per.calls != 1 || per.last.CoveredSeq != 1 {
+		t.Errorf("the fallback should persist + advance; persist calls=%d covered=%d", per.calls, per.last.CoveredSeq)
+	}
+	if per.batchCalls != 0 {
+		t.Error("a non-batch extractor cannot submit a batch")
+	}
+}
+
+func TestExtractRunWorker_CollectSnoozesUntilDone(t *testing.T) {
+	src := &fakeSource{state: pendingBatchState("batch_9", 5)}
+	batch := &spyBatchExtractor{doneAfter: 1} // the first collect returns not-done
+	per := &spyPersister{}
+	w := jobs.NewExtractRunWorker(src, batch, per, jobs.DefaultDebounce())
+	job := &river.Job[jobs.ExtractRunArgs]{Args: jobs.ExtractRunArgs{ProjectID: uuid.NewString(), RunID: uuid.NewString()}}
+
+	err := w.Work(context.Background(), job)
+	var snooze *river.JobSnoozeError
+	if !errors.As(err, &snooze) {
+		t.Fatalf("a not-ready batch should snooze to poll, got err %v", err)
+	}
+	if snooze.Duration != jobs.DefaultDebounce().BatchPoll {
+		t.Errorf("poll snooze = %v, want %v", snooze.Duration, jobs.DefaultDebounce().BatchPoll)
+	}
+	if batch.collectCalls != 1 || len(batch.collectGot) != 1 || batch.collectGot[0] != "batch_9" {
+		t.Errorf("CollectBatch should run once with the pending handle, got calls=%d got=%v", batch.collectCalls, batch.collectGot)
+	}
+	if batch.submitCalls != 0 {
+		t.Error("the collect phase must not submit")
+	}
+	if per.calls != 0 {
+		t.Error("a not-ready batch must not persist")
+	}
+}
+
+func TestExtractRunWorker_CollectPersistsWhenDone(t *testing.T) {
+	src := &fakeSource{
+		// Re-read for provenance: the events the batch covered (seq <= 2). The zero-value readiness
+		// leaves the tail drained, so the pass completes.
+		events: []db.Event{
+			{Seq: 1, AgentID: "planner", Payload: []byte(`{"memory":"x"}`)},
+			{Seq: 2, AgentID: "coder", Payload: []byte(`{"memory":"y"}`)},
+		},
+		state: pendingBatchState("batch_9", 2),
+	}
+	batch := &spyBatchExtractor{
+		doneAfter: 0, // immediately ready
+		result: ext.ExtractResult{Memories: []ext.CandidateMemory{
+			{Kind: "semantic", Content: "distilled", SourceSeq: 1},
+		}},
+	}
+	per := &spyPersister{}
+	w := jobs.NewExtractRunWorker(src, batch, per, jobs.DefaultDebounce())
+	job := &river.Job[jobs.ExtractRunArgs]{Args: jobs.ExtractRunArgs{ProjectID: uuid.NewString(), RunID: uuid.NewString()}}
+	if err := w.Work(context.Background(), job); err != nil {
+		t.Fatalf("Work: %v", err)
+	}
+	if batch.collectCalls != 1 {
+		t.Fatalf("CollectBatch calls = %d, want 1", batch.collectCalls)
+	}
+	if per.calls != 1 {
+		t.Fatalf("a collected batch should persist once, persist calls=%d", per.calls)
+	}
+	// The checkpoint advances to the submit-time seq the batch covered, not beyond.
+	if per.last.CoveredSeq != 2 {
+		t.Errorf("covered_seq = %d, want 2 (the batch's submit-time seq)", per.last.CoveredSeq)
+	}
+	// The result's memory resolved its provenance from the re-read event at seq 1.
+	if len(per.last.Memories) != 1 || per.last.Memories[0].Content != "distilled" ||
+		per.last.Memories[0].SourceSeq != 1 || per.last.Memories[0].CreatedByAgent != "planner" {
+		t.Errorf("persisted memories = %+v, want one distilled memory at seq 1 by planner", per.last.Memories)
+	}
+}
+
+func TestExtractRunWorker_CollectWithoutBatchCapabilityErrors(t *testing.T) {
+	// A pending batch but a non-batch extractor (the provider configuration changed): fail loudly
+	// without persisting, so the run stays put until a batch-capable provider is restored.
+	src := &fakeSource{state: pendingBatchState("batch_9", 2)}
+	per := &spyPersister{}
+	w := jobs.NewExtractRunWorker(src, &spyExtractor{}, per, jobs.DefaultDebounce())
+	job := &river.Job[jobs.ExtractRunArgs]{Args: jobs.ExtractRunArgs{ProjectID: uuid.NewString(), RunID: uuid.NewString()}}
+	if err := w.Work(context.Background(), job); err == nil {
+		t.Error("a pending batch with a non-batch extractor should error")
+	}
+	if per.calls != 0 {
+		t.Error("must not persist or advance when it cannot collect")
 	}
 }
