@@ -11,8 +11,10 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/lore-gpt/lore/core/apikey"
 	"github.com/lore-gpt/lore/core/queue"
 	"github.com/lore-gpt/lore/core/store/db"
 )
@@ -25,7 +27,7 @@ func TestEventProcessedEndToEnd(t *testing.T) {
 	ctx := context.Background()
 	dsn := startParadeDB(ctx, t)
 
-	srv, err := NewServer(ctx, Config{Addr: "127.0.0.1:0", DatabaseURL: dsn, APIKey: "k"})
+	srv, err := NewServer(ctx, Config{Addr: "127.0.0.1:0", DatabaseURL: dsn})
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
@@ -47,11 +49,12 @@ func TestEventProcessedEndToEnd(t *testing.T) {
 	workerDone := make(chan error, 1)
 	go func() { workerDone <- worker.Start(runCtx) }()
 
-	// Post an event through the composed HTTP handler.
-	runID := seedRun(ctx, t, srv.store.Pool)
+	// Post an event through the composed HTTP handler, authenticated by a real minted key for the project.
+	projectID, runID := seedRun(ctx, t, srv.store.Pool)
+	token := provisionKey(ctx, t, srv.store.Pool, projectID)
 	body := `{"run_id":"` + runID + `","agent_id":"researcher","payload":{"k":"v"}}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/events", strings.NewReader(body))
-	req.Header.Set("Authorization", "Bearer k")
+	req.Header.Set("Authorization", "Bearer "+token)
 	rr := httptest.NewRecorder()
 	srv.http.Handler.ServeHTTP(rr, req)
 	if rr.Code != http.StatusAccepted {
@@ -97,9 +100,9 @@ func waitForCompletedJob(ctx context.Context, t *testing.T, pool *pgxpool.Pool, 
 	}
 }
 
-// seedRun creates the org -> project -> run chain an event needs and returns the
-// run id as a canonical UUID string.
-func seedRun(ctx context.Context, t *testing.T, pool *pgxpool.Pool) string {
+// seedRun creates the org -> project -> run chain an event needs and returns the project and run ids as
+// canonical UUID strings.
+func seedRun(ctx context.Context, t *testing.T, pool *pgxpool.Pool) (projectID, runID string) {
 	t.Helper()
 	q := db.New(pool)
 	org, err := q.InsertOrganization(ctx, "acme")
@@ -114,5 +117,26 @@ func seedRun(ctx context.Context, t *testing.T, pool *pgxpool.Pool) string {
 	if err != nil {
 		t.Fatalf("insert run: %v", err)
 	}
-	return uuid.UUID(run.ID.Bytes).String()
+	return uuid.UUID(proj.ID.Bytes).String(), uuid.UUID(run.ID.Bytes).String()
+}
+
+// provisionKey mints an API key for a project (as `lore keys create` does) and returns the raw bearer token.
+func provisionKey(ctx context.Context, t *testing.T, pool *pgxpool.Pool, projectID string) string {
+	t.Helper()
+	pid, err := uuid.Parse(projectID)
+	if err != nil {
+		t.Fatalf("parse project id: %v", err)
+	}
+	token, hash, prefix, err := apikey.New()
+	if err != nil {
+		t.Fatalf("mint key: %v", err)
+	}
+	if _, err := db.New(pool).CreateAPIKey(ctx, db.CreateAPIKeyParams{
+		ProjectID: pgtype.UUID{Bytes: pid, Valid: true},
+		KeyPrefix: &prefix,
+		KeyHash:   hash,
+	}); err != nil {
+		t.Fatalf("create key: %v", err)
+	}
+	return token
 }

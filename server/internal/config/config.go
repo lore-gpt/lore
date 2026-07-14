@@ -14,7 +14,6 @@ import (
 // Config is the process configuration read from the environment.
 type Config struct {
 	DatabaseURL string // LORE_DATABASE_URL (required)
-	APIKey      string // LORE_API_KEY (required)
 	Addr        string // LORE_ADDR (default ":8080")
 	ValkeyURL   string // LORE_VALKEY_URL (working-memory cache; unset disables the stripe)
 
@@ -36,7 +35,6 @@ type Config struct {
 func Load() (Config, error) {
 	c := Config{
 		DatabaseURL: strings.TrimSpace(os.Getenv("LORE_DATABASE_URL")),
-		APIKey:      strings.TrimSpace(os.Getenv("LORE_API_KEY")),
 		Addr:        getenv("LORE_ADDR", ":8080"),
 		ValkeyURL:   strings.TrimSpace(os.Getenv("LORE_VALKEY_URL")),
 
@@ -49,7 +47,6 @@ func Load() (Config, error) {
 
 	for _, req := range []struct{ name, val string }{
 		{"LORE_DATABASE_URL", c.DatabaseURL},
-		{"LORE_API_KEY", c.APIKey},
 	} {
 		if req.val == "" {
 			return Config{}, fmt.Errorf("config: %s is required", req.name)

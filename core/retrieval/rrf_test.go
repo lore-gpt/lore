@@ -37,7 +37,7 @@ func sameOrder(a, b []HybridResult) bool {
 		return false
 	}
 	for i := range a {
-		if a[i].ID != b[i].ID || quantizeScore(a[i].Score) != quantizeScore(b[i].Score) {
+		if a[i].ID != b[i].ID || QuantizeScore(a[i].Score) != QuantizeScore(b[i].Score) {
 			return false
 		}
 	}
@@ -118,14 +118,14 @@ func TestFusePermutationDeterminism(t *testing.T) {
 	}
 
 	// The three scores must be EQUAL after quantization — that is what forces the id tie-break, and pins that
-	// quantizeScore is actually used in the comparator (a raw-float compare would leave the order unstable
+	// QuantizeScore is actually used in the comparator (a raw-float compare would leave the order unstable
 	// across runs and fail the determinism loop above).
 	if len(first) != 3 {
 		t.Fatalf("got %d results, want 3", len(first))
 	}
-	q0 := quantizeScore(first[0].Score)
+	q0 := QuantizeScore(first[0].Score)
 	for _, r := range first {
-		if quantizeScore(r.Score) != q0 {
+		if QuantizeScore(r.Score) != q0 {
 			t.Fatalf("scores not all equal after quantize (%v) — the id tie-break is not the deciding factor", first)
 		}
 	}
@@ -142,10 +142,10 @@ func TestFusePermutationDeterminism(t *testing.T) {
 // TestQuantizeScore pins the determinism grid: scores within one quantum collapse to the same bucket (so
 // they fall to the id tie-break), and scores a quantum apart do not.
 func TestQuantizeScore(t *testing.T) {
-	if quantizeScore(0.010001) != quantizeScore(0.010002) {
+	if QuantizeScore(0.010001) != QuantizeScore(0.010002) {
 		t.Errorf("scores within a quantum must share a bucket")
 	}
-	if quantizeScore(0.0100) == quantizeScore(0.0102) {
+	if QuantizeScore(0.0100) == QuantizeScore(0.0102) {
 		t.Errorf("scores two quanta apart must differ")
 	}
 }

@@ -52,9 +52,11 @@ type HybridResult struct {
 	Score   float64
 }
 
-// quantizeScore rounds a fused score to the comparison grid (see scoreQuantum). It is the one place scores
-// are discretised for ordering, shared by every consumer that must sort scored rows deterministically.
-func quantizeScore(f float64) int64 { return int64(math.Round(f / scoreQuantum)) }
+// QuantizeScore rounds a fused score to the comparison grid (see scoreQuantum). It is the ONE place scores are
+// discretised for ordering — the single determinism home every consumer that sorts scored rows shares: the
+// fusion below and the context-pack builder's stable sort both round through it, so a pack orders its memories
+// on exactly the grid the fused read ranked them on, immune to float noise in a score's low bits.
+func QuantizeScore(f float64) int64 { return int64(math.Round(f / scoreQuantum)) }
 
 // fuse combines the per-leg ranked candidate lists into one order by reciprocal rank fusion. perLeg maps a
 // leg name to its best-first candidates; k is the RRF constant. The result is sorted by descending fused
@@ -102,7 +104,7 @@ func fuse(perLeg map[string][]candidate, k int) []HybridResult {
 		out = append(out, HybridResult{ID: id, Content: a.content, Kind: a.kind, Score: a.score})
 	}
 	sort.Slice(out, func(i, j int) bool {
-		qi, qj := quantizeScore(out[i].Score), quantizeScore(out[j].Score)
+		qi, qj := QuantizeScore(out[i].Score), QuantizeScore(out[j].Score)
 		if qi != qj {
 			return qi > qj // higher fused score first
 		}

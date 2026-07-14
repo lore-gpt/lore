@@ -39,11 +39,10 @@ type Pinger interface {
 // Config carries the API's dependencies. Handlers touch only the fields their
 // route needs, so narrower tests may leave the rest nil.
 type Config struct {
-	Pool     *pgxpool.Pool // begins the event write transaction
+	Pool     *pgxpool.Pool // begins the event write transaction; also resolves bearer keys for auth
 	Enqueuer Enqueuer      // enqueues extraction on that transaction
 	DB       Pinger        // /healthz database probe
 	Queue    Pinger        // /healthz queue probe
-	APIKey   string        // bearer token required on /v1 routes
 	Version  string        // reported by /healthz
 	// Workmem is the working-memory store: a kind:"state" event is written through to it after commit,
 	// and /healthz reports its mode. A nil value coerces to the disabled no-op.
@@ -58,7 +57,6 @@ type API struct {
 	enqueuer             Enqueuer
 	db                   Pinger
 	queue                Pinger
-	apiKey               string
 	version              string
 	workmem              workmem.Store
 	workmemMaxValueBytes int
@@ -76,7 +74,6 @@ func New(cfg Config) *API {
 		enqueuer:             cfg.Enqueuer,
 		db:                   cfg.DB,
 		queue:                cfg.Queue,
-		apiKey:               cfg.APIKey,
 		version:              cfg.Version,
 		workmem:              wm,
 		workmemMaxValueBytes: cfg.WorkmemMaxValueBytes,

@@ -37,7 +37,7 @@ func rootCmd() *cobra.Command {
 		// Errors are returned by RunE and printed by cobra; don't also dump usage.
 		SilenceUsage: true,
 	}
-	root.AddCommand(serveCmd(), workerCmd(), migrateCmd(), versionCmd(), healthCmd())
+	root.AddCommand(serveCmd(), workerCmd(), migrateCmd(), versionCmd(), healthCmd(), keysCmd())
 	return root
 }
 
@@ -81,7 +81,6 @@ func serveCmd() *cobra.Command {
 			srv, err := core.NewServer(ctx, core.Config{
 				Addr:                 cfg.Addr,
 				DatabaseURL:          cfg.DatabaseURL,
-				APIKey:               cfg.APIKey,
 				WorkmemMaxValueBytes: cfg.WorkmemMaxValueBytes,
 			}, core.WithWorkmem(wm))
 			if err != nil {
@@ -132,7 +131,6 @@ func workerCmd() *cobra.Command {
 
 			w, err := core.NewWorker(ctx, core.Config{
 				DatabaseURL: cfg.DatabaseURL,
-				APIKey:      cfg.APIKey,
 			}, core.WithExtractor(extractor), core.WithWorkmem(wm))
 			if err != nil {
 				wm.Close()

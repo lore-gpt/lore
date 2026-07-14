@@ -10,7 +10,6 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/testcontainers/testcontainers-go"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 
@@ -95,17 +94,16 @@ func (h *recordingHandler) writethroughFailures() []slog.Record {
 func TestStateEventWriteThrough(t *testing.T) {
 	ctx := context.Background()
 	st, q := newStateTestStore(ctx, t)
-	runID := seedRun(ctx, t, st.Pool)
-	projectID := runProject(ctx, t, st.Pool, runID)
+	projectID, runID := seedProjectRun(ctx, t, st.Pool)
+	apiKey, _ := provisionKey(ctx, t, st.Pool, projectID)
 
-	const apiKey = "test-key"
 	const stateBody = `{"run_id":"%s","agent_id":"researcher","payload":{"kind":"state","entity":"auth","predicate":"status","value":"up"}}`
 
 	// --- Healthy: the fact is readable straight after the 202 (same-run read-your-writes). ---
 	t.Run("healthy write-through is immediately readable", func(t *testing.T) {
 		mem := workmem.NewMemory()
 		handler := httpapi.New(httpapi.Config{
-			Pool: st.Pool, Enqueuer: q, DB: st, Queue: q, APIKey: apiKey, Version: "test", Workmem: mem,
+			Pool: st.Pool, Enqueuer: q, DB: st, Queue: q, Version: "test", Workmem: mem,
 		}).Handler()
 
 		seq := postEvent(t, handler, apiKey, fmt.Sprintf(stateBody, runID))
@@ -127,7 +125,7 @@ func TestStateEventWriteThrough(t *testing.T) {
 
 		cs := &captureStore{mode: workmem.Healthy, err: errBoom}
 		handler := httpapi.New(httpapi.Config{
-			Pool: st.Pool, Enqueuer: q, DB: st, Queue: q, APIKey: apiKey, Version: "test", Workmem: cs,
+			Pool: st.Pool, Enqueuer: q, DB: st, Queue: q, Version: "test", Workmem: cs,
 		}).Handler()
 
 		_ = postEvent(t, handler, apiKey, fmt.Sprintf(stateBody, runID)) // still 202 despite the failed write
@@ -161,7 +159,7 @@ func TestStateEventWriteThrough(t *testing.T) {
 
 		cs := &captureStore{mode: workmem.Degraded}
 		handler := httpapi.New(httpapi.Config{
-			Pool: st.Pool, Enqueuer: q, DB: st, Queue: q, APIKey: apiKey, Version: "test", Workmem: cs,
+			Pool: st.Pool, Enqueuer: q, DB: st, Queue: q, Version: "test", Workmem: cs,
 		}).Handler()
 
 		_ = postEvent(t, handler, apiKey, fmt.Sprintf(stateBody, runID))
@@ -190,7 +188,7 @@ func TestStateEventWriteThrough(t *testing.T) {
 			committed = n == 1
 		}}
 		handler := httpapi.New(httpapi.Config{
-			Pool: st.Pool, Enqueuer: q, DB: st, Queue: q, APIKey: apiKey, Version: "test", Workmem: cs,
+			Pool: st.Pool, Enqueuer: q, DB: st, Queue: q, Version: "test", Workmem: cs,
 		}).Handler()
 
 		_ = postEvent(t, handler, apiKey, fmt.Sprintf(stateBody, runID))
@@ -244,16 +242,6 @@ func newStateTestStore(ctx context.Context, t *testing.T) (*store.Store, *queue.
 		t.Fatalf("new queue: %v", err)
 	}
 	return st, q
-}
-
-// runProject reads a run's project_id, needed to build the working-memory key for a read-back assertion.
-func runProject(ctx context.Context, t *testing.T, pool *pgxpool.Pool, runID string) string {
-	t.Helper()
-	var projectID string
-	if err := pool.QueryRow(ctx, `SELECT project_id FROM runs WHERE id = $1::uuid`, runID).Scan(&projectID); err != nil {
-		t.Fatalf("read run project_id: %v", err)
-	}
-	return projectID
 }
 
 // swapDefaultLogger installs rec as the default slog logger and returns a restore func.

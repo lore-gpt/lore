@@ -55,7 +55,7 @@ func TestNewServerComposesHealthz(t *testing.T) {
 	ctx := context.Background()
 	dsn := startParadeDB(ctx, t)
 
-	srv, err := NewServer(ctx, Config{Addr: "127.0.0.1:0", DatabaseURL: dsn, APIKey: "k"})
+	srv, err := NewServer(ctx, Config{Addr: "127.0.0.1:0", DatabaseURL: dsn})
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}

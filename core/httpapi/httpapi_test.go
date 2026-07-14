@@ -56,23 +56,19 @@ type fakeEnqueuer struct{}
 
 func (fakeEnqueuer) EnqueueExtract(context.Context, pgx.Tx, string, string) error { return nil }
 
-// TestRequireAuth locks the bearer-auth contract without a database. It probes
-// via /v1/recall, which passes through auth and then returns 501 — so a 401
-// means auth rejected and a 501 means auth accepted.
-func TestRequireAuth(t *testing.T) {
-	handler := New(Config{APIKey: "s3cret"}).Handler()
-
+// TestRequireAuthRejectsMalformedToken locks the parse half of the bearer-auth contract without a database: a
+// missing header, a wrong scheme, or an empty token is rejected 401 BEFORE any api_keys lookup. The lookup half
+// (an unknown or revoked key is 401, a valid key is accepted and scopes the request) needs a real database and
+// is covered by the integration test.
+func TestRequireAuthRejectsMalformedToken(t *testing.T) {
+	handler := New(Config{}).Handler() // no pool: these reject before the lookup would run
 	cases := []struct {
 		name   string
 		header string
-		want   int
 	}{
-		{"no header", "", http.StatusUnauthorized},
-		{"wrong scheme", "Token s3cret", http.StatusUnauthorized},
-		{"empty token", "Bearer ", http.StatusUnauthorized},
-		{"wrong key", "Bearer nope", http.StatusUnauthorized},
-		{"correct key", "Bearer s3cret", http.StatusNotImplemented},
-		{"scheme case-insensitive", "bearer s3cret", http.StatusNotImplemented},
+		{"no header", ""},
+		{"wrong scheme", "Token s3cret"},
+		{"empty token", "Bearer "},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -82,25 +78,10 @@ func TestRequireAuth(t *testing.T) {
 			}
 			rr := httptest.NewRecorder()
 			handler.ServeHTTP(rr, req)
-			if rr.Code != tc.want {
-				t.Errorf("status = %d, want %d", rr.Code, tc.want)
+			if rr.Code != http.StatusUnauthorized {
+				t.Errorf("status = %d, want 401", rr.Code)
 			}
 		})
-	}
-}
-
-// TestRequireAuthUnconfiguredFailsClosed proves an empty configured key rejects
-// every request rather than accepting an empty token.
-func TestRequireAuthUnconfiguredFailsClosed(t *testing.T) {
-	handler := New(Config{APIKey: ""}).Handler()
-	for _, header := range []string{"Bearer ", "Bearer anything"} {
-		req := httptest.NewRequest(http.MethodPost, "/v1/recall", nil)
-		req.Header.Set("Authorization", header)
-		rr := httptest.NewRecorder()
-		handler.ServeHTTP(rr, req)
-		if rr.Code != http.StatusUnauthorized {
-			t.Errorf("header %q: status = %d, want 401", header, rr.Code)
-		}
 	}
 }
 
@@ -151,7 +132,9 @@ func TestHealthz(t *testing.T) {
 // here too (invalid_state_fact), before the event is written. The happy path and
 // the rollback guarantee are covered by the integration test.
 func TestCreateEventValidation(t *testing.T) {
-	handler := New(Config{APIKey: "s3cret", Enqueuer: fakeEnqueuer{}}).Handler()
+	// Call the handler directly (not through the router): these bodies are rejected before any auth lookup or
+	// database work, so the test needs neither a key nor a pool.
+	a := New(Config{Enqueuer: fakeEnqueuer{}})
 
 	const runID = "11111111-1111-1111-1111-111111111111"
 	state := func(payload string) string {
@@ -177,9 +160,8 @@ func TestCreateEventValidation(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			req := httptest.NewRequest(http.MethodPost, "/v1/events", strings.NewReader(tc.body))
-			req.Header.Set("Authorization", "Bearer s3cret")
 			rr := httptest.NewRecorder()
-			handler.ServeHTTP(rr, req)
+			a.handleCreateEvent(rr, req)
 			if rr.Code != http.StatusBadRequest {
 				t.Fatalf("status = %d, want 400 (body %q)", rr.Code, tc.body)
 			}
@@ -222,14 +204,13 @@ func TestWriteThroughStateDetachesFromCallerCancellation(t *testing.T) {
 // TestCreateEventStateValueLimit proves the configurable value cap is enforced at ingestion: a value over
 // the limit is rejected with invalid_state_fact before any database work.
 func TestCreateEventStateValueLimit(t *testing.T) {
-	handler := New(Config{APIKey: "s3cret", Enqueuer: fakeEnqueuer{}, WorkmemMaxValueBytes: 4}).Handler()
+	a := New(Config{Enqueuer: fakeEnqueuer{}, WorkmemMaxValueBytes: 4})
 
 	const runID = "11111111-1111-1111-1111-111111111111"
 	body := `{"run_id":"` + runID + `","agent_id":"a","payload":{"kind":"state","entity":"e","predicate":"p","value":"way too long"}}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/events", strings.NewReader(body))
-	req.Header.Set("Authorization", "Bearer s3cret")
 	rr := httptest.NewRecorder()
-	handler.ServeHTTP(rr, req)
+	a.handleCreateEvent(rr, req)
 
 	if rr.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400", rr.Code)

@@ -11,30 +11,6 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
-const insertAPIKey = `-- name: InsertAPIKey :one
-INSERT INTO api_keys (project_id, key_hash)
-VALUES ($1, $2)
-RETURNING id, project_id, key_hash, created_at, revoked_at
-`
-
-type InsertAPIKeyParams struct {
-	ProjectID pgtype.UUID `json:"project_id"`
-	KeyHash   string      `json:"key_hash"`
-}
-
-func (q *Queries) InsertAPIKey(ctx context.Context, arg InsertAPIKeyParams) (ApiKey, error) {
-	row := q.db.QueryRow(ctx, insertAPIKey, arg.ProjectID, arg.KeyHash)
-	var i ApiKey
-	err := row.Scan(
-		&i.ID,
-		&i.ProjectID,
-		&i.KeyHash,
-		&i.CreatedAt,
-		&i.RevokedAt,
-	)
-	return i, err
-}
-
 const insertOrganization = `-- name: InsertOrganization :one
 
 INSERT INTO organizations (name)
@@ -42,8 +18,9 @@ VALUES ($1)
 RETURNING id, name, created_at
 `
 
-// Bootstrap inserts for the org -> project -> run chain an event needs, plus the
-// API key row. Used by wiring and tests until a control plane owns these.
+// Bootstrap inserts for the org -> project -> run chain an event needs. Used by
+// wiring and tests until a control plane owns these. (API keys are minted through
+// CreateAPIKey in auth.sql / the `lore keys` command.)
 func (q *Queries) InsertOrganization(ctx context.Context, name string) (Organization, error) {
 	row := q.db.QueryRow(ctx, insertOrganization, name)
 	var i Organization

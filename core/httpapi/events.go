@@ -96,10 +96,25 @@ func (a *API) handleCreateEvent(w http.ResponseWriter, r *http.Request) {
 		// The insert derives project_id from the run, so an unknown run_id matches no row and
 		// returns pgx.ErrNoRows rather than a foreign-key violation.
 		if errors.Is(err, pgx.ErrNoRows) {
-			writeError(w, r, http.StatusBadRequest, "unknown_run", "run_id does not exist")
+			writeError(w, r, http.StatusNotFound, "not_found", "run_id does not exist")
 			return
 		}
 		writeError(w, r, http.StatusInternalServerError, "internal", "could not persist event")
+		return
+	}
+
+	// The run must belong to the API key's project. The insert derives the event's project from the run;
+	// comparing it to the key's project (stashed by requireAuth) closes a cross-tenant write — a key for one
+	// project cannot append to another project's run. A mismatch returns the SAME "not found" a missing run
+	// gets (never a 403 that would reveal the run exists), and the deferred rollback undoes the insert. RLS is
+	// the second belt once the app runs as a subject role; today the role bypasses RLS, so this is the belt.
+	authProject, ok := projectIDFromContext(ctx)
+	if !ok {
+		writeError(w, r, http.StatusInternalServerError, "internal", "missing authenticated project")
+		return
+	}
+	if event.ProjectID != authProject {
+		writeError(w, r, http.StatusNotFound, "not_found", "run_id does not exist")
 		return
 	}
 
