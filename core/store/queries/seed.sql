@@ -1,5 +1,6 @@
--- Bootstrap inserts for the org -> project -> run chain an event needs, plus the
--- API key row. Used by wiring and tests until a control plane owns these.
+-- Bootstrap inserts for the org -> project -> run chain an event needs. Used by
+-- wiring and tests until a control plane owns these. (API keys are minted through
+-- CreateAPIKey in auth.sql / the `lore keys` command.)
 
 -- name: InsertOrganization :one
 INSERT INTO organizations (name)
@@ -14,11 +15,6 @@ RETURNING id, name, created_at;
 INSERT INTO projects (org_id, name)
 VALUES ($1, $2)
 RETURNING id, org_id, name, created_at, active_model_id, retain_events_days, retain_memories_days;
-
--- name: InsertAPIKey :one
-INSERT INTO api_keys (project_id, key_hash)
-VALUES ($1, $2)
-RETURNING id, project_id, key_hash, created_at, revoked_at;
 
 -- name: InsertRun :one
 INSERT INTO runs (project_id)

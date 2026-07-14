@@ -62,7 +62,6 @@ services:
     command: ["serve", "--auto-migrate"]
     environment:
       LORE_DATABASE_URL: postgres://lore:lore@paradedb:5432/lore?sslmode=disable
-      LORE_API_KEY: local-dev-key
       LORE_ADDR: ":8080"
       LORE_VALKEY_URL: redis://valkey:6379
     ports:
@@ -86,7 +85,6 @@ services:
     command: ["worker"]
     environment:
       LORE_DATABASE_URL: postgres://lore:lore@paradedb:5432/lore?sslmode=disable
-      LORE_API_KEY: local-dev-key
     depends_on:
       paradedb:
         condition: service_healthy

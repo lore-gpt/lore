@@ -4,21 +4,17 @@ import "testing"
 
 func TestLoadRequiredVars(t *testing.T) {
 	cases := []struct {
-		name          string
-		dbURL, apiKey string
-		wantErr       bool
+		name    string
+		dbURL   string
+		wantErr bool
 	}{
-		{"both present", "postgres://x", "k", false},
-		{"missing db url", "", "k", true},
-		{"missing api key", "postgres://x", "", true},
-		{"both missing", "", "", true},
-		{"whitespace db url", "   ", "k", true},
-		{"whitespace api key", "postgres://x", "  ", true},
+		{"present", "postgres://x", false},
+		{"missing db url", "", true},
+		{"whitespace db url", "   ", true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv("LORE_DATABASE_URL", tc.dbURL)
-			t.Setenv("LORE_API_KEY", tc.apiKey)
 			_, err := Load()
 			if (err != nil) != tc.wantErr {
 				t.Errorf("Load() err = %v, wantErr %v", err, tc.wantErr)
@@ -29,7 +25,6 @@ func TestLoadRequiredVars(t *testing.T) {
 
 func TestLoadDefaultsAndOverrides(t *testing.T) {
 	t.Setenv("LORE_DATABASE_URL", "postgres://db")
-	t.Setenv("LORE_API_KEY", "secret")
 	t.Setenv("LORE_VALKEY_URL", "redis://cache")
 
 	t.Run("addr defaults when unset", func(t *testing.T) {
@@ -41,7 +36,7 @@ func TestLoadDefaultsAndOverrides(t *testing.T) {
 		if c.Addr != ":8080" {
 			t.Errorf("Addr = %q, want :8080", c.Addr)
 		}
-		if c.DatabaseURL != "postgres://db" || c.APIKey != "secret" || c.ValkeyURL != "redis://cache" {
+		if c.DatabaseURL != "postgres://db" || c.ValkeyURL != "redis://cache" {
 			t.Errorf("unexpected config: %+v", c)
 		}
 	})

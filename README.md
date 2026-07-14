@@ -92,32 +92,36 @@ curl localhost:8080/healthz
 # {"status":"ok","version":"0.0.0-dev","db":"ok","queue":"ok","workmem":"ok"}
 ```
 
-**2 · Append an event and watch the worker pick it up:**
+**2 · Create a project, a run, and an API key** — the write path lands on a run inside a project, and
+`/v1/*` authenticates a bearer key scoped to that project. (A run-creation endpoint and `lore init` land in
+`v0.1`; for now, seed one and mint a key.)
+
+```bash
+# Seed org -> project -> run; capture both ids.
+IDS=$(docker compose -f infra/docker-compose.yml exec -T paradedb \
+  psql -U lore -d lore -tA -F' ' -c "WITH o AS (INSERT INTO organizations(name) VALUES('demo') RETURNING id), p AS (INSERT INTO projects(org_id,name) SELECT id,'demo' FROM o RETURNING id), r AS (INSERT INTO runs(project_id) SELECT id FROM p RETURNING id) SELECT (SELECT id FROM p), (SELECT id FROM r);")
+PROJECT_ID=$(echo "$IDS" | awk '{print $1}')
+RUN_ID=$(echo "$IDS" | awk '{print $2}')
+
+# Mint an API key for that project — the token is printed once, so capture it now.
+TOKEN=$(docker compose -f infra/docker-compose.yml exec -T lore-server /lore keys create --project "$PROJECT_ID")
+echo "run=$RUN_ID token=$TOKEN"
+```
+
+**3 · Append an event and watch the worker pick it up:**
 
 ```bash
 curl -X POST localhost:8080/v1/events \
-  -H "Authorization: Bearer local-dev-key" \
+  -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d "{\"run_id\":\"$RUN_ID\",\"agent_id\":\"researcher\",\"payload\":{\"note\":\"hello memory\"}}"
-# {"event_id":"..."}   (HTTP 202)
+# {"event_id":"...","seq":1}   (HTTP 202)
 
 docker compose -f infra/docker-compose.yml logs lore-worker | grep "extract stub"
 # ... INFO extract stub: event received event_id=...
 ```
 
-<details>
-<summary><b>Where does <code>$RUN_ID</code> come from?</b> (temporary seed step — a run-creation
-endpoint and <code>lore init</code> land in <code>v0.1</code>)</summary>
-
-```bash
-RUN_ID=$(docker compose -f infra/docker-compose.yml exec -T paradedb \
-  psql -U lore -d lore -tA -c "WITH o AS (INSERT INTO organizations(name) VALUES('demo') RETURNING id), p AS (INSERT INTO projects(org_id,name) SELECT id,'demo' FROM o RETURNING id), r AS (INSERT INTO runs(project_id) SELECT id FROM p RETURNING id) SELECT id FROM r;")
-echo $RUN_ID
-```
-
-</details>
-
-**3 · Tear it down:**
+**4 · Tear it down:**
 
 ```bash
 docker compose -f infra/docker-compose.yml down -v   # or: task compose:down
@@ -134,9 +138,11 @@ Copy [`.env.example`](.env.example) to `.env` and set:
 | Variable | Required | Default | Purpose |
 |---|---|---|---|
 | `LORE_DATABASE_URL` | yes | — | Postgres (ParadeDB) connection string |
-| `LORE_API_KEY` | yes | — | bearer token required on `/v1/*` |
 | `LORE_ADDR` | no | `:8080` | HTTP listen address |
 | `LORE_VALKEY_URL` | no | — | Valkey URL (started by Compose, reserved for `v0.1`) |
+
+API keys are not configured through the environment: mint one per project with `lore keys create --project
+<id>` (it prints the token once) and revoke it with `lore keys revoke <id>`.
 
 </details>
 

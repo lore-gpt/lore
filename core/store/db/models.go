@@ -15,6 +15,8 @@ type ApiKey struct {
 	KeyHash   string             `json:"key_hash"`
 	CreatedAt pgtype.Timestamptz `json:"created_at"`
 	RevokedAt pgtype.Timestamptz `json:"revoked_at"`
+	Name      *string            `json:"name"`
+	KeyPrefix *string            `json:"key_prefix"`
 }
 
 type AuditLog struct {

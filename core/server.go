@@ -21,7 +21,6 @@ import (
 type Config struct {
 	Addr        string // HTTP listen address for the server, e.g. ":8080"
 	DatabaseURL string // Postgres DSN
-	APIKey      string // bearer token required on /v1 routes
 	// WorkmemMaxValueBytes bounds a working-memory (kind:"state") fact's value at ingestion; 0 uses the
 	// package default.
 	WorkmemMaxValueBytes int
@@ -156,7 +155,6 @@ func NewServer(ctx context.Context, cfg Config, opts ...Option) (*Server, error)
 		Enqueuer:             q,
 		DB:                   st,
 		Queue:                q,
-		APIKey:               cfg.APIKey,
 		Version:              Version,
 		Workmem:              e.workmem,
 		WorkmemMaxValueBytes: cfg.WorkmemMaxValueBytes,

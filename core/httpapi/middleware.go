@@ -1,19 +1,43 @@
 package httpapi
 
 import (
-	"crypto/subtle"
+	"context"
+	"errors"
 	"log/slog"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5/middleware"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
+
+	"github.com/lore-gpt/lore/core/apikey"
+	"github.com/lore-gpt/lore/core/store/db"
 )
 
-// requireAuth enforces `Authorization: Bearer <key>` against the configured API
-// key with a constant-time comparison. An unconfigured key (empty) rejects every
-// request, so a misconfigured server fails closed rather than accepting an empty
-// token.
+// projectContextKey is the private key under which requireAuth stashes the authenticated project id.
+type projectContextKey struct{}
+
+// withProjectID returns ctx carrying the authenticated project id.
+func withProjectID(ctx context.Context, id pgtype.UUID) context.Context {
+	return context.WithValue(ctx, projectContextKey{}, id)
+}
+
+// projectIDFromContext returns the project id requireAuth resolved from the API key, and whether one is
+// present. A handler in the authenticated group always has it; the ok guard is defence against a route wired
+// outside requireAuth.
+func projectIDFromContext(ctx context.Context) (pgtype.UUID, bool) {
+	id, ok := ctx.Value(projectContextKey{}).(pgtype.UUID)
+	return id, ok
+}
+
+// requireAuth authenticates the bearer token against the api_keys table and scopes the request to the key's
+// project. The presented token is hashed and the hash is looked up (the raw token never touches the database);
+// an unknown key and a revoked key are the SAME 401, so a caller cannot tell one from the other. On success the
+// key's project id is stashed in the request context for handlers to open their tenant transaction with. The
+// lookup runs unscoped by design — the project is not known until the key resolves — and RLS is the second belt
+// once the application runs as a subject role (see the query's cutover note).
 func (a *API) requireAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		token, ok := bearerToken(r.Header.Get("Authorization"))
@@ -21,11 +45,16 @@ func (a *API) requireAuth(next http.Handler) http.Handler {
 			writeError(w, r, http.StatusUnauthorized, "unauthorized", "missing or malformed bearer token")
 			return
 		}
-		if a.apiKey == "" || subtle.ConstantTimeCompare([]byte(token), []byte(a.apiKey)) != 1 {
-			writeError(w, r, http.StatusUnauthorized, "unauthorized", "invalid api key")
+		projectID, err := db.New(a.pool).LookupAPIKeyProject(r.Context(), apikey.Hash(token))
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				writeError(w, r, http.StatusUnauthorized, "unauthorized", "invalid api key")
+				return
+			}
+			writeError(w, r, http.StatusInternalServerError, "internal", "could not verify api key")
 			return
 		}
-		next.ServeHTTP(w, r)
+		next.ServeHTTP(w, r.WithContext(withProjectID(r.Context(), projectID)))
 	})
 }
 
