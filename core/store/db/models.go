@@ -132,14 +132,21 @@ type Organization struct {
 }
 
 type PackLog struct {
-	ID             pgtype.UUID        `json:"id"`
-	ProjectID      pgtype.UUID        `json:"project_id"`
-	RunID          pgtype.UUID        `json:"run_id"`
-	Query          string             `json:"query"`
-	CoveredSeq     *int64             `json:"covered_seq"`
-	FreshnessLagMs *int32             `json:"freshness_lag_ms"`
-	LatencyMs      *int32             `json:"latency_ms"`
-	CreatedAt      pgtype.Timestamptz `json:"created_at"`
+	ID              pgtype.UUID        `json:"id"`
+	ProjectID       pgtype.UUID        `json:"project_id"`
+	RunID           pgtype.UUID        `json:"run_id"`
+	Query           string             `json:"query"`
+	CoveredSeq      *int64             `json:"covered_seq"`
+	FreshnessLagMs  *int32             `json:"freshness_lag_ms"`
+	LatencyMs       *int32             `json:"latency_ms"`
+	CreatedAt       pgtype.Timestamptz `json:"created_at"`
+	Scopes          []string           `json:"scopes"`
+	TokenBudget     *int32             `json:"token_budget"`
+	EstSourceTokens *int32             `json:"est_source_tokens"`
+	PackedTokens    *int32             `json:"packed_tokens"`
+	TokensSaved     *int32             `json:"tokens_saved"`
+	MemoryIds       []pgtype.UUID      `json:"memory_ids"`
+	PackHash        []byte             `json:"pack_hash"`
 }
 
 type Project struct {
