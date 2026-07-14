@@ -169,31 +169,41 @@ func (p *PGPersister) Persist(ctx context.Context, in PersistInput) error {
 
 		// Deduplicate then persist memories, indexing the first memory per source event so a same-event
 		// claim can link to it (a claim from an event with no memory is stored standalone, memory_id
-		// NULL). A duplicate restatement merges into the existing memory instead of inserting a new row.
-		// Only a newly inserted memory stores a vector (the one pre-computed for its content); a merge
-		// keeps the existing memory's vector, since exact-content dedup leaves the content unchanged.
+		// NULL). consolidateMemory resolves each candidate to a fresh insert, an exact-restatement merge,
+		// or a near-duplicate merge (the incoming content supersedes the stored one). A fresh insert and a
+		// near-merge both store the incoming vector — a near-merge overwrote the content, so its vector
+		// changed; an exact restatement leaves content and vector unchanged, so its embedding is not
+		// rewritten.
 		memoryBySeq := make(map[int64]pgtype.UUID, len(in.Memories))
-		var inserted, mergedCount int
+		var inserted, exactMerged, nearMerged, grayZone int
 		for _, m := range in.Memories {
-			id, merged, err := consolidateMemory(ctx, q, in.ProjectID, names, m)
+			res, err := consolidateMemory(ctx, q, in.ProjectID, names, m, memoryVectors[m.Content], p.embedder.ModelID())
 			if err != nil {
 				return err
 			}
-			if merged {
-				mergedCount++
-			} else {
+			switch res.outcome {
+			case outcomeExactMerged:
+				exactMerged++
+			case outcomeNearMerged:
+				nearMerged++
+			default:
 				inserted++
+				if res.grayZone {
+					grayZone++
+				}
+			}
+			if res.outcome != outcomeExactMerged {
 				if _, err := q.UpsertEmbedding(ctx, db.UpsertEmbeddingParams{
 					ProjectID: in.ProjectID,
-					MemoryID:  id,
+					MemoryID:  res.id,
 					ModelID:   p.embedder.ModelID(),
 					Vec:       memoryVectors[m.Content],
 				}); err != nil {
-					return fmt.Errorf("upsert embedding for memory %s: %w", uuidString(id), err)
+					return fmt.Errorf("upsert embedding for memory %s: %w", uuidString(res.id), err)
 				}
 			}
 			if _, ok := memoryBySeq[m.SourceSeq]; !ok {
-				memoryBySeq[m.SourceSeq] = id
+				memoryBySeq[m.SourceSeq] = res.id
 			}
 		}
 
@@ -290,7 +300,9 @@ func (p *PGPersister) Persist(ctx context.Context, in PersistInput) error {
 		slog.InfoContext(ctx, "consolidation pass persisted",
 			slog.String("run_id", uuidString(in.RunID)),
 			slog.Int("memories_inserted", inserted),
-			slog.Int("memories_merged", mergedCount),
+			slog.Int("memories_exact_merged", exactMerged),
+			slog.Int("memories_near_merged", nearMerged),
+			slog.Int("memories_gray_zone", grayZone),
 			slog.Int("claims", len(in.Claims)),
 			slog.Int("entities", len(in.Entities)))
 		return nil

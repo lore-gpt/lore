@@ -7,9 +7,11 @@
 -- fingerprint (a hash of the kind, entity context, and normalized content) the consolidation path probes
 -- on; NULL only for a path that opts out of dedup. Everything else takes its schema default: trust_tier 'normal',
 -- review_status 'auto_approved', version 1, valid_from now(), empty entities/scope_keys — the
--- single-schema basic behaviour the OSS build always writes.
-INSERT INTO memories (project_id, kind, content, source_event_id, created_by_agent, content_hash)
-VALUES ($1, $2, $3, $4, $5, $6)
+-- single-schema basic behaviour the OSS build always writes. context_hash is the entity-bucket key (the
+-- content-less twin of content_hash) the near-duplicate probe groups on; NULL only for a path that opts
+-- out of dedup.
+INSERT INTO memories (project_id, kind, content, source_event_id, created_by_agent, content_hash, context_hash)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
 RETURNING id;
 
 -- name: FindActiveMemoryByContentHash :one
@@ -36,5 +38,29 @@ LIMIT 1;
 -- content updates the live content to match the version it snapshots. Project-scoped.
 UPDATE memories
 SET version = version + 1
+WHERE project_id = $1 AND id = $2
+RETURNING version;
+
+-- name: ReadMemoryContentForUpdate :one
+-- Lock a live memory's row and read its current content, taken in the same transaction immediately before
+-- UpdateMemoryOnNearMerge overwrites the row, so a near-merge snapshots the content that was live just
+-- before it — read UNDER the row lock (SELECT ... FOR UPDATE). A concurrent near-merge of the same memory
+-- (possible only in the unserialised empty-entity-context bucket) cannot make that snapshot stale: this
+-- blocks until the other commits, then reads its committed content. Project-scoped.
+SELECT content FROM memories WHERE project_id = $1 AND id = $2 FOR UPDATE;
+
+-- name: UpdateMemoryOnNearMerge :one
+-- Overwrite a live memory's content when the consolidation path merges a NEAR-duplicate (embedding
+-- similarity above the merge threshold, not an exact restatement) into it: the incoming write supersedes
+-- the stored one (arrival-order last-write-wins — the same policy claims and working memory use), so the
+-- live content, its exact fingerprint, and its provenance become the incoming memory's, and the version is
+-- bumped, returning the new version. The caller has already locked and read the prior content via
+-- ReadMemoryContentForUpdate in the same transaction, snapshots it into memory_versions, and re-stores the
+-- incoming embedding. context_hash is unchanged in value (a near-duplicate is in the same entity bucket by
+-- construction) but is set from the incoming memory too, so the whole row is written from one source.
+-- Project-scoped.
+UPDATE memories
+SET content = $3, content_hash = $4, context_hash = $5, source_event_id = $6, created_by_agent = $7,
+    version = version + 1
 WHERE project_id = $1 AND id = $2
 RETURNING version;

@@ -104,6 +104,7 @@ type Memory struct {
 	SourceEventID  pgtype.UUID        `json:"source_event_id"`
 	ScopeKeys      []string           `json:"scope_keys"`
 	ContentHash    []byte             `json:"content_hash"`
+	ContextHash    []byte             `json:"context_hash"`
 }
 
 type MemoryScope struct {

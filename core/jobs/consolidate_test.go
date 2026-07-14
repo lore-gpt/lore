@@ -82,6 +82,46 @@ func TestContentFingerprint(t *testing.T) {
 	}
 }
 
+func TestContextFingerprint(t *testing.T) {
+	ctxfp := func(kind string, names []string) string { return string(contextFingerprint(kind, names)) }
+	base := ctxfp("semantic", []string{"auth"})
+	if len(base) != 32 {
+		t.Fatalf("context fingerprint length = %d, want 32 (sha256)", len(base))
+	}
+	// Entity-name order does not matter — the same bucket regardless of input order.
+	if ctxfp("semantic", []string{"auth", "svc"}) != ctxfp("semantic", []string{"svc", "auth"}) {
+		t.Error("context fingerprint should be independent of entity-name order")
+	}
+	// A different entity context or kind is a different bucket.
+	if ctxfp("semantic", []string{"payment-svc"}) == base {
+		t.Error("a different entity context must be a different bucket")
+	}
+	if ctxfp("episodic", []string{"auth"}) == base {
+		t.Error("a different kind must be a different bucket")
+	}
+	// nil and empty entity sets are the one shared empty-context bucket.
+	if ctxfp("semantic", nil) != ctxfp("semantic", []string{}) {
+		t.Error("nil and empty entity sets should share the empty-context bucket")
+	}
+	// The context fingerprint is the content-less bucket key: two DIFFERENT contents in the same context
+	// keep DISTINCT content_hashes (so an exact restatement is still recognised) while landing in ONE
+	// bucket (compared by similarity, not grouped apart).
+	up := contentFingerprint("semantic", []string{"auth"}, "auth is up")
+	down := contentFingerprint("semantic", []string{"auth"}, "auth is down")
+	if string(up) == string(down) {
+		t.Error("distinct content in one bucket must keep distinct content_hashes")
+	}
+	// The bucket key is never a content hash (content is always appended to the content preimage), so it
+	// cannot collide with a content_hash over the same context — even for empty content.
+	if base == string(contentFingerprint("semantic", []string{"auth"}, "")) {
+		t.Error("context fingerprint must differ from the content fingerprint of empty content")
+	}
+	// Kind|name boundary injectivity, as for contentFingerprint.
+	if ctxfp("seman", []string{"ticx"}) == ctxfp("semantic", []string{"x"}) {
+		t.Error("kind|name boundary aliased in the context fingerprint — distinct buckets would collide")
+	}
+}
+
 func TestEntityNames(t *testing.T) {
 	// Mentions and claim subjects are unioned and de-duplicated: "shared" appears in both, "solo-claim"
 	// only as a subject, "solo-mention" only as a mention.
