@@ -41,3 +41,25 @@ WHERE m.project_id = sqlc.arg(project_id) AND e.project_id = sqlc.arg(project_id
   AND (sqlc.arg(include_quarantine)::bool OR m.trust_tier <> 'quarantine')
 ORDER BY distance ASC
 LIMIT sqlc.arg(max_results)::int;
+
+-- name: RetrieveLexical :many
+-- The lexical (full-text) retrieval leg: the live memories whose content matches the query terms, ranked by
+-- lexical relevance. It complements the dense vector leg — an exact keyword or identifier match a nearest-
+-- neighbour vector search misses, and vice versa — and the two are fused by rank downstream, which is why
+-- the raw rank is not returned to the caller (only the order matters). The match uses an English text-search
+-- configuration over content, backed by an expression GIN index on the identical to_tsvector('english',
+-- content) expression, so the predicate is index-usable; a drift between this expression and the index's
+-- would silently fall to a sequential scan. An empty or all-stopword query produces an empty tsquery that
+-- matches nothing, so the leg contributes no candidates rather than every row. Same filter shape as the
+-- dense leg: the tenant is the project partition, scope_keys && is the compiled-ACL overlap (empty =
+-- project-wide), quarantine-tier excluded unless asked. The id tie-break makes equal-rank order stable.
+SELECT m.id, m.content, m.kind,
+       ts_rank_cd(to_tsvector('english', m.content), websearch_to_tsquery('english', sqlc.arg(query_text)::text))::float8 AS rank
+FROM memories m
+WHERE m.project_id = sqlc.arg(project_id)
+  AND m.superseded_by IS NULL AND m.valid_to IS NULL
+  AND (cardinality(sqlc.arg(scopes)::text[]) = 0 OR m.scope_keys && sqlc.arg(scopes)::text[])
+  AND (sqlc.arg(include_quarantine)::bool OR m.trust_tier <> 'quarantine')
+  AND to_tsvector('english', m.content) @@ websearch_to_tsquery('english', sqlc.arg(query_text)::text)
+ORDER BY rank DESC, m.id ASC
+LIMIT sqlc.arg(max_results)::int;
