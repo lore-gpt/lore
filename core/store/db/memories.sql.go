@@ -71,8 +71,8 @@ func (q *Queries) IncrementMemoryVersion(ctx context.Context, arg IncrementMemor
 }
 
 const insertMemory = `-- name: InsertMemory :one
-INSERT INTO memories (project_id, kind, content, source_event_id, created_by_agent, content_hash)
-VALUES ($1, $2, $3, $4, $5, $6)
+INSERT INTO memories (project_id, kind, content, source_event_id, created_by_agent, content_hash, context_hash)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
 RETURNING id
 `
 
@@ -83,6 +83,7 @@ type InsertMemoryParams struct {
 	SourceEventID  pgtype.UUID `json:"source_event_id"`
 	CreatedByAgent *string     `json:"created_by_agent"`
 	ContentHash    []byte      `json:"content_hash"`
+	ContextHash    []byte      `json:"context_hash"`
 }
 
 // Persist one distilled memory. project_id routes the row to its tenant partition, which must
@@ -93,7 +94,9 @@ type InsertMemoryParams struct {
 // fingerprint (a hash of the kind, entity context, and normalized content) the consolidation path probes
 // on; NULL only for a path that opts out of dedup. Everything else takes its schema default: trust_tier 'normal',
 // review_status 'auto_approved', version 1, valid_from now(), empty entities/scope_keys — the
-// single-schema basic behaviour the OSS build always writes.
+// single-schema basic behaviour the OSS build always writes. context_hash is the entity-bucket key (the
+// content-less twin of content_hash) the near-duplicate probe groups on; NULL only for a path that opts
+// out of dedup.
 func (q *Queries) InsertMemory(ctx context.Context, arg InsertMemoryParams) (pgtype.UUID, error) {
 	row := q.db.QueryRow(ctx, insertMemory,
 		arg.ProjectID,
@@ -102,8 +105,72 @@ func (q *Queries) InsertMemory(ctx context.Context, arg InsertMemoryParams) (pgt
 		arg.SourceEventID,
 		arg.CreatedByAgent,
 		arg.ContentHash,
+		arg.ContextHash,
 	)
 	var id pgtype.UUID
 	err := row.Scan(&id)
 	return id, err
+}
+
+const readMemoryContentForUpdate = `-- name: ReadMemoryContentForUpdate :one
+SELECT content FROM memories WHERE project_id = $1 AND id = $2 FOR UPDATE
+`
+
+type ReadMemoryContentForUpdateParams struct {
+	ProjectID pgtype.UUID `json:"project_id"`
+	ID        pgtype.UUID `json:"id"`
+}
+
+// Lock a live memory's row and read its current content, taken in the same transaction immediately before
+// UpdateMemoryOnNearMerge overwrites the row, so a near-merge snapshots the content that was live just
+// before it — read UNDER the row lock (SELECT ... FOR UPDATE). A concurrent near-merge of the same memory
+// (possible only in the unserialised empty-entity-context bucket) cannot make that snapshot stale: this
+// blocks until the other commits, then reads its committed content. Project-scoped.
+func (q *Queries) ReadMemoryContentForUpdate(ctx context.Context, arg ReadMemoryContentForUpdateParams) (string, error) {
+	row := q.db.QueryRow(ctx, readMemoryContentForUpdate, arg.ProjectID, arg.ID)
+	var content string
+	err := row.Scan(&content)
+	return content, err
+}
+
+const updateMemoryOnNearMerge = `-- name: UpdateMemoryOnNearMerge :one
+UPDATE memories
+SET content = $3, content_hash = $4, context_hash = $5, source_event_id = $6, created_by_agent = $7,
+    version = version + 1
+WHERE project_id = $1 AND id = $2
+RETURNING version
+`
+
+type UpdateMemoryOnNearMergeParams struct {
+	ProjectID      pgtype.UUID `json:"project_id"`
+	ID             pgtype.UUID `json:"id"`
+	Content        string      `json:"content"`
+	ContentHash    []byte      `json:"content_hash"`
+	ContextHash    []byte      `json:"context_hash"`
+	SourceEventID  pgtype.UUID `json:"source_event_id"`
+	CreatedByAgent *string     `json:"created_by_agent"`
+}
+
+// Overwrite a live memory's content when the consolidation path merges a NEAR-duplicate (embedding
+// similarity above the merge threshold, not an exact restatement) into it: the incoming write supersedes
+// the stored one (arrival-order last-write-wins — the same policy claims and working memory use), so the
+// live content, its exact fingerprint, and its provenance become the incoming memory's, and the version is
+// bumped, returning the new version. The caller has already locked and read the prior content via
+// ReadMemoryContentForUpdate in the same transaction, snapshots it into memory_versions, and re-stores the
+// incoming embedding. context_hash is unchanged in value (a near-duplicate is in the same entity bucket by
+// construction) but is set from the incoming memory too, so the whole row is written from one source.
+// Project-scoped.
+func (q *Queries) UpdateMemoryOnNearMerge(ctx context.Context, arg UpdateMemoryOnNearMergeParams) (int32, error) {
+	row := q.db.QueryRow(ctx, updateMemoryOnNearMerge,
+		arg.ProjectID,
+		arg.ID,
+		arg.Content,
+		arg.ContentHash,
+		arg.ContextHash,
+		arg.SourceEventID,
+		arg.CreatedByAgent,
+	)
+	var version int32
+	err := row.Scan(&version)
+	return version, err
 }

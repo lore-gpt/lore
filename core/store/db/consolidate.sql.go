@@ -9,6 +9,7 @@ import (
 	"context"
 
 	"github.com/jackc/pgx/v5/pgtype"
+	pgvector "github.com/pgvector/pgvector-go"
 )
 
 const acquireEntityLocks = `-- name: AcquireEntityLocks :exec
@@ -44,4 +45,62 @@ type AcquireEntityLocksParams struct {
 func (q *Queries) AcquireEntityLocks(ctx context.Context, arg AcquireEntityLocksParams) error {
 	_, err := q.db.Exec(ctx, acquireEntityLocks, arg.ProjectID, arg.EntityNames)
 	return err
+}
+
+const findNearestLiveMemoryInBucket = `-- name: FindNearestLiveMemoryInBucket :one
+WITH bucket AS (
+    SELECT m.id, e.vec,
+           count(*) OVER () AS bucket_size
+    FROM memories m
+    JOIN embeddings e ON e.project_id = m.project_id AND e.memory_id = m.id
+    WHERE m.project_id = $2
+      AND e.project_id = $2
+      AND m.context_hash = $3
+      AND m.superseded_by IS NULL AND m.valid_to IS NULL
+      AND e.model_id = $4
+    ORDER BY m.created_at DESC
+    LIMIT $5::int
+)
+SELECT id, bucket_size,
+       (vec <=> $1::vector)::float8 AS distance
+FROM bucket
+ORDER BY distance ASC
+LIMIT 1
+`
+
+type FindNearestLiveMemoryInBucketParams struct {
+	QueryVec    pgvector.Vector `json:"query_vec"`
+	ProjectID   pgtype.UUID     `json:"project_id"`
+	ContextHash []byte          `json:"context_hash"`
+	ModelID     string          `json:"model_id"`
+	ScanCap     int32           `json:"scan_cap"`
+}
+
+type FindNearestLiveMemoryInBucketRow struct {
+	ID         pgtype.UUID `json:"id"`
+	BucketSize int64       `json:"bucket_size"`
+	Distance   float64     `json:"distance"`
+}
+
+// The live memory most similar (by embedding cosine distance) to a candidate, within the candidate's
+// entity bucket (same context_hash) and single model space. It is the near-duplicate probe the
+// consolidation path runs after an exact-fingerprint miss: the caller merges into the returned memory when
+// the distance is below the merge threshold, records telemetry when it is in the grey zone, and inserts a
+// fresh memory otherwise. Scoping to the context_hash bucket (an index range-scan over live rows) is the
+// blocking step that avoids a whole-project O(N) comparison; the bucket is further capped so a large
+// bucket never runs an unbounded number of comparisons — bucket_size reports the full (pre-cap) live
+// bucket count so the caller can warn when the cap was hit and candidates beyond it went uncompared. No
+// live bucket member returns pgx.ErrNoRows (the caller's "insert fresh" signal). The distance operator is
+// cosine (the embeddings opclass), so it is a small exact scan over the bucket, not an ANN index probe.
+func (q *Queries) FindNearestLiveMemoryInBucket(ctx context.Context, arg FindNearestLiveMemoryInBucketParams) (FindNearestLiveMemoryInBucketRow, error) {
+	row := q.db.QueryRow(ctx, findNearestLiveMemoryInBucket,
+		arg.QueryVec,
+		arg.ProjectID,
+		arg.ContextHash,
+		arg.ModelID,
+		arg.ScanCap,
+	)
+	var i FindNearestLiveMemoryInBucketRow
+	err := row.Scan(&i.ID, &i.BucketSize, &i.Distance)
+	return i, err
 }

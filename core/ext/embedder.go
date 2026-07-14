@@ -14,9 +14,12 @@ import (
 type FixtureEmbedder struct{}
 
 const (
-	// fixtureEmbedDim is small on purpose: enough to exercise vector storage and cosine ordering while
-	// keeping test vectors cheap to build. A real model's dimension is far larger.
-	fixtureEmbedDim = 8
+	// fixtureEmbedDim is small on purpose — enough to exercise vector storage and cosine ordering while
+	// keeping test vectors cheap — but large enough that two distinct texts hash to near-orthogonal
+	// vectors: at a low dimension an accidental high cosine between unrelated texts is far too likely, and
+	// it would spuriously near-merge two distinct memories in a shared entity bucket. A real model's
+	// dimension is larger still.
+	fixtureEmbedDim = 64
 	// fixtureEmbedModelID is the model space fixture vectors are stored under. Reads that query this
 	// model space see them; a project on a different active model does not.
 	fixtureEmbedModelID = "fixture-embed-v1"
