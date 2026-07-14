@@ -22,7 +22,7 @@ func TestPGPersisterClaimConflictLWWRecordsReason(t *testing.T) {
 	st := migratedStore(ctx, t)
 	proj, run := seedProjectRun(ctx, t, st)
 	q := db.New(st.Pool)
-	p := jobs.NewPGPersister(st, ext.LWW{})
+	p := jobs.NewPGPersister(st, ext.LWW{}, ext.FixtureEmbedder{})
 
 	ev1, err := q.InsertEvent(ctx, db.InsertEventParams{RunID: run.ID, AgentID: "a", Payload: []byte(`{"m":1}`)})
 	if err != nil {
@@ -98,7 +98,7 @@ func TestPGPersisterClaimConflictFieldMerge(t *testing.T) {
 	st := migratedStore(ctx, t)
 	proj, run := seedProjectRun(ctx, t, st)
 	q := db.New(st.Pool)
-	p := jobs.NewPGPersister(st, ext.FieldMerge{})
+	p := jobs.NewPGPersister(st, ext.FieldMerge{}, ext.FixtureEmbedder{})
 
 	ev1, err := q.InsertEvent(ctx, db.InsertEventParams{RunID: run.ID, AgentID: "a", Payload: []byte(`{"m":1}`)})
 	if err != nil {
@@ -159,7 +159,7 @@ func TestPGPersisterFirstClaimNoConflict(t *testing.T) {
 	st := migratedStore(ctx, t)
 	proj, run := seedProjectRun(ctx, t, st)
 	q := db.New(st.Pool)
-	p := jobs.NewPGPersister(st, ext.LWW{})
+	p := jobs.NewPGPersister(st, ext.LWW{}, ext.FixtureEmbedder{})
 
 	ev, err := q.InsertEvent(ctx, db.InsertEventParams{RunID: run.ID, AgentID: "a", Payload: []byte(`{"m":1}`)})
 	if err != nil {

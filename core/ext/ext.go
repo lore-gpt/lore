@@ -78,6 +78,24 @@ type Measurement struct {
 	Count int64
 }
 
+// Embedder turns memory content into embedding vectors for similarity search. The OSS default is
+// FixtureEmbedder (deterministic, offline — no API key), so the read path can be built and tested end
+// to end without a provider; a downstream build swaps in a real embedding model behind this same
+// interface. Embed is batch-shaped so the write path can embed a whole consolidation pass in one call.
+// Vectors are stored under ModelID, and reads query a single model space (a project's active model), so
+// a project can carry embeddings from more than one model at once — e.g. during a model migration.
+type Embedder interface {
+	// Embed returns one vector per input text, in the same order, each of length Dim(). A provider or
+	// transport failure returns an error and no partial result; the caller retries the pass.
+	Embed(ctx context.Context, texts []string) ([][]float32, error)
+	// Dim is the fixed dimension of every vector Embed returns. The write path asserts each vector's
+	// length equals it before storing, because a wrong-dimension vector in the dimensionless column
+	// would otherwise surface only later, when the vector index is built.
+	Dim() int
+	// ModelID identifies the embedding model; embeddings are stored under it.
+	ModelID() string
+}
+
 // Extractor distils a coalesced window of one run's events into candidate memories, claims, and
 // entity mentions. It abstracts the extraction provider: the OSS defaults are FixtureExtractor
 // (deterministic, offline — no API key) and, later, a thin Claude/OpenAI provider adapter behind

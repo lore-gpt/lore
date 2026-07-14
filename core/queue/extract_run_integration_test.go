@@ -80,7 +80,7 @@ func TestPGPersisterSetRunBatch(t *testing.T) {
 		t.Fatalf("insert run: %v", err)
 	}
 
-	p := jobs.NewPGPersister(st, ext.LWW{})
+	p := jobs.NewPGPersister(st, ext.LWW{}, ext.FixtureEmbedder{})
 	if err := p.SetRunBatch(ctx, proj.ID, run.ID, "batch_xyz", 9); err != nil {
 		t.Fatalf("SetRunBatch: %v", err)
 	}
@@ -135,7 +135,7 @@ func TestExtractRunWorkerEconomyBatchPath(t *testing.T) {
 	// Call Work directly: the fixture batch is immediately ready, so the two attempts run back to back
 	// deterministically without waiting on River to reschedule the poll snooze (River's snooze handling
 	// is proven by the debounce tests). IdleWindow 0 lets the debounce process the run at once.
-	worker := jobs.NewExtractRunWorker(db.New(st.Pool), ext.FixtureExtractor{}, jobs.NewPGPersister(st, ext.LWW{}),
+	worker := jobs.NewExtractRunWorker(db.New(st.Pool), ext.FixtureExtractor{}, jobs.NewPGPersister(st, ext.LWW{}, ext.FixtureEmbedder{}),
 		jobs.Debounce{IdleWindow: 0, MaxEvents: 1, BatchPoll: time.Millisecond})
 	job := &river.Job[jobs.ExtractRunArgs]{Args: jobs.ExtractRunArgs{
 		ProjectID: uuid.UUID(proj.ID.Bytes).String(),
@@ -250,7 +250,7 @@ func TestExtractRunWorkerProcessesRun(t *testing.T) {
 	st := migratedStore(ctx, t)
 
 	rec := &recordingExtractor{ch: make(chan ext.ExtractInput, 1)}
-	w, err := queue.NewWorker(st, rec, ext.LWW{}, workmem.NewDisabled())
+	w, err := queue.NewWorker(st, rec, ext.LWW{}, ext.FixtureEmbedder{}, workmem.NewDisabled())
 	if err != nil {
 		t.Fatalf("new worker: %v", err)
 	}
@@ -320,7 +320,7 @@ func TestExtractRunWorkerRetriesOnExtractorError(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(ctx, t)
 
-	w, err := queue.NewWorker(st, ext.FixtureExtractor{}, ext.LWW{}, workmem.NewDisabled())
+	w, err := queue.NewWorker(st, ext.FixtureExtractor{}, ext.LWW{}, ext.FixtureEmbedder{}, workmem.NewDisabled())
 	if err != nil {
 		t.Fatalf("new worker: %v", err)
 	}
@@ -402,7 +402,7 @@ func TestExtractRunWorkerDebouncesUntilIdle(t *testing.T) {
 	st := migratedStore(ctx, t)
 
 	rec := &recordingExtractor{ch: make(chan ext.ExtractInput, 1)}
-	w, err := queue.NewWorker(st, rec, ext.LWW{}, workmem.NewDisabled()) // DefaultDebounce: 2s idle window
+	w, err := queue.NewWorker(st, rec, ext.LWW{}, ext.FixtureEmbedder{}, workmem.NewDisabled()) // DefaultDebounce: 2s idle window
 	if err != nil {
 		t.Fatalf("new worker: %v", err)
 	}
@@ -559,7 +559,7 @@ func TestExtractRunPersistsMemory(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(ctx, t)
 
-	w, err := queue.NewWorker(st, ext.FixtureExtractor{}, ext.LWW{}, workmem.NewDisabled())
+	w, err := queue.NewWorker(st, ext.FixtureExtractor{}, ext.LWW{}, ext.FixtureEmbedder{}, workmem.NewDisabled())
 	if err != nil {
 		t.Fatalf("new worker: %v", err)
 	}
@@ -645,7 +645,7 @@ func TestExtractRunCheckpointProcessesEachEventOnce(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(ctx, t)
 
-	w, err := queue.NewWorker(st, ext.FixtureExtractor{}, ext.LWW{}, workmem.NewDisabled())
+	w, err := queue.NewWorker(st, ext.FixtureExtractor{}, ext.LWW{}, ext.FixtureEmbedder{}, workmem.NewDisabled())
 	if err != nil {
 		t.Fatalf("new worker: %v", err)
 	}
@@ -715,7 +715,7 @@ func TestExtractRunPersistsClaimAndEntity(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(ctx, t)
 
-	w, err := queue.NewWorker(st, ext.FixtureExtractor{}, ext.LWW{}, workmem.NewDisabled())
+	w, err := queue.NewWorker(st, ext.FixtureExtractor{}, ext.LWW{}, ext.FixtureEmbedder{}, workmem.NewDisabled())
 	if err != nil {
 		t.Fatalf("new worker: %v", err)
 	}
@@ -793,7 +793,7 @@ func TestExtractRunClaimLWWWithinPass(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(ctx, t)
 
-	w, err := queue.NewWorker(st, ext.FixtureExtractor{}, ext.LWW{}, workmem.NewDisabled())
+	w, err := queue.NewWorker(st, ext.FixtureExtractor{}, ext.LWW{}, ext.FixtureEmbedder{}, workmem.NewDisabled())
 	if err != nil {
 		t.Fatalf("new worker: %v", err)
 	}
@@ -878,7 +878,7 @@ func TestExtractRunWorkerFieldMergeComposition(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(ctx, t)
 
-	w, err := queue.NewWorker(st, ext.FixtureExtractor{}, ext.FieldMerge{}, workmem.NewDisabled())
+	w, err := queue.NewWorker(st, ext.FixtureExtractor{}, ext.FieldMerge{}, ext.FixtureEmbedder{}, workmem.NewDisabled())
 	if err != nil {
 		t.Fatalf("new worker: %v", err)
 	}
