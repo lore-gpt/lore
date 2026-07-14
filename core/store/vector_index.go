@@ -134,3 +134,29 @@ func (v *PgVectorIndex) EnsureIndex(ctx context.Context, projectID pgtype.UUID, 
 	}
 	return nil
 }
+
+// HasValidEmbeddingIndex reports whether a VALID HNSW index exists on the project's embeddings partition.
+// The retriever calls it to take the index-backed path only when there is a usable index: a missing index
+// (never built — e.g. before a model is selected) or an INVALID one (a failed CONCURRENTLY build, which the
+// planner silently ignores) must fall back to an exact scan rather than a seq scan mislabelled as an index
+// path. It reads the catalog on the caller's transaction, keyed by the same partition/index naming
+// convention EnsureIndex builds.
+func HasValidEmbeddingIndex(ctx context.Context, tx pgx.Tx, projectID pgtype.UUID) (bool, error) {
+	_, suffix, err := partitionNames(projectID)
+	if err != nil {
+		return false, err
+	}
+	idx := fmt.Sprintf("embeddings_p_%s_vec_hnsw", suffix)
+	var valid bool
+	switch err := tx.QueryRow(ctx, `
+		SELECT i.indisvalid
+		FROM pg_class c
+		JOIN pg_index i ON i.indexrelid = c.oid
+		WHERE c.relname = $1 AND c.relnamespace = 'public'::regnamespace`, idx).Scan(&valid); {
+	case errors.Is(err, pgx.ErrNoRows):
+		return false, nil
+	case err != nil:
+		return false, fmt.Errorf("check embedding index %s: %w", idx, err)
+	}
+	return valid, nil
+}
