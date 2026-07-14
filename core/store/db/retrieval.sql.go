@@ -134,3 +134,72 @@ func (q *Queries) RetrieveExact(ctx context.Context, arg RetrieveExactParams) ([
 	}
 	return items, nil
 }
+
+const retrieveLexical = `-- name: RetrieveLexical :many
+SELECT m.id, m.content, m.kind,
+       ts_rank_cd(to_tsvector('english', m.content), websearch_to_tsquery('english', $1::text))::float8 AS rank
+FROM memories m
+WHERE m.project_id = $2
+  AND m.superseded_by IS NULL AND m.valid_to IS NULL
+  AND (cardinality($3::text[]) = 0 OR m.scope_keys && $3::text[])
+  AND ($4::bool OR m.trust_tier <> 'quarantine')
+  AND to_tsvector('english', m.content) @@ websearch_to_tsquery('english', $1::text)
+ORDER BY rank DESC, m.id ASC
+LIMIT $5::int
+`
+
+type RetrieveLexicalParams struct {
+	QueryText         string      `json:"query_text"`
+	ProjectID         pgtype.UUID `json:"project_id"`
+	Scopes            []string    `json:"scopes"`
+	IncludeQuarantine bool        `json:"include_quarantine"`
+	MaxResults        int32       `json:"max_results"`
+}
+
+type RetrieveLexicalRow struct {
+	ID      pgtype.UUID `json:"id"`
+	Content string      `json:"content"`
+	Kind    string      `json:"kind"`
+	Rank    float64     `json:"rank"`
+}
+
+// The lexical (full-text) retrieval leg: the live memories whose content matches the query terms, ranked by
+// lexical relevance. It complements the dense vector leg — an exact keyword or identifier match a nearest-
+// neighbour vector search misses, and vice versa — and the two are fused by rank downstream, which is why
+// the raw rank is not returned to the caller (only the order matters). The match uses an English text-search
+// configuration over content, backed by an expression GIN index on the identical to_tsvector('english',
+// content) expression, so the predicate is index-usable; a drift between this expression and the index's
+// would silently fall to a sequential scan. An empty or all-stopword query produces an empty tsquery that
+// matches nothing, so the leg contributes no candidates rather than every row. Same filter shape as the
+// dense leg: the tenant is the project partition, scope_keys && is the compiled-ACL overlap (empty =
+// project-wide), quarantine-tier excluded unless asked. The id tie-break makes equal-rank order stable.
+func (q *Queries) RetrieveLexical(ctx context.Context, arg RetrieveLexicalParams) ([]RetrieveLexicalRow, error) {
+	rows, err := q.db.Query(ctx, retrieveLexical,
+		arg.QueryText,
+		arg.ProjectID,
+		arg.Scopes,
+		arg.IncludeQuarantine,
+		arg.MaxResults,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []RetrieveLexicalRow
+	for rows.Next() {
+		var i RetrieveLexicalRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Content,
+			&i.Kind,
+			&i.Rank,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
