@@ -35,6 +35,7 @@ type extensions struct {
 	adjudicator ext.Adjudicator
 	metering    ext.MeteringSink
 	extractor   ext.Extractor
+	embedder    ext.Embedder
 	// workmem is optional infrastructure, not a swappable ext seam: the run-scoped working-memory store.
 	// It defaults to a disabled no-op, so a composition without a cache runs unchanged.
 	workmem workmem.Store
@@ -46,6 +47,7 @@ func defaultExtensions() extensions {
 		adjudicator: ext.LWW{},
 		metering:    ext.NoopMetering{},
 		extractor:   ext.FixtureExtractor{},
+		embedder:    ext.FixtureEmbedder{},
 		workmem:     workmem.NewDisabled(),
 	}
 }
@@ -60,7 +62,7 @@ func resolveExtensions(opts []Option) (extensions, error) {
 	for _, o := range opts {
 		o(&e)
 	}
-	if e.policy == nil || e.adjudicator == nil || e.metering == nil || e.extractor == nil {
+	if e.policy == nil || e.adjudicator == nil || e.metering == nil || e.extractor == nil || e.embedder == nil {
 		return extensions{}, errors.New("core: extension point set to nil")
 	}
 	if e.workmem == nil {
@@ -75,6 +77,7 @@ func (e extensions) logComposed(ctx context.Context, role string) {
 		slog.String("adjudicator", fmt.Sprintf("%T", e.adjudicator)),
 		slog.String("metering", fmt.Sprintf("%T", e.metering)),
 		slog.String("extractor", fmt.Sprintf("%T", e.extractor)),
+		slog.String("embedder", fmt.Sprintf("%T", e.embedder)),
 	)
 }
 
@@ -101,6 +104,13 @@ func WithMetering(m ext.MeteringSink) Option {
 // events into memories and claims; a downstream build injects its own provider.
 func WithExtractor(x ext.Extractor) Option {
 	return func(e *extensions) { e.extractor = x }
+}
+
+// WithEmbedder overrides the default Embedder. The worker uses it to turn stored
+// memory content into vectors for similarity search; a downstream build injects a
+// real embedding provider.
+func WithEmbedder(x ext.Embedder) Option {
+	return func(e *extensions) { e.embedder = x }
 }
 
 // WithWorkmem injects the working-memory store. The OSS binary opens it from

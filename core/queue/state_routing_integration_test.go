@@ -56,7 +56,7 @@ func TestExtractRunWorkerRoutesStateFactsIntegration(t *testing.T) {
 
 	// runWork drives one synchronous pass for a run with the given store injected.
 	runWork := func(runID string, wm workmem.Store) {
-		worker := jobs.NewExtractRunWorker(db.New(st.Pool), &neverExtractor{t: t}, jobs.NewPGPersister(st, ext.LWW{}),
+		worker := jobs.NewExtractRunWorker(db.New(st.Pool), &neverExtractor{t: t}, jobs.NewPGPersister(st, ext.LWW{}, ext.FixtureEmbedder{}),
 			jobs.Debounce{IdleWindow: 0, MaxEvents: 1}, jobs.WithWorkmemStore(wm))
 		job := &river.Job[jobs.ExtractRunArgs]{Args: jobs.ExtractRunArgs{ProjectID: projectID, RunID: runID}}
 		if err := worker.Work(ctx, job); err != nil {

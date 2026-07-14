@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	pgvector "github.com/pgvector/pgvector-go"
 
 	"github.com/lore-gpt/lore/core/ext"
 	"github.com/lore-gpt/lore/core/store/db"
@@ -112,12 +113,14 @@ type tenantRunner interface {
 type PGPersister struct {
 	store       tenantRunner
 	adjudicator ext.Adjudicator
+	embedder    ext.Embedder
 }
 
-// NewPGPersister builds the OSS persister over a tenant-scoped transaction runner (the store) and the
-// conflict-resolution policy. A downstream build injects a different Adjudicator without forking the persister.
-func NewPGPersister(store tenantRunner, adjudicator ext.Adjudicator) *PGPersister {
-	return &PGPersister{store: store, adjudicator: adjudicator}
+// NewPGPersister builds the OSS persister over a tenant-scoped transaction runner (the store), the
+// conflict-resolution policy, and the embedding provider. A downstream build injects a different
+// Adjudicator or Embedder without forking the persister.
+func NewPGPersister(store tenantRunner, adjudicator ext.Adjudicator, embedder ext.Embedder) *PGPersister {
+	return &PGPersister{store: store, adjudicator: adjudicator, embedder: embedder}
 }
 
 // Persist writes the pass's entities, memories, and claims and advances the run checkpoint in one
@@ -129,7 +132,17 @@ func NewPGPersister(store tenantRunner, adjudicator ext.Adjudicator) *PGPersiste
 // active claim, then insert). The checkpoint advance is a compare-and-swap on the value the pass started
 // from, so a concurrent double-delivery leaves exactly one set of rows and one advance: the loser's
 // advance matches no row and it rolls back with errCheckpointConflict.
+//
+// Candidate contents are embedded BEFORE the transaction opens, so a real, network-backed embedder's
+// latency never holds the entity locks (or the transaction) open; a newly inserted memory's vector is
+// then stored inside the transaction, keyed by content.
 func (p *PGPersister) Persist(ctx context.Context, in PersistInput) error {
+	// Embed candidate contents up front, outside the transaction and its entity locks.
+	memoryVectors, err := p.embedContents(ctx, in.Memories)
+	if err != nil {
+		return err
+	}
+
 	return p.store.WithProject(ctx, in.ProjectID, func(tx pgx.Tx) error {
 		q := db.New(tx)
 
@@ -157,6 +170,8 @@ func (p *PGPersister) Persist(ctx context.Context, in PersistInput) error {
 		// Deduplicate then persist memories, indexing the first memory per source event so a same-event
 		// claim can link to it (a claim from an event with no memory is stored standalone, memory_id
 		// NULL). A duplicate restatement merges into the existing memory instead of inserting a new row.
+		// Only a newly inserted memory stores a vector (the one pre-computed for its content); a merge
+		// keeps the existing memory's vector, since exact-content dedup leaves the content unchanged.
 		memoryBySeq := make(map[int64]pgtype.UUID, len(in.Memories))
 		var inserted, mergedCount int
 		for _, m := range in.Memories {
@@ -168,6 +183,14 @@ func (p *PGPersister) Persist(ctx context.Context, in PersistInput) error {
 				mergedCount++
 			} else {
 				inserted++
+				if _, err := q.UpsertEmbedding(ctx, db.UpsertEmbeddingParams{
+					ProjectID: in.ProjectID,
+					MemoryID:  id,
+					ModelID:   p.embedder.ModelID(),
+					Vec:       memoryVectors[m.Content],
+				}); err != nil {
+					return fmt.Errorf("upsert embedding for memory %s: %w", uuidString(id), err)
+				}
 			}
 			if _, ok := memoryBySeq[m.SourceSeq]; !ok {
 				memoryBySeq[m.SourceSeq] = id
@@ -312,4 +335,45 @@ func upsertEntity(ctx context.Context, q *db.Queries, projectID pgtype.UUID, nam
 		return pgtype.UUID{}, fmt.Errorf("upsert entity %q: %w", name, err)
 	}
 	return id, nil
+}
+
+// embedContents embeds the distinct contents of the pass's candidate memories, returning a
+// content→vector map. It runs BEFORE the consolidation transaction (and its entity locks), so a real,
+// network-backed embedder's latency never holds the critical section open. It embeds every distinct
+// candidate content in one call — batch-shaped, so a real provider makes a single request — and asserts
+// every vector has the embedder's dimension, so a wrong-dimension vector (which the dimensionless column
+// would accept, only to fail later at index build) is rejected before any write. Only contents that turn
+// out to be new inserts are stored by the caller; a content that merges into an existing memory is
+// embedded here but its vector goes unused. An empty set is a no-op.
+func (p *PGPersister) embedContents(ctx context.Context, memories []MemoryWrite) (map[string]pgvector.Vector, error) {
+	seen := make(map[string]struct{}, len(memories))
+	texts := make([]string, 0, len(memories))
+	for _, m := range memories {
+		if _, ok := seen[m.Content]; ok {
+			continue
+		}
+		seen[m.Content] = struct{}{}
+		texts = append(texts, m.Content)
+	}
+	if len(texts) == 0 {
+		return nil, nil
+	}
+	vecs, err := p.embedder.Embed(ctx, texts)
+	if err != nil {
+		return nil, fmt.Errorf("embed memories: %w", err)
+	}
+	if len(vecs) != len(texts) {
+		return nil, fmt.Errorf("embed memories: got %d vectors for %d contents", len(vecs), len(texts))
+	}
+	dim := p.embedder.Dim()
+	modelID := p.embedder.ModelID()
+	out := make(map[string]pgvector.Vector, len(texts))
+	for i, vec := range vecs {
+		if len(vec) != dim {
+			return nil, fmt.Errorf("embed memories: vector for content %d has length %d, want %d (model %q)",
+				i, len(vec), dim, modelID)
+		}
+		out[texts[i]] = pgvector.NewVector(vec)
+	}
+	return out, nil
 }

@@ -48,10 +48,11 @@ func New(pool *pgxpool.Pool) (*Queue, error) {
 // NewWorker builds a River client that processes extract_run jobs on the default
 // queue: it reads events through the pool, distils them with the given Extractor,
 // persists the result (advancing the run checkpoint) through the store's
-// tenant-scoped transactions, and resolves claim conflicts with the given
-// Adjudicator. The working-memory store routes kind:"state" events (hot lane when
-// healthy, a durable claim otherwise). `lore worker` uses this and calls Start.
-func NewWorker(st *store.Store, extractor ext.Extractor, adjudicator ext.Adjudicator, wm workmem.Store) (*Queue, error) {
+// tenant-scoped transactions, resolves claim conflicts with the given Adjudicator,
+// and embeds stored memories with the given Embedder. The working-memory store
+// routes kind:"state" events (hot lane when healthy, a durable claim otherwise).
+// `lore worker` uses this and calls Start.
+func NewWorker(st *store.Store, extractor ext.Extractor, adjudicator ext.Adjudicator, embedder ext.Embedder, wm workmem.Store) (*Queue, error) {
 	pool := st.Pool
 	workers := river.NewWorkers()
 	// The worker reads events straight through db.New(pool) but writes through the store's
@@ -61,7 +62,7 @@ func NewWorker(st *store.Store, extractor ext.Extractor, adjudicator ext.Adjudic
 	// store), or the tenant policies would return no rows and extraction would silently stall — the
 	// writes are already scoped, the reads are not yet.
 	river.AddWorker(workers, jobs.NewExtractRunWorker(
-		db.New(pool), extractor, jobs.NewPGPersister(st, adjudicator), jobs.DefaultDebounce(),
+		db.New(pool), extractor, jobs.NewPGPersister(st, adjudicator, embedder), jobs.DefaultDebounce(),
 		jobs.WithWorkmemStore(wm)))
 
 	client, err := river.NewClient(riverpgxv5.New(pool), &river.Config{

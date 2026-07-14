@@ -89,7 +89,7 @@ for lint/test/build too.)*
 
 ```bash
 curl localhost:8080/healthz
-# {"status":"ok","version":"0.0.0-dev","db":"ok","queue":"ok"}
+# {"status":"ok","version":"0.0.0-dev","db":"ok","queue":"ok","workmem":"ok"}
 ```
 
 **2 · Append an event and watch the worker pick it up:**
