@@ -3,14 +3,18 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
+	"github.com/lore-gpt/lore/core/pack"
+	"github.com/lore-gpt/lore/core/retrieval"
 	"github.com/lore-gpt/lore/core/store/db"
 	"github.com/lore-gpt/lore/core/workmem"
 )
@@ -72,7 +76,8 @@ func TestRequireAuthRejectsMalformedToken(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			req := httptest.NewRequest(http.MethodPost, "/v1/recall", nil)
+			// Probe via /v1/pack (behind requireAuth): a malformed token is rejected before the handler runs.
+			req := httptest.NewRequest(http.MethodPost, "/v1/pack", nil)
 			if tc.header != "" {
 				req.Header.Set("Authorization", tc.header)
 			}
@@ -221,5 +226,184 @@ func TestCreateEventStateValueLimit(t *testing.T) {
 	}
 	if e.Code != "invalid_state_fact" {
 		t.Errorf("error code = %q, want invalid_state_fact", e.Code)
+	}
+}
+
+// fakePacker records the arguments it was called with and returns a fixed result/error, so the pack handler's
+// wiring (project source, request threading) and error mapping can be tested without a database.
+type fakePacker struct {
+	result     pack.Result
+	err        error
+	gotProject pgtype.UUID
+	gotRun     pgtype.UUID
+	gotReq     pack.Request
+}
+
+func (f *fakePacker) Build(_ context.Context, _ pgx.Tx, projectID, runID pgtype.UUID, req pack.Request) (pack.Result, error) {
+	f.gotProject, f.gotRun, f.gotReq = projectID, runID, req
+	return f.result, f.err
+}
+
+// fakeTenant runs the handler's closure with a nil transaction (the fake packer ignores it), recording the
+// project it was scoped to.
+type fakeTenant struct{ project pgtype.UUID }
+
+func (t *fakeTenant) WithProject(_ context.Context, projectID pgtype.UUID, fn func(pgx.Tx) error) error {
+	t.project = projectID
+	return fn(nil)
+}
+
+// withProjectReq builds a /v1/pack request carrying an already-authenticated project in its context (the
+// requireAuth stash), so a handler test can bypass the database key lookup.
+func withProjectReq(body string, project pgtype.UUID) *http.Request {
+	req := httptest.NewRequest(http.MethodPost, "/v1/pack", strings.NewReader(body))
+	return req.WithContext(withProjectID(req.Context(), project))
+}
+
+// TestHandlePackErrorMapping proves each pack build error becomes the right HTTP status and code.
+func TestHandlePackErrorMapping(t *testing.T) {
+	const runID = "11111111-1111-1111-1111-111111111111"
+	project := pgtype.UUID{Bytes: [16]byte{7}, Valid: true}
+	cases := []struct {
+		name       string
+		err        error
+		wantStatus int
+		wantCode   string
+	}{
+		{"unknown or cross-project run", pgx.ErrNoRows, http.StatusNotFound, "not_found"},
+		{"min_seq out of range", &pack.MinSeqOutOfRangeError{MinSeq: 9, LastSeq: 3}, http.StatusBadRequest, "min_seq_out_of_range"},
+		{"no active model", retrieval.ErrNoActiveModel, http.StatusConflict, "no_active_model"},
+		{"unexpected", errors.New("boom"), http.StatusInternalServerError, "internal"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			a := New(Config{Packer: &fakePacker{err: tc.err}, Tenant: &fakeTenant{}})
+			rr := httptest.NewRecorder()
+			a.handlePack(rr, withProjectReq(`{"run_id":"`+runID+`","query":"q"}`, project))
+			if rr.Code != tc.wantStatus {
+				t.Fatalf("status = %d, want %d (body %q)", rr.Code, tc.wantStatus, rr.Body.String())
+			}
+			var e Error
+			if err := json.Unmarshal(rr.Body.Bytes(), &e); err != nil {
+				t.Fatalf("decode error body: %v", err)
+			}
+			if e.Code != tc.wantCode {
+				t.Errorf("code = %q, want %q", e.Code, tc.wantCode)
+			}
+		})
+	}
+}
+
+// TestHandlePackResponseAndProjectSource proves the response maps every pack field, and that the project comes
+// ONLY from the authenticated context — never the request body — while the request's query/min_seq/scopes/
+// limit/budget thread through to Build.
+func TestHandlePackResponseAndProjectSource(t *testing.T) {
+	project := pgtype.UUID{Bytes: [16]byte{7}, Valid: true}
+	memID := pgtype.UUID{Bytes: [16]byte{9}, Valid: true}
+	fp := &fakePacker{result: pack.Result{
+		Text: "PACK TEXT", CoveredSeq: 5, FreshnessLagMs: 250, SavedTokens: 12,
+		WorkingSource: "live", Truncated: true,
+		Sources: []pack.Source{{ID: memID, Kind: "semantic", Score: 0.03, Section: "semantic"}},
+	}}
+	a := New(Config{Packer: fp, Tenant: &fakeTenant{}})
+
+	body := `{"run_id":"22222222-2222-2222-2222-222222222222","query":"auth","min_seq":3,"scopes":["run:r1"],"limit":7,"token_budget":100}`
+	rr := httptest.NewRecorder()
+	a.handlePack(rr, withProjectReq(body, project))
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body %q)", rr.Code, rr.Body.String())
+	}
+	var resp PackResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.Text != "PACK TEXT" || resp.CoveredSeq != 5 || resp.FreshnessLagMs != 250 ||
+		resp.SavedTokens != 12 || resp.WorkingSource != "live" || !resp.Truncated {
+		t.Errorf("response scalar fields wrong: %+v", resp)
+	}
+	if len(resp.Sources) != 1 || resp.Sources[0].ID != uuid.UUID(memID.Bytes).String() ||
+		resp.Sources[0].Section != "semantic" || resp.Sources[0].Kind != "semantic" {
+		t.Errorf("sources wrong: %+v", resp.Sources)
+	}
+	// The project is the auth-context one, never a body field.
+	if fp.gotProject != project {
+		t.Errorf("Build got project %v, want the auth-context project %v", fp.gotProject.Bytes, project.Bytes)
+	}
+	if fp.gotReq.MinSeq != 3 || fp.gotReq.Limit != 7 || fp.gotReq.TokenBudget != 100 ||
+		len(fp.gotReq.Filters.Scopes) != 1 || fp.gotReq.Filters.Scopes[0] != "run:r1" || fp.gotReq.Query != "auth" {
+		t.Errorf("Build got req %+v, want query auth / min_seq 3 / limit 7 / budget 100 / scopes [run:r1]", fp.gotReq)
+	}
+}
+
+// TestHandlePackValidationAndUnconfigured proves the pre-build rejections and the unconfigured 501.
+func TestHandlePackValidationAndUnconfigured(t *testing.T) {
+	project := pgtype.UUID{Bytes: [16]byte{7}, Valid: true}
+
+	a := New(Config{Packer: &fakePacker{}, Tenant: &fakeTenant{}})
+	for _, tc := range []struct{ name, body, wantCode string }{
+		{"malformed json", "{", "invalid_body"},
+		{"bad run_id", `{"run_id":"nope","query":"q"}`, "invalid_run_id"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rr := httptest.NewRecorder()
+			a.handlePack(rr, withProjectReq(tc.body, project))
+			if rr.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400 (body %q)", rr.Code, rr.Body.String())
+			}
+			var e Error
+			_ = json.Unmarshal(rr.Body.Bytes(), &e)
+			if e.Code != tc.wantCode {
+				t.Errorf("code = %q, want %q", e.Code, tc.wantCode)
+			}
+		})
+	}
+
+	// A nil Packer OR a nil Tenant independently leaves /v1/pack a 501 (never a panic on a nil dependency) —
+	// tested separately so a mutant dropping either guard is caught.
+	const packBody = `{"run_id":"22222222-2222-2222-2222-222222222222","query":"q"}`
+	for _, tc := range []struct {
+		name string
+		cfg  Config
+	}{
+		{"nil packer", Config{Tenant: &fakeTenant{}}},
+		{"nil tenant", Config{Packer: &fakePacker{}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rr := httptest.NewRecorder()
+			New(tc.cfg).handlePack(rr, withProjectReq(packBody, project))
+			if rr.Code != http.StatusNotImplemented {
+				t.Errorf("status = %d, want 501", rr.Code)
+			}
+		})
+	}
+}
+
+// TestHandlePackDefaultsLimit proves an omitted (non-positive) limit is defaulted, not threaded through as 0.
+func TestHandlePackDefaultsLimit(t *testing.T) {
+	fp := &fakePacker{}
+	a := New(Config{Packer: fp, Tenant: &fakeTenant{}})
+	rr := httptest.NewRecorder()
+	a.handlePack(rr, withProjectReq(`{"run_id":"22222222-2222-2222-2222-222222222222","query":"q"}`,
+		pgtype.UUID{Bytes: [16]byte{7}, Valid: true}))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body %q)", rr.Code, rr.Body.String())
+	}
+	if fp.gotReq.Limit != defaultPackLimit {
+		t.Errorf("Build got limit %d, want the default %d", fp.gotReq.Limit, defaultPackLimit)
+	}
+}
+
+// TestNotImplemented proves the shared stub handler answers 501 with a stable code.
+func TestNotImplemented(t *testing.T) {
+	rr := httptest.NewRecorder()
+	New(Config{}).notImplemented(rr, httptest.NewRequest(http.MethodGet, "/v1/memories", nil))
+	if rr.Code != http.StatusNotImplemented {
+		t.Fatalf("status = %d, want 501", rr.Code)
+	}
+	var e Error
+	_ = json.Unmarshal(rr.Body.Bytes(), &e)
+	if e.Code != "not_implemented" {
+		t.Errorf("code = %q, want not_implemented", e.Code)
 	}
 }

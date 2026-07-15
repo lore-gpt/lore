@@ -93,6 +93,7 @@ func (q *Queries) GetEvent(ctx context.Context, arg GetEventParams) (Event, erro
 
 const getRunExtractionState = `-- name: GetRunExtractionState :one
 SELECT r.covered_seq,
+       r.last_seq,
        r.extraction_batch_id,
        r.extraction_batch_covered_seq,
        (SELECT extraction_mode FROM projects WHERE projects.id = r.project_id) AS extraction_mode
@@ -107,6 +108,7 @@ type GetRunExtractionStateParams struct {
 
 type GetRunExtractionStateRow struct {
 	CoveredSeq                int64   `json:"covered_seq"`
+	LastSeq                   int64   `json:"last_seq"`
 	ExtractionBatchID         *string `json:"extraction_batch_id"`
 	ExtractionBatchCoveredSeq *int64  `json:"extraction_batch_covered_seq"`
 	ExtractionMode            string  `json:"extraction_mode"`
@@ -118,12 +120,14 @@ type GetRunExtractionStateRow struct {
 // The mode comes via a scalar subquery so the statement stays single-table (runs) for the generated
 // return type; a NULL extraction_batch_id means no batch is in flight and the pass is in its
 // submit/realtime phase, while a non-NULL one means an earlier attempt submitted a batch awaiting
-// collection.
+// collection. last_seq (the run's highest assigned seq) is read in the same row so a reader can validate a
+// requested min_seq against it without a second query.
 func (q *Queries) GetRunExtractionState(ctx context.Context, arg GetRunExtractionStateParams) (GetRunExtractionStateRow, error) {
 	row := q.db.QueryRow(ctx, getRunExtractionState, arg.RunID, arg.ProjectID)
 	var i GetRunExtractionStateRow
 	err := row.Scan(
 		&i.CoveredSeq,
+		&i.LastSeq,
 		&i.ExtractionBatchID,
 		&i.ExtractionBatchCoveredSeq,
 		&i.ExtractionMode,

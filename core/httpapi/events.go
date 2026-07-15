@@ -172,12 +172,6 @@ func (a *API) writeThroughState(ctx context.Context, event db.Event, fact workme
 	}
 }
 
-// handleRecall is the Phase 1 read path. Phase 0 answers 501 so the route and
-// its error contract exist without shipping a partial implementation.
-func (a *API) handleRecall(w http.ResponseWriter, r *http.Request) {
-	writeError(w, r, http.StatusNotImplemented, "not_implemented", "recall lands in Phase 1")
-}
-
 // isJSONObject reports whether raw is a JSON object (the payload contract). The
 // decoder has already validated raw is well-formed JSON, so it is enough to find
 // the first non-whitespace byte and check it opens an object.

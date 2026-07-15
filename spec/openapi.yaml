@@ -5,9 +5,9 @@ info:
   description: |
     HTTP API for Lore, the coordination memory layer for multi-agent AI systems.
 
-    This is the source of truth from which the SDKs are generated. Phase 0 exposes
-    health, event ingest, and a recall placeholder; the write / extract / pack
-    surface lands in Phase 1.
+    This is the source of truth from which the SDKs are generated. It exposes
+    health, event ingest, and the context-pack read path; the remaining memory,
+    version, run-trace, and policy surfaces are stubbed at 501 until they land.
   license:
     name: Apache-2.0
     url: https://www.apache.org/licenses/LICENSE-2.0
@@ -23,8 +23,14 @@ tags:
     description: Health and diagnostics.
   - name: events
     description: Append-only event ingest.
-  - name: recall
-    description: Context retrieval (Phase 1).
+  - name: pack
+    description: Context-pack retrieval (read-your-writes).
+  - name: memories
+    description: Memory inspection and management (not yet implemented).
+  - name: runs
+    description: Run inspection (not yet implemented).
+  - name: policies
+    description: Access-policy management (not yet implemented).
 security:
   - bearerAuth: []
 paths:
@@ -59,9 +65,9 @@ paths:
       operationId: createEvent
       summary: Append an event to a run.
       description: >
-        Appends an event to the run's append-only log and (from Phase 1) enqueues
-        an extraction job in the same database transaction. Returns the created
-        event id and its server-assigned, per-run sequence number.
+        Appends an event to the run's append-only log and enqueues an extraction
+        job in the same database transaction. Returns the created event id and
+        its server-assigned, per-run sequence number.
       tags:
         - events
       requestBody:
@@ -91,26 +97,168 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
-  /v1/recall:
-    post:
-      operationId: recall
-      summary: Retrieve a context pack.
-      description: Not implemented in Phase 0; the read path lands in Phase 1.
-      tags:
-        - recall
-      responses:
-        "501":
-          description: Not implemented until Phase 1.
+        "404":
+          description: >
+            The run does not exist, or it belongs to a different project than the
+            API key. The two are indistinguishable by design — no cross-tenant
+            existence signal.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+  /v1/pack:
+    post:
+      operationId: pack
+      summary: Retrieve a context pack for a run.
+      description: >
+        Assembles a context pack for a run within the API key's project: the
+        project's distilled memories (hybrid retrieval), the run's live working
+        memory, and a raw tail of not-yet-distilled events, in a deterministic,
+        sectioned, data-not-instructions envelope. When min_seq is given, every
+        event up to it is reflected — distilled if extraction has caught up, raw
+        if not — so a reader always sees a write it knows happened. The project is
+        taken from the API key, never the body.
+      tags:
+        - pack
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PackRequest"
+      responses:
+        "200":
+          description: The assembled context pack.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PackResponse"
+        "400":
+          description: >
+            Invalid request body or run_id, or a min_seq beyond the run's latest
+            seq (code min_seq_out_of_range).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Missing or invalid API key.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: >
+            The run does not exist, or it belongs to a different project than the
+            key (indistinguishable by design).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: >
+            The project has no active embedding model, so recall is not yet
+            available (code no_active_model).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/memories:
+    get:
+      operationId: listMemories
+      summary: List memories.
+      description: Not implemented yet.
+      tags: [memories]
+      responses:
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+    post:
+      operationId: createMemory
+      summary: Create a memory.
+      description: Not implemented yet.
+      tags: [memories]
+      responses:
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+  /v1/memories/{id}:
+    parameters:
+      - $ref: "#/components/parameters/IdPath"
+    get:
+      operationId: getMemory
+      summary: Get a memory.
+      description: Not implemented yet.
+      tags: [memories]
+      responses:
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+    patch:
+      operationId: updateMemory
+      summary: Update a memory.
+      description: Not implemented yet.
+      tags: [memories]
+      responses:
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+    delete:
+      operationId: deleteMemory
+      summary: Delete a memory.
+      description: Not implemented yet.
+      tags: [memories]
+      responses:
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+  /v1/memories/{id}/versions:
+    parameters:
+      - $ref: "#/components/parameters/IdPath"
+    get:
+      operationId: listMemoryVersions
+      summary: List a memory's version history.
+      description: Not implemented yet.
+      tags: [memories]
+      responses:
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+  /v1/runs/{id}/trace:
+    parameters:
+      - $ref: "#/components/parameters/IdPath"
+    get:
+      operationId: getRunTrace
+      summary: Get a run's pack trace.
+      description: Not implemented yet.
+      tags: [runs]
+      responses:
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+  /v1/policies:
+    get:
+      operationId: listPolicies
+      summary: List access policies.
+      description: Not implemented yet.
+      tags: [policies]
+      responses:
+        "501":
+          $ref: "#/components/responses/NotImplemented"
 components:
   securitySchemes:
     bearerAuth:
       type: http
       scheme: bearer
       description: "API key sent as a bearer token: `Authorization: Bearer <key>`."
+  parameters:
+    IdPath:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+  responses:
+    NotImplemented:
+      description: Not implemented yet.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
   schemas:
     Health:
       type: object
@@ -188,9 +336,117 @@ components:
           minimum: 1
           description: >
             Server-assigned sequence number within the run. Monotonic and
-            gap-free per run; clients carry it to assert read-your-writes on
-            recall.
+            gap-free per run; clients carry it as the min_seq of a later /v1/pack
+            to assert read-your-writes.
           example: 1
+    PackRequest:
+      type: object
+      required:
+        - run_id
+        - query
+      properties:
+        run_id:
+          type: string
+          format: uuid
+        query:
+          type: string
+          description: Free-text retrieval query.
+        min_seq:
+          type: integer
+          format: int64
+          minimum: 0
+          default: 0
+          description: >
+            Read-your-writes barrier: the run seq the caller must see. 0 (the
+            default) asserts nothing. Events in (covered_seq, min_seq] are always
+            included in the raw tail. A min_seq beyond the run's latest seq is a
+            400 (min_seq_out_of_range).
+        scopes:
+          type: array
+          items:
+            type: string
+          description: >
+            Scope filter over the project's memories: a memory in any listed scope
+            is eligible; an empty or omitted list is project-wide. This is the
+            access-scope hook — today a plain scope-key overlap; per-agent policy
+            resolution lands later.
+        limit:
+          type: integer
+          minimum: 1
+          description: Maximum distilled memories to retrieve (server default when omitted).
+        token_budget:
+          type: integer
+          minimum: 0
+          description: >
+            Coarse cap on the pack's distilled recall; whole memories are dropped
+            once the estimate exceeds it. 0 (the default) is unbounded. The
+            working section and the read-your-writes window are never dropped.
+    PackResponse:
+      type: object
+      required:
+        - text
+        - sources
+        - covered_seq
+        - freshness_lag_ms
+        - saved_tokens
+        - working_source
+        - truncated
+      properties:
+        text:
+          type: string
+          description: The assembled, sectioned, data-not-instructions pack.
+        sources:
+          type: array
+          items:
+            $ref: "#/components/schemas/PackSource"
+          description: The distilled memories that composed the pack, in pack order.
+        covered_seq:
+          type: integer
+          format: int64
+          description: The run's extraction checkpoint — every event at or below it is distilled.
+        freshness_lag_ms:
+          type: integer
+          format: int64
+          description: >
+            Age in milliseconds of the OLDEST not-yet-distilled event (how far
+            behind the distilled view is); 0 when the run is fully caught up.
+        saved_tokens:
+          type: integer
+          description: >
+            Estimated tokens saved by packing — a coarse v0 char-based estimate,
+            not a metered figure.
+        working_source:
+          type: string
+          enum: [live, durable, skipped]
+          description: >
+            Where the working section came from: the live stripe, a durable
+            fallback, or skipped (a healthy stripe that failed this read).
+        truncated:
+          type: boolean
+          description: >
+            True when the pack omitted content that existed — the raw tail beyond
+            the guaranteed window was capped, or a token budget dropped memories.
+    PackSource:
+      type: object
+      required:
+        - id
+        - kind
+        - score
+        - section
+      properties:
+        id:
+          type: string
+          format: uuid
+        kind:
+          type: string
+          description: Memory kind (working, semantic, episodic, procedural).
+        score:
+          type: number
+          format: double
+          description: Fused reciprocal-rank score (higher is more relevant).
+        section:
+          type: string
+          description: The pack section the memory appears in.
     Error:
       type: object
       required:
