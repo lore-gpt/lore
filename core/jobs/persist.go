@@ -3,7 +3,6 @@ package jobs
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -38,6 +37,24 @@ func conflictReason(policy string, winnerID, winnerRun pgtype.UUID, winnerSeq in
 	return fmt.Sprintf("%s: claim %s (run %s seq %d) supersedes claim %s (run %s seq %d)",
 		policy, uuidString(winnerID), uuidString(winnerRun), winnerSeq,
 		uuidString(loserID), uuidString(loserRun), derefSeq(loserSeq))
+}
+
+// claimSubject is the natural key of a claim — its (entity, predicate) within a project. The persister
+// keys its in-pass overlay of active claims by it.
+type claimSubject struct {
+	entityID  pgtype.UUID
+	predicate string
+}
+
+// activeClaim is the currently-active claim for a subject as the persister sees it mid-pass: either the
+// row read from the database at the start of the pass, or one this pass just inserted. Its value and
+// run/seq provenance feed conflict resolution and the recorded reason exactly as a per-claim re-read
+// would.
+type activeClaim struct {
+	id    pgtype.UUID
+	value []byte
+	runID pgtype.UUID
+	seq   *int64
 }
 
 // Persister commits one extraction pass: it writes the distilled memories, entities, and claims and
@@ -207,15 +224,14 @@ func (p *PGPersister) Persist(ctx context.Context, in PersistInput) error {
 			}
 		}
 
-		// Claims in SourceSeq order: resolve the subject, and if an active claim already asserts it, run
-		// the conflict through the Adjudicator (default last-write-wins). The resolved value becomes the
-		// new active claim; the old one is superseded and stamped with the policy's reason. Pre-generating
-		// the id lets the supersede point at this replacement before it exists (the self-FK is deferred,
-		// validated at commit).
+		// Resolve every claim subject to an entity id up front (registering any not among the mentions with
+		// an unknown type), so the active claims for all of them can be read in a single round-trip below
+		// rather than once per claim.
+		claimEntityIDs := make([]pgtype.UUID, 0, len(in.Claims))
+		seenClaimEntity := make(map[pgtype.UUID]struct{}, len(in.Claims))
 		for _, c := range in.Claims {
 			entityID, ok := entityIDs[c.Entity]
 			if !ok {
-				// A claim subject not among the mentions: register it with an unknown type.
 				id, err := upsertEntity(ctx, q, in.ProjectID, c.Entity, "unknown", nil)
 				if err != nil {
 					return err
@@ -223,31 +239,62 @@ func (p *PGPersister) Persist(ctx context.Context, in PersistInput) error {
 				entityID = id
 				entityIDs[c.Entity] = id
 			}
+			if _, seen := seenClaimEntity[entityID]; !seen {
+				seenClaimEntity[entityID] = struct{}{}
+				claimEntityIDs = append(claimEntityIDs, entityID)
+			}
+		}
 
+		// Read the active claims for those entities once and key them by full subject. This overlay stands
+		// in for the per-claim read: the resolution loop reads and updates it in memory, so two claims for
+		// the same subject in one pass still resolve last-write-wins. When the loop re-read per claim, a
+		// transaction saw its own just-inserted claim; the overlay reproduces exactly that (it records each
+		// inserted claim as the subject's active one) without the extra round-trips.
+		overlay := make(map[claimSubject]activeClaim, len(claimEntityIDs))
+		if len(claimEntityIDs) > 0 {
+			rows, err := q.GetActiveClaimsByEntities(ctx, db.GetActiveClaimsByEntitiesParams{
+				ProjectID: in.ProjectID,
+				EntityIds: claimEntityIDs,
+			})
+			if err != nil {
+				return fmt.Errorf("read active claims: %w", err)
+			}
+			for _, r := range rows {
+				overlay[claimSubject{entityID: r.EntityID, predicate: r.Predicate}] = activeClaim{
+					id:    r.ID,
+					value: r.Value,
+					runID: r.RunID,
+					seq:   r.Seq,
+				}
+			}
+		}
+
+		// Claims in SourceSeq order: if the subject already has an active claim (in the overlay), run the
+		// conflict through the Adjudicator (default last-write-wins). The resolved value becomes the new
+		// active claim; the old one is superseded and stamped with the policy's reason. Pre-generating the id
+		// lets the supersede point at this replacement before it exists (the self-FK is deferred, validated
+		// at commit).
+		for _, c := range in.Claims {
+			entityID := entityIDs[c.Entity] // resolved in the pre-pass above
+			subject := claimSubject{entityID: entityID, predicate: c.Predicate}
 			claimID := pgtype.UUID{Bytes: uuid.New(), Valid: true}
 			value := c.Value
 
-			active, err := q.GetActiveClaimBySubject(ctx, db.GetActiveClaimBySubjectParams{
-				ProjectID: in.ProjectID,
-				EntityID:  entityID,
-				Predicate: c.Predicate,
-			})
-			switch {
-			case err == nil:
+			if active, ok := overlay[subject]; ok {
 				// A conflict: resolve it, store the resolved value, and supersede the old claim with the
 				// policy's reason. Provenance rides along for the reason only — never to order the two.
 				res, aerr := p.adjudicator.Resolve(ctx, ext.Conflict{
 					ProjectID:      uuidString(in.ProjectID),
-					Current:        active.Value,
+					Current:        active.value,
 					Incoming:       c.Value,
-					CurrentSource:  ext.Provenance{RunID: uuidString(active.RunID), Seq: derefSeq(active.Seq)},
+					CurrentSource:  ext.Provenance{RunID: uuidString(active.runID), Seq: derefSeq(active.seq)},
 					IncomingSource: ext.Provenance{RunID: uuidString(in.RunID), Seq: c.SourceSeq},
 				})
 				if aerr != nil {
 					return fmt.Errorf("adjudicate claim conflict: %w", aerr)
 				}
 				value = res.Value
-				reason := conflictReason(res.Reason, claimID, in.RunID, c.SourceSeq, active.ID, active.RunID, active.Seq)
+				reason := conflictReason(res.Reason, claimID, in.RunID, c.SourceSeq, active.id, active.runID, active.seq)
 				if _, err := q.SupersedeActiveClaimBySubject(ctx, db.SupersedeActiveClaimBySubjectParams{
 					SupersededBy:     claimID,
 					ResolutionReason: &reason,
@@ -257,10 +304,6 @@ func (p *PGPersister) Persist(ctx context.Context, in PersistInput) error {
 				}); err != nil {
 					return fmt.Errorf("supersede active claim: %w", err)
 				}
-			case errors.Is(err, pgx.ErrNoRows):
-				// First assertion of this subject: nothing to supersede or adjudicate.
-			default:
-				return fmt.Errorf("read active claim: %w", err)
 			}
 
 			var eventTime pgtype.Timestamptz
@@ -279,6 +322,20 @@ func (p *PGPersister) Persist(ctx context.Context, in PersistInput) error {
 			}); err != nil {
 				return fmt.Errorf("insert claim: %w", err)
 			}
+
+			// Record the just-written claim as this subject's active one, so a later claim for the same
+			// subject in this pass supersedes it (last-write-wins) instead of inserting a second active row —
+			// the outcome the old per-claim re-read produced through the transaction's own-write visibility.
+			// Its provenance mirrors the events join a re-read would do: a claim always carries the event it
+			// was distilled from (seq == SourceSeq, in this run), so run/seq are the pass's run and SourceSeq;
+			// a claim with no source event has neither, exactly as the left join would yield NULLs.
+			next := activeClaim{id: claimID, value: value}
+			if c.SourceEventID.Valid {
+				seq := c.SourceSeq
+				next.runID = in.RunID
+				next.seq = &seq
+			}
+			overlay[subject] = next
 		}
 
 		// Advance the checkpoint with a compare-and-swap on the value the pass started from. A match moves
