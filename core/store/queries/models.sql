@@ -12,3 +12,10 @@
 UPDATE projects
 SET active_model_id = sqlc.arg(model_id)
 WHERE id = sqlc.arg(project_id) AND active_model_id IS NULL;
+
+-- name: ListProjectsWithActiveModel :many
+-- Every project that has pinned an embedding model. The worker's startup sweep uses it to find projects
+-- whose vector index is missing (pinned but the build was never enqueued or was lost to a crash) and enqueue
+-- it, so no project is left permanently on the slower exact-scan path.
+-- lore:tenant-exempt: a cross-tenant reconciliation scan run by the worker under the RLS-bypass role
+SELECT id FROM projects WHERE active_model_id IS NOT NULL;

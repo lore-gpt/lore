@@ -11,6 +11,34 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const listProjectsWithActiveModel = `-- name: ListProjectsWithActiveModel :many
+SELECT id FROM projects WHERE active_model_id IS NOT NULL
+`
+
+// Every project that has pinned an embedding model. The worker's startup sweep uses it to find projects
+// whose vector index is missing (pinned but the build was never enqueued or was lost to a crash) and enqueue
+// it, so no project is left permanently on the slower exact-scan path.
+// lore:tenant-exempt: a cross-tenant reconciliation scan run by the worker under the RLS-bypass role
+func (q *Queries) ListProjectsWithActiveModel(ctx context.Context) ([]pgtype.UUID, error) {
+	rows, err := q.db.Query(ctx, listProjectsWithActiveModel)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []pgtype.UUID
+	for rows.Next() {
+		var id pgtype.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const pinActiveModelIfUnset = `-- name: PinActiveModelIfUnset :execrows
 UPDATE projects
 SET active_model_id = $1

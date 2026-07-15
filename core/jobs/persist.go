@@ -136,16 +136,31 @@ type tenantRunner interface {
 // PGPersister persists an extraction pass to Postgres inside a tenant-scoped transaction. It resolves
 // claim conflicts through the injected Adjudicator (the OSS default is last-write-wins).
 type PGPersister struct {
-	store       tenantRunner
-	adjudicator ext.Adjudicator
-	embedder    ext.Embedder
+	store         tenantRunner
+	adjudicator   ext.Adjudicator
+	embedder      ext.Embedder
+	indexEnqueuer IndexEnqueuer
+}
+
+// PersisterOption configures an optional dependency of the persister.
+type PersisterOption func(*PGPersister)
+
+// WithIndexEnqueuer wires the enqueuer that schedules a one-time vector-index build when a project first
+// pins its embedding model. Without it the persister still pins the model; the index build is simply not
+// enqueued from the write path (the worker's startup sweep reconciles it), so unit tests need no queue.
+func WithIndexEnqueuer(e IndexEnqueuer) PersisterOption {
+	return func(p *PGPersister) { p.indexEnqueuer = e }
 }
 
 // NewPGPersister builds the OSS persister over a tenant-scoped transaction runner (the store), the
 // conflict-resolution policy, and the embedding provider. A downstream build injects a different
 // Adjudicator or Embedder without forking the persister.
-func NewPGPersister(store tenantRunner, adjudicator ext.Adjudicator, embedder ext.Embedder) *PGPersister {
-	return &PGPersister{store: store, adjudicator: adjudicator, embedder: embedder}
+func NewPGPersister(store tenantRunner, adjudicator ext.Adjudicator, embedder ext.Embedder, opts ...PersisterOption) *PGPersister {
+	p := &PGPersister{store: store, adjudicator: adjudicator, embedder: embedder}
+	for _, opt := range opts {
+		opt(p)
+	}
+	return p
 }
 
 // Persist writes the pass's entities, memories, and claims and advances the run checkpoint in one
@@ -207,7 +222,18 @@ func (p *PGPersister) Persist(ctx context.Context, in PersistInput) error {
 			if err != nil {
 				return fmt.Errorf("pin active model: %w", err)
 			}
-			if pinned == 0 {
+			if pinned == 1 {
+				// This pass chose the model (first-wins, exactly one racer gets it). Enqueue a one-time index
+				// build for the newly pinned partition IN THIS transaction, so it commits atomically with the
+				// pin and never fires for a rolled-back pass. The index is a performance optimisation — recall
+				// works on the exact-scan path until it exists — so a nil enqueuer (no worker wired) just skips
+				// it, and the worker's startup sweep reconciles anything missed.
+				if p.indexEnqueuer != nil {
+					if err := p.indexEnqueuer.EnqueueEnsureIndex(ctx, tx, in.ProjectID); err != nil {
+						return fmt.Errorf("enqueue index build: %w", err)
+					}
+				}
+			} else {
 				// Already pinned (a prior pass, or a concurrent winner). Read the effective model in a fresh
 				// statement — which sees a concurrent winner's commit — and reject a mismatch: a project pinned
 				// to a DIFFERENT model than the running embedder must never get vectors in a second model's space.
@@ -223,8 +249,6 @@ func (p *PGPersister) Persist(ctx context.Context, in PersistInput) error {
 					return fmt.Errorf("%w: project active model %q, embedder %q", ErrModelMismatch, got, modelID)
 				}
 			}
-			// pinned == 1 → this pass chose the model (first-wins, exactly one racer gets it); a later increment
-			// uses that to trigger a one-time index build for the newly pinned partition.
 		}
 
 		// Deduplicate then persist memories, indexing the first memory per source event so a same-event
