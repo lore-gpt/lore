@@ -6,13 +6,8 @@ title = "lore gitleaks config"
 useDefault = true
 
 [allowlist]
-description = "Ignore this config's own patterns and the published local-dev placeholder key"
+description = "Ignore this config's own file (its example rule patterns must not self-trip)"
 paths = ['''\.gitleaks\.toml''']
-# `local-dev-key` is the throwaway dev bearer token shipped in docker-compose and
-# the README quickstart — a documented placeholder, not a secret. It trips the
-# default curl-auth-header rule (which matches any Bearer value). This narrow
-# allowlist does not touch the project rules below.
-regexes = ['''local-dev-key''']
 
 [[rules]]
 id = "lore-billing-secret"
