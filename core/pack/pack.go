@@ -8,6 +8,7 @@ package pack
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math"
@@ -218,9 +219,14 @@ func (p *Pack) Build(ctx context.Context, tx pgx.Tx, projectID, runID pgtype.UUI
 		return Result{}, &MinSeqOutOfRangeError{MinSeq: req.MinSeq, LastSeq: state.LastSeq}
 	}
 
-	// Distilled memories, fused across the read path's legs.
+	// Distilled memories, fused across the read path's legs. A fresh project whose first consolidation has
+	// not run yet has no active embedding model, so the read path returns ErrNoActiveModel — which here is
+	// NOT an error: there is simply nothing distilled to retrieve, and the raw tail below still serves every
+	// event the caller wrote, so read-your-writes holds from the very first event. Distilled retrieval is
+	// left empty. A genuine mismatch between a pinned model and the running embedder (ErrModelMismatch) is a
+	// real anomaly and still propagates.
 	results, _, err := p.hybrid.Retrieve(ctx, tx, projectID, req.Query, req.Filters, req.Limit)
-	if err != nil {
+	if err != nil && !errors.Is(err, retrieval.ErrNoActiveModel) {
 		return Result{}, fmt.Errorf("retrieve: %w", err)
 	}
 

@@ -157,8 +157,10 @@ paths:
                 $ref: "#/components/schemas/Error"
         "409":
           description: >
-            The project has no active embedding model, so recall is not yet
-            available (code no_active_model).
+            The project's active embedding model does not match the running
+            embedder — a deployment misconfiguration (code model_mismatch). A
+            project with no active model yet is NOT an error: the pack serves the
+            raw tail, so read-your-writes holds from the first event.
           content:
             application/json:
               schema:

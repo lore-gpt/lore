@@ -97,10 +97,22 @@ func TestPackEndpoint(t *testing.T) {
 	// --- min_seq beyond the run's latest seq: 400 min_seq_out_of_range. ---
 	assertErr(t, doPack(handler, keyA, `{"run_id":"`+runA+`","query":"q","min_seq":999}`), http.StatusBadRequest, "min_seq_out_of_range")
 
-	// --- Project with no active model: 409 no_active_model. ---
+	// --- Fresh project: an event written but no consolidation yet (so no active model) still packs — the raw
+	// tail serves it, so read-your-writes holds from the first event and there is NO 409 for the missing model. ---
 	projC, runC := seedProjectRun(ctx, t, st.Pool)
 	keyC, _ := provisionKey(ctx, t, st.Pool, projC)
-	assertErr(t, doPack(handler, keyC, `{"run_id":"`+runC+`","query":"q"}`), http.StatusConflict, "no_active_model")
+	seqC := postEvent(t, handler, keyC, `{"run_id":"`+runC+`","agent_id":"a","payload":{"note":"predistill_write"}}`)
+	rrC := doPack(handler, keyC, `{"run_id":"`+runC+`","query":"anything","min_seq":`+strconv.FormatInt(seqC, 10)+`}`)
+	if rrC.Code != http.StatusOK {
+		t.Fatalf("fresh-project pack status = %d, want 200 (raw tail serves RYW before any model is pinned; body %q)", rrC.Code, rrC.Body.String())
+	}
+	var respC httpapi.PackResponse
+	if err := json.Unmarshal(rrC.Body.Bytes(), &respC); err != nil {
+		t.Fatalf("decode fresh pack: %v", err)
+	}
+	if !strings.Contains(respC.Text, "predistill_write") {
+		t.Errorf("fresh-project pack missing the pre-consolidation write in the raw tail:\n%s", respC.Text)
+	}
 
 	// --- Stubbed surfaces answer 501 (behind auth), not the router's 404 — spot-check several routes. ---
 	for _, s := range []struct{ method, path string }{

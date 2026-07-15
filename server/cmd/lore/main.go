@@ -37,7 +37,7 @@ func rootCmd() *cobra.Command {
 		// Errors are returned by RunE and printed by cobra; don't also dump usage.
 		SilenceUsage: true,
 	}
-	root.AddCommand(serveCmd(), workerCmd(), migrateCmd(), versionCmd(), healthCmd(), keysCmd())
+	root.AddCommand(serveCmd(), workerCmd(), migrateCmd(), versionCmd(), healthCmd(), keysCmd(), modelsCmd())
 	return root
 }
 

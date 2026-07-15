@@ -272,7 +272,7 @@ func TestHandlePackErrorMapping(t *testing.T) {
 	}{
 		{"unknown or cross-project run", pgx.ErrNoRows, http.StatusNotFound, "not_found"},
 		{"min_seq out of range", &pack.MinSeqOutOfRangeError{MinSeq: 9, LastSeq: 3}, http.StatusBadRequest, "min_seq_out_of_range"},
-		{"no active model", retrieval.ErrNoActiveModel, http.StatusConflict, "no_active_model"},
+		{"model mismatch", retrieval.ErrModelMismatch, http.StatusConflict, "model_mismatch"},
 		{"unexpected", errors.New("boom"), http.StatusInternalServerError, "internal"},
 	}
 	for _, tc := range cases {
