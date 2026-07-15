@@ -139,7 +139,8 @@ Copy [`.env.example`](.env.example) to `.env` and set:
 |---|---|---|---|
 | `LORE_DATABASE_URL` | yes | — | Postgres (ParadeDB) connection string |
 | `LORE_ADDR` | no | `:8080` | HTTP listen address |
-| `LORE_VALKEY_URL` | no | — | Valkey URL (started by Compose, reserved for `v0.1`) |
+| `LORE_VALKEY_URL` | no | — | Working-memory hot lane (Valkey); unset → durable fallback |
+| `LORE_WORKMEM_MAX_VALUE_BYTES` | no | `8192` | Max bytes per working-memory fact value (enforced at ingestion) |
 
 API keys are not configured through the environment: mint one per project with `lore keys create --project
 <id>` (it prints the token once) and revoke it with `lore keys revoke <id>`.
