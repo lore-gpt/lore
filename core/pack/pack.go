@@ -87,6 +87,18 @@ type Request struct {
 	TokenBudget int
 }
 
+// MinSeqOutOfRangeError is returned when a request's read-your-writes barrier (MinSeq) exceeds the run's
+// highest assigned seq — a client error surfaced (rather than silently clamped) so the caller learns its
+// assertion is impossible for this run.
+type MinSeqOutOfRangeError struct {
+	MinSeq  int64
+	LastSeq int64
+}
+
+func (e *MinSeqOutOfRangeError) Error() string {
+	return fmt.Sprintf("min_seq %d is beyond the run's latest seq %d", e.MinSeq, e.LastSeq)
+}
+
 // Source is one memory that composed the pack, in pack order: a distilled memory (semantic/episodic/
 // procedural) or — when the live working store is not authoritative — a durable working memory serving the
 // working section. Live working-memory facts and raw tail events are not memories and are not listed here; the
@@ -199,6 +211,12 @@ func (p *Pack) Build(ctx context.Context, tx pgx.Tx, projectID, runID pgtype.UUI
 		return Result{}, fmt.Errorf("read run state: %w", err)
 	}
 	coveredSeq := state.CoveredSeq
+
+	// A read-your-writes barrier past the run's highest assigned seq is a client error: the caller cannot have
+	// written past LastSeq. Caught here with the last_seq the state row already carries — no extra query.
+	if req.MinSeq > state.LastSeq {
+		return Result{}, &MinSeqOutOfRangeError{MinSeq: req.MinSeq, LastSeq: state.LastSeq}
+	}
 
 	// Distilled memories, fused across the read path's legs.
 	results, _, err := p.hybrid.Retrieve(ctx, tx, projectID, req.Query, req.Filters, req.Limit)

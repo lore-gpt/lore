@@ -72,8 +72,10 @@ WHERE id = sqlc.arg(run_id)
 -- The mode comes via a scalar subquery so the statement stays single-table (runs) for the generated
 -- return type; a NULL extraction_batch_id means no batch is in flight and the pass is in its
 -- submit/realtime phase, while a non-NULL one means an earlier attempt submitted a batch awaiting
--- collection.
+-- collection. last_seq (the run's highest assigned seq) is read in the same row so a reader can validate a
+-- requested min_seq against it without a second query.
 SELECT r.covered_seq,
+       r.last_seq,
        r.extraction_batch_id,
        r.extraction_batch_covered_seq,
        (SELECT extraction_mode FROM projects WHERE projects.id = r.project_id) AS extraction_mode

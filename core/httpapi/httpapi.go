@@ -1,7 +1,8 @@
 // Package httpapi is the Lore HTTP surface: a chi router with request id, panic
 // recovery, structured access logs, and bearer auth, wired to the store and the
-// job queue. It is the source-of-truth implementation of spec/openapi.yaml for
-// Phase 0 (health, event ingest, and a recall placeholder).
+// job queue. It is the source-of-truth implementation of spec/openapi.yaml:
+// health, event ingest, and the context-pack read path (with later surfaces
+// stubbed at 501).
 //
 // Dependencies arrive as interfaces (Enqueuer, Pinger) rather than concrete
 // types so the composition root wires the real store/queue while tests can
@@ -16,8 +17,10 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/lore-gpt/lore/core/pack"
 	"github.com/lore-gpt/lore/core/workmem"
 )
 
@@ -36,6 +39,18 @@ type Pinger interface {
 	Ping(ctx context.Context) error
 }
 
+// Packer builds a context pack for a run on the caller's tenant transaction. *pack.Pack satisfies it. A nil
+// Packer leaves /v1/pack a 501 (the endpoint composes only when the read path is wired in).
+type Packer interface {
+	Build(ctx context.Context, tx pgx.Tx, projectID, runID pgtype.UUID, req pack.Request) (pack.Result, error)
+}
+
+// Tenant runs a function inside a project-scoped (row-level-security) transaction, so the pack handler's reads
+// and its trace write are all scoped to one project. *store.Store satisfies it.
+type Tenant interface {
+	WithProject(ctx context.Context, projectID pgtype.UUID, fn func(pgx.Tx) error) error
+}
+
 // Config carries the API's dependencies. Handlers touch only the fields their
 // route needs, so narrower tests may leave the rest nil.
 type Config struct {
@@ -43,6 +58,8 @@ type Config struct {
 	Enqueuer Enqueuer      // enqueues extraction on that transaction
 	DB       Pinger        // /healthz database probe
 	Queue    Pinger        // /healthz queue probe
+	Packer   Packer        // builds a context pack for /v1/pack (nil leaves it 501)
+	Tenant   Tenant        // opens the pack handler's project-scoped transaction
 	Version  string        // reported by /healthz
 	// Workmem is the working-memory store: a kind:"state" event is written through to it after commit,
 	// and /healthz reports its mode. A nil value coerces to the disabled no-op.
@@ -57,6 +74,8 @@ type API struct {
 	enqueuer             Enqueuer
 	db                   Pinger
 	queue                Pinger
+	packer               Packer
+	tenant               Tenant
 	version              string
 	workmem              workmem.Store
 	workmemMaxValueBytes int
@@ -74,6 +93,8 @@ func New(cfg Config) *API {
 		enqueuer:             cfg.Enqueuer,
 		db:                   cfg.DB,
 		queue:                cfg.Queue,
+		packer:               cfg.Packer,
+		tenant:               cfg.Tenant,
 		version:              cfg.Version,
 		workmem:              wm,
 		workmemMaxValueBytes: cfg.WorkmemMaxValueBytes,
@@ -94,7 +115,18 @@ func (a *API) Handler() http.Handler {
 	r.Group(func(r chi.Router) {
 		r.Use(a.requireAuth)
 		r.Post("/v1/events", a.handleCreateEvent)
-		r.Post("/v1/recall", a.handleRecall)
+		r.Post("/v1/pack", a.handlePack)
+
+		// Contracts that exist but land in a later increment answer 501 (not the router's 404), so a client
+		// sees the endpoint is real but unfinished. Registering them keeps the surface honest.
+		r.Get("/v1/memories", a.notImplemented)
+		r.Post("/v1/memories", a.notImplemented)
+		r.Get("/v1/memories/{id}", a.notImplemented)
+		r.Patch("/v1/memories/{id}", a.notImplemented)
+		r.Delete("/v1/memories/{id}", a.notImplemented)
+		r.Get("/v1/memories/{id}/versions", a.notImplemented)
+		r.Get("/v1/runs/{id}/trace", a.notImplemented)
+		r.Get("/v1/policies", a.notImplemented)
 	})
 
 	return r

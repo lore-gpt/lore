@@ -10,7 +10,9 @@ import (
 
 	"github.com/lore-gpt/lore/core/ext"
 	"github.com/lore-gpt/lore/core/httpapi"
+	"github.com/lore-gpt/lore/core/pack"
 	"github.com/lore-gpt/lore/core/queue"
+	"github.com/lore-gpt/lore/core/retrieval"
 	"github.com/lore-gpt/lore/core/store"
 	"github.com/lore-gpt/lore/core/workmem"
 )
@@ -150,11 +152,17 @@ func NewServer(ctx context.Context, cfg Config, opts ...Option) (*Server, error)
 		return nil, fmt.Errorf("build queue: %w", err)
 	}
 
+	// The read path: the hybrid retriever over the composed embedder, wrapped by the context-pack builder.
+	// A downstream build swaps the embedder (and later the cache/reranker) via the same composition.
+	packer := pack.New(retrieval.NewHybrid(retrieval.New(), e.embedder), e.workmem)
+
 	api := httpapi.New(httpapi.Config{
 		Pool:                 st.Pool,
 		Enqueuer:             q,
 		DB:                   st,
 		Queue:                q,
+		Packer:               packer,
+		Tenant:               st,
 		Version:              Version,
 		Workmem:              e.workmem,
 		WorkmemMaxValueBytes: cfg.WorkmemMaxValueBytes,
