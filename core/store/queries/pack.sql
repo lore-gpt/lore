@@ -30,10 +30,22 @@ LIMIT sqlc.arg(max_events)::int;
 -- event past the extraction checkpoint — the longest a not-yet-distilled write has waited. Zero when the run
 -- is fully caught up (no uncovered events). This is the single definition of the pack's freshness lag.
 -- covered_seq is passed in (read once) so it agrees with the raw tail. Project-scoped.
-SELECT coalesce(extract(epoch FROM now() - min(events.created_at)) * 1000, 0)::bigint AS freshness_lag_ms
-FROM events
-WHERE events.project_id = sqlc.arg(project_id) AND events.run_id = sqlc.arg(run_id)
-  AND events.seq > sqlc.arg(covered_seq);
+--
+-- The oldest uncovered event is the one with the smallest seq past the checkpoint: seq is assigned in
+-- insert-time order (server-assigned monotonic per run), so the minimum uncovered seq is also the minimum
+-- uncovered created_at. Reading that single row via ORDER BY seq LIMIT 1 rides the (run_id, seq) index and
+-- touches one row, rather than aggregating min(created_at) over the whole uncovered set — which, on the
+-- shared unpartitioned events table, the planner can serve with a full sequential scan when run_id is not
+-- selective. The outer scalar subquery (no FROM) still returns exactly one row, coalescing NULL (a caught-up
+-- run, no uncovered event) to 0.
+SELECT coalesce(extract(epoch FROM now() - (
+    SELECT events.created_at
+    FROM events
+    WHERE events.project_id = sqlc.arg(project_id) AND events.run_id = sqlc.arg(run_id)
+      AND events.seq > sqlc.arg(covered_seq)
+    ORDER BY events.seq
+    LIMIT 1
+)) * 1000, 0)::bigint AS freshness_lag_ms;
 
 -- name: InsertPackLog :exec
 -- One row per context-pack request, for run trace and observability. It is written in the SAME transaction as
