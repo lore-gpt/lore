@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/lore-gpt/lore/core/queue"
@@ -53,6 +54,19 @@ func (w *Worker) Start(ctx context.Context) error {
 	if err := w.queue.Start(context.WithoutCancel(ctx)); err != nil {
 		return fmt.Errorf("start worker: %w", err)
 	}
+
+	// Reconcile vector indexes once at startup: enqueue a build for any project that pinned a model but has
+	// no valid index (a build never enqueued, or lost to a crash), so none is left permanently on the slower
+	// exact-scan path. Runs in the background so a large sweep never delays shutdown; it is best-effort and
+	// idempotent, so a shutdown that interrupts it (ctx) is simply reconciled on the next start.
+	go func() {
+		if n, err := w.queue.BackfillMissingIndexes(ctx); err != nil {
+			slog.ErrorContext(ctx, "index backfill sweep failed at startup", slog.Any("err", err))
+		} else if n > 0 {
+			slog.InfoContext(ctx, "index backfill sweep enqueued builds", slog.Int("count", n))
+		}
+	}()
+
 	<-ctx.Done()
 
 	stopCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
