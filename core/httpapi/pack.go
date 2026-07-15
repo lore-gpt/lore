@@ -103,8 +103,10 @@ func (a *API) handlePack(w http.ResponseWriter, r *http.Request) {
 
 // writePackError maps a pack build error to an HTTP response. An unknown or cross-project run is a 404
 // not_found (the run's project is read under the key's scope, so a run the key cannot see returns no row); a
-// min_seq past the run's latest seq is a 400; a project with no active embedding model cannot be recalled yet
-// (409); anything else is a 500.
+// min_seq past the run's latest seq is a 400; a project whose pinned embedding model does not match the
+// running embedder is a 409 model_mismatch (a deployment misconfiguration, not a client error, surfaced so
+// it is diagnosable); anything else is a 500. A project with no active model yet is NOT an error here — the
+// pack serves the raw tail, so read-your-writes holds from the first event.
 func writePackError(w http.ResponseWriter, r *http.Request, err error) {
 	var oor *pack.MinSeqOutOfRangeError
 	switch {
@@ -112,8 +114,8 @@ func writePackError(w http.ResponseWriter, r *http.Request, err error) {
 		writeError(w, r, http.StatusNotFound, "not_found", "run_id does not exist")
 	case errors.As(err, &oor):
 		writeError(w, r, http.StatusBadRequest, "min_seq_out_of_range", oor.Error())
-	case errors.Is(err, retrieval.ErrNoActiveModel):
-		writeError(w, r, http.StatusConflict, "no_active_model", "the project has no active embedding model; recall is unavailable")
+	case errors.Is(err, retrieval.ErrModelMismatch):
+		writeError(w, r, http.StatusConflict, "model_mismatch", "the project's active embedding model does not match the running embedder")
 	default:
 		writeError(w, r, http.StatusInternalServerError, "internal", "could not build pack")
 	}

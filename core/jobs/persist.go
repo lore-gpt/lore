@@ -3,6 +3,7 @@ package jobs
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -56,6 +57,13 @@ type activeClaim struct {
 	runID pgtype.UUID
 	seq   *int64
 }
+
+// ErrModelMismatch means the project's active embedding model does not match the composed embedder, so a
+// pass would write vectors in a second model's space. The persister fails the pass loudly rather than
+// corrupt the partition's single-model invariant (the read path has its own mismatch guard). It surfaces
+// through the extraction job's failure — a retry keeps failing until the deployment's embedder is restored
+// (or the model deliberately migrated), which is the intended loud signal, not silent corruption.
+var ErrModelMismatch = errors.New("persist: project active model does not match the embedder")
 
 // Persister commits one extraction pass: it writes the distilled memories, entities, and claims and
 // advances the run's checkpoint, all in a single transaction. That atomicity is what makes a
@@ -182,6 +190,41 @@ func (p *PGPersister) Persist(ctx context.Context, in PersistInput) error {
 				return err
 			}
 			entityIDs[e.Name] = id
+		}
+
+		// Pin the project's active embedding model on the first pass that has vectors to write, and reject a
+		// mismatch before storing any. The pin is first-wins (coalesce), so a fresh project adopts the running
+		// embedder and a concurrent first pass leaves exactly one winner; the returned effective model then
+		// gates the write — a project already pinned to a DIFFERENT model than the running embedder must never
+		// get vectors in a second model's space, so the pass fails loudly instead. Only passes that actually
+		// embed something reach here (no memories → no pin, no model chosen prematurely).
+		if len(memoryVectors) > 0 {
+			modelID := p.embedder.ModelID()
+			pinned, err := q.PinActiveModelIfUnset(ctx, db.PinActiveModelIfUnsetParams{
+				ProjectID: in.ProjectID,
+				ModelID:   &modelID,
+			})
+			if err != nil {
+				return fmt.Errorf("pin active model: %w", err)
+			}
+			if pinned == 0 {
+				// Already pinned (a prior pass, or a concurrent winner). Read the effective model in a fresh
+				// statement — which sees a concurrent winner's commit — and reject a mismatch: a project pinned
+				// to a DIFFERENT model than the running embedder must never get vectors in a second model's space.
+				effective, err := q.GetActiveModelID(ctx, in.ProjectID)
+				if err != nil {
+					return fmt.Errorf("read active model: %w", err)
+				}
+				got := ""
+				if effective != nil {
+					got = *effective
+				}
+				if got != modelID {
+					return fmt.Errorf("%w: project active model %q, embedder %q", ErrModelMismatch, got, modelID)
+				}
+			}
+			// pinned == 1 → this pass chose the model (first-wins, exactly one racer gets it); a later increment
+			// uses that to trigger a one-time index build for the newly pinned partition.
 		}
 
 		// Deduplicate then persist memories, indexing the first memory per source event so a same-event
