@@ -11,45 +11,66 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
-const getActiveClaimBySubject = `-- name: GetActiveClaimBySubject :one
-SELECT c.id, c.value, e.run_id, e.seq
+const getActiveClaimsByEntities = `-- name: GetActiveClaimsByEntities :many
+SELECT c.entity_id, c.predicate, c.id, c.value, e.run_id, e.seq
 FROM claims c
 LEFT JOIN events e ON e.id = c.source_event_id AND e.project_id = c.project_id
 WHERE c.project_id = $1
-  AND c.entity_id = $2
-  AND c.predicate = $3
+  AND c.entity_id = ANY($2::uuid[])
   AND c.superseded_by IS NULL
 `
 
-type GetActiveClaimBySubjectParams struct {
-	ProjectID pgtype.UUID `json:"project_id"`
+type GetActiveClaimsByEntitiesParams struct {
+	ProjectID pgtype.UUID   `json:"project_id"`
+	EntityIds []pgtype.UUID `json:"entity_ids"`
+}
+
+type GetActiveClaimsByEntitiesRow struct {
 	EntityID  pgtype.UUID `json:"entity_id"`
 	Predicate string      `json:"predicate"`
+	ID        pgtype.UUID `json:"id"`
+	Value     []byte      `json:"value"`
+	RunID     pgtype.UUID `json:"run_id"`
+	Seq       *int64      `json:"seq"`
 }
 
-type GetActiveClaimBySubjectRow struct {
-	ID    pgtype.UUID `json:"id"`
-	Value []byte      `json:"value"`
-	RunID pgtype.UUID `json:"run_id"`
-	Seq   *int64      `json:"seq"`
-}
-
-// The currently-active claim for a subject (project, entity, predicate), with its value and the
-// provenance (run + per-run seq) of the event it was distilled from. The write path reads it before
-// resolving a conflict: a policy needs the stored value (e.g. FieldMerge combines it with the incoming
-// one), and the provenance feeds the recorded reason. At most one row is active (the partial-unique
-// index guarantees it); no active claim returns pgx.ErrNoRows. run_id/seq are NULL for a manual claim
-// with no source event. The events join is project-scoped so it stays within the tenant.
-func (q *Queries) GetActiveClaimBySubject(ctx context.Context, arg GetActiveClaimBySubjectParams) (GetActiveClaimBySubjectRow, error) {
-	row := q.db.QueryRow(ctx, getActiveClaimBySubject, arg.ProjectID, arg.EntityID, arg.Predicate)
-	var i GetActiveClaimBySubjectRow
-	err := row.Scan(
-		&i.ID,
-		&i.Value,
-		&i.RunID,
-		&i.Seq,
-	)
-	return i, err
+// The currently-active claims for a set of entities in one project — one row per (entity, predicate) that
+// has one, each carrying its value and the provenance (run + per-run seq) of the event it was distilled
+// from. The write path fetches them in a single round-trip (rather than once per claim) and resolves
+// conflicts against an in-memory overlay it updates as it supersedes and inserts within the pass, so two
+// claims for the same subject in one pass still resolve last-write-wins — exactly as a per-claim re-read
+// would, since a transaction sees its own writes. A policy needs the stored value (e.g. FieldMerge combines
+// it with the incoming one) and the provenance feeds the recorded reason. Fetching by entity (not the exact
+// (entity, predicate) subject) keeps this to one array parameter; a pass touches few entities, and the
+// caller keys its overlay by the full subject, so the extra rows for other predicates of the same entity
+// are simply never looked up. The partial-unique index leads with (project_id, entity_id), so this probes
+// it. run_id/seq are NULL for a manual claim with no source event; the events join is project-scoped so it
+// stays within the tenant.
+func (q *Queries) GetActiveClaimsByEntities(ctx context.Context, arg GetActiveClaimsByEntitiesParams) ([]GetActiveClaimsByEntitiesRow, error) {
+	rows, err := q.db.Query(ctx, getActiveClaimsByEntities, arg.ProjectID, arg.EntityIds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []GetActiveClaimsByEntitiesRow
+	for rows.Next() {
+		var i GetActiveClaimsByEntitiesRow
+		if err := rows.Scan(
+			&i.EntityID,
+			&i.Predicate,
+			&i.ID,
+			&i.Value,
+			&i.RunID,
+			&i.Seq,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const insertClaim = `-- name: InsertClaim :exec

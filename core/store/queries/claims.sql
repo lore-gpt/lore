@@ -6,19 +6,24 @@
 INSERT INTO claims (id, memory_id, project_id, entity_id, predicate, value, event_time, source_event_id)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8);
 
--- name: GetActiveClaimBySubject :one
--- The currently-active claim for a subject (project, entity, predicate), with its value and the
--- provenance (run + per-run seq) of the event it was distilled from. The write path reads it before
--- resolving a conflict: a policy needs the stored value (e.g. FieldMerge combines it with the incoming
--- one), and the provenance feeds the recorded reason. At most one row is active (the partial-unique
--- index guarantees it); no active claim returns pgx.ErrNoRows. run_id/seq are NULL for a manual claim
--- with no source event. The events join is project-scoped so it stays within the tenant.
-SELECT c.id, c.value, e.run_id, e.seq
+-- name: GetActiveClaimsByEntities :many
+-- The currently-active claims for a set of entities in one project — one row per (entity, predicate) that
+-- has one, each carrying its value and the provenance (run + per-run seq) of the event it was distilled
+-- from. The write path fetches them in a single round-trip (rather than once per claim) and resolves
+-- conflicts against an in-memory overlay it updates as it supersedes and inserts within the pass, so two
+-- claims for the same subject in one pass still resolve last-write-wins — exactly as a per-claim re-read
+-- would, since a transaction sees its own writes. A policy needs the stored value (e.g. FieldMerge combines
+-- it with the incoming one) and the provenance feeds the recorded reason. Fetching by entity (not the exact
+-- (entity, predicate) subject) keeps this to one array parameter; a pass touches few entities, and the
+-- caller keys its overlay by the full subject, so the extra rows for other predicates of the same entity
+-- are simply never looked up. The partial-unique index leads with (project_id, entity_id), so this probes
+-- it. run_id/seq are NULL for a manual claim with no source event; the events join is project-scoped so it
+-- stays within the tenant.
+SELECT c.entity_id, c.predicate, c.id, c.value, e.run_id, e.seq
 FROM claims c
 LEFT JOIN events e ON e.id = c.source_event_id AND e.project_id = c.project_id
 WHERE c.project_id = sqlc.arg(project_id)
-  AND c.entity_id = sqlc.arg(entity_id)
-  AND c.predicate = sqlc.arg(predicate)
+  AND c.entity_id = ANY(sqlc.arg(entity_ids)::uuid[])
   AND c.superseded_by IS NULL;
 
 -- name: SupersedeActiveClaimBySubject :execrows
