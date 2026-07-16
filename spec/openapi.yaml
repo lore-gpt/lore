@@ -220,6 +220,36 @@ paths:
       responses:
         "501":
           $ref: "#/components/responses/NotImplemented"
+  /v1/runs:
+    post:
+      operationId: createRun
+      summary: Create a run.
+      description: >
+        Creates a run in the API key's project and returns its id. A run groups a
+        stream of events: a client creates one, appends events to it, and packs
+        context from it. The project is taken from the API key, never the body, so
+        a key can only create runs in its own project. The request body is empty.
+      tags:
+        - runs
+      responses:
+        "201":
+          description: Run created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreateRunResponse"
+        "400":
+          description: The request body exceeds the accepted size.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Missing or invalid API key.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
   /v1/runs/{id}/trace:
     parameters:
       - $ref: "#/components/parameters/IdPath"
@@ -341,6 +371,18 @@ components:
             gap-free per run; clients carry it as the min_seq of a later /v1/pack
             to assert read-your-writes.
           example: 1
+    CreateRunResponse:
+      type: object
+      required:
+        - run_id
+        - created_at
+      properties:
+        run_id:
+          type: string
+          format: uuid
+        created_at:
+          type: string
+          format: date-time
     PackRequest:
       type: object
       required:

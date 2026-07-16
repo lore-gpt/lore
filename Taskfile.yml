@@ -65,7 +65,7 @@ tasks:
       - npx --yes @redocly/cli@{{.REDOCLY_VERSION}} lint --config spec/redocly.yaml spec/openapi.yaml
 
   compose:up:
-    desc: Start the local stack (ParadeDB, Valkey, MinIO, server, worker) and wait until healthy.
+    desc: Start the local stack (ParadeDB, Valkey, MinIO, server, worker), provision a first project, and wait until healthy.
     cmds:
       - docker compose -f {{.COMPOSE}} up -d --wait
 

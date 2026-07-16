@@ -115,6 +115,7 @@ func (a *API) Handler() http.Handler {
 	r.Group(func(r chi.Router) {
 		r.Use(a.requireAuth)
 		r.Post("/v1/events", a.handleCreateEvent)
+		r.Post("/v1/runs", a.handleCreateRun)
 		r.Post("/v1/pack", a.handlePack)
 
 		// Contracts that exist but land in a later increment answer 501 (not the router's 404), so a client

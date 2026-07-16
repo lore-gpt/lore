@@ -31,6 +31,8 @@ venv/
 !.env.example
 *.pem
 *.key
+# Project credentials written by `lore provision` / the compose one-shot service.
+.lore/
 
 # --- Infra / local data ---
 /data/

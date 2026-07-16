@@ -9,7 +9,13 @@
 # gate on the worker independently. valkey and minio are started so the Phase 1
 # topology is already in place; Phase 0 does not read or write them.
 #
-# The credentials below are throwaway local-dev values, not secrets.
+# lore-provision is a one-shot that runs after the server is healthy: it creates a
+# first project and writes its id and API key to ./.lore/credentials (0600) so the
+# quickstart is `up` then `cat ./.lore/credentials`, no hand-run SQL. It is
+# idempotent — a second `up` finds the file and leaves the project untouched — and
+# it never prints the token, so the secret stays out of the logs.
+#
+# The database credentials below are throwaway local-dev values, not secrets.
 name: lore
 
 services:
@@ -90,6 +96,35 @@ services:
         condition: service_healthy
       lore-server:
         condition: service_healthy
+
+  lore-provision:
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile
+    # Create a first project and mint its API key, writing both to the mounted
+    # credentials file. --out keeps the token out of stdout/logs, and the file is
+    # the idempotency guard: on a second `up` the command finds it and no-ops, so
+    # no duplicate project or key is ever created.
+    command: ["provision", "--out", "/creds/credentials"]
+    environment:
+      LORE_DATABASE_URL: postgres://lore:lore@paradedb:5432/lore?sslmode=disable
+    depends_on:
+      # Wait for the server to be healthy, which means migrations have run and the
+      # schema the provision writes into exists.
+      lore-server:
+        condition: service_healthy
+    # A one-shot: run to completion once, do not restart. `up --wait` returns after
+    # it exits 0.
+    restart: "no"
+    # The image runs as nonroot, but Docker creates the bind-mount source directory
+    # as root, so a nonroot process cannot write the credentials file into it. Run
+    # this one-shot as root so the write succeeds; the file itself is 0600.
+    user: "0:0"
+    volumes:
+      # Bind the credentials directory to the host so `cat` reads the minted key.
+      # Relative paths resolve against the compose file's directory, so with
+      # `-f infra/docker-compose.yml` the file lands at infra/.lore/credentials.
+      - ./.lore:/creds
 
 volumes:
   paradedb-data:
