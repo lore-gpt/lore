@@ -71,9 +71,6 @@ pack.savedTokens  // the number your CFO will ask about
 
 ## Quickstart (self-host)
 
-> Today Lore runs as a skeleton: a server that accepts events, persists them, and enqueues a (stub)
-> extraction job, and a worker that drains it. The write → consolidate → pack API above lands in `v0.1`.
-
 All you need is **Docker** (with Compose):
 
 ```bash
@@ -85,6 +82,17 @@ docker compose -f infra/docker-compose.yml up -d --build --wait
 *(Prefer [Task](https://taskfile.dev)? `task compose:up` does the same and is the dev entry point
 for lint/test/build too.)*
 
+`up` builds the server and worker, applies migrations, and runs a one-shot that **provisions a first
+project** and writes its id and API key to `infra/.lore/credentials`. The default extractor is an offline,
+deterministic fixture, so the whole write → consolidate → pack loop runs with no API key. Load your
+credentials:
+
+```bash
+set -a; source infra/.lore/credentials; set +a   # sets LORE_PROJECT_ID and LORE_API_KEY
+```
+
+*(A zero-clone `lore init` that scaffolds this without cloning the repo lands in `v0.1`.)*
+
 **1 · Check health** — unauthenticated, so orchestrators can probe it:
 
 ```bash
@@ -92,40 +100,45 @@ curl localhost:8080/healthz
 # {"status":"ok","version":"0.0.0-dev","db":"ok","queue":"ok","workmem":"ok"}
 ```
 
-**2 · Create a project, a run, and an API key** — the write path lands on a run inside a project, and
-`/v1/*` authenticates a bearer key scoped to that project. (A run-creation endpoint and `lore init` land in
-`v0.1`; for now, seed one and mint a key.)
+**2 · Create a run** — a run groups a stream of events; the project comes from your key, never the body:
 
 ```bash
-# Seed org -> project -> run; capture both ids.
-IDS=$(docker compose -f infra/docker-compose.yml exec -T paradedb \
-  psql -U lore -d lore -tA -F' ' -c "WITH o AS (INSERT INTO organizations(name) VALUES('demo') RETURNING id), p AS (INSERT INTO projects(org_id,name) SELECT id,'demo' FROM o RETURNING id), r AS (INSERT INTO runs(project_id) SELECT id FROM p RETURNING id) SELECT (SELECT id FROM p), (SELECT id FROM r);")
-PROJECT_ID=$(echo "$IDS" | awk '{print $1}')
-RUN_ID=$(echo "$IDS" | awk '{print $2}')
-
-# Mint an API key for that project — the token is printed once, so capture it now.
-TOKEN=$(docker compose -f infra/docker-compose.yml exec -T lore-server /lore keys create --project "$PROJECT_ID")
-echo "run=$RUN_ID token=$TOKEN"
+RUN_ID=$(curl -sX POST localhost:8080/v1/runs \
+  -H "Authorization: Bearer $LORE_API_KEY" -H "Content-Type: application/json" \
+  | grep -o '"run_id":"[^"]*"' | cut -d'"' -f4)
+echo "run=$RUN_ID"
 ```
 
-**3 · Append an event and watch the worker pick it up:**
+**3 · Append an event** — the write path lands on that run:
 
 ```bash
 curl -X POST localhost:8080/v1/events \
-  -H "Authorization: Bearer $TOKEN" \
+  -H "Authorization: Bearer $LORE_API_KEY" \
   -H "Content-Type: application/json" \
-  -d "{\"run_id\":\"$RUN_ID\",\"agent_id\":\"researcher\",\"payload\":{\"note\":\"hello memory\"}}"
+  -d "{\"run_id\":\"$RUN_ID\",\"agent_id\":\"researcher\",\"payload\":{\"note\":\"auth flow moved to v2\"}}"
 # {"event_id":"...","seq":1}   (HTTP 202)
-
-docker compose -f infra/docker-compose.yml logs lore-worker | grep "extract stub"
-# ... INFO extract stub: event received event_id=...
 ```
 
-**4 · Tear it down:**
+**4 · Pack context** — a deterministic, budget-fit context pack for the run. `min_seq` asserts
+read-your-writes: the pack reflects the event you just wrote (raw until extraction distills it):
+
+```bash
+curl -sX POST localhost:8080/v1/pack \
+  -H "Authorization: Bearer $LORE_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d "{\"run_id\":\"$RUN_ID\",\"query\":\"auth work\",\"min_seq\":1}"
+# with the lore binary instead of curl:  lore pack --run-id "$RUN_ID" --query "auth work" --min-seq 1
+```
+
+**5 · Tear it down:**
 
 ```bash
 docker compose -f infra/docker-compose.yml down -v   # or: task compose:down
 ```
+
+Every step above is also a `lore` subcommand for running outside Docker: `lore provision` (create a project
+and mint a key), `lore pack` (fetch a context pack), and `lore doctor` (check the database, schema, and
+server). Run `lore --help` for the full list.
 
 > **Port 8080 already in use?** Pick a free host port; the container still listens on 8080:
 > `LORE_HTTP_PORT=18080 docker compose -f infra/docker-compose.yml up -d --build --wait`

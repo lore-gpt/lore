@@ -1,6 +1,7 @@
 // Command lore is the OSS server binary. It wires the open-core packages with
-// their default (OSS) extension implementations and exposes the serve, worker,
-// migrate, version, and health subcommands.
+// their default (OSS) extension implementations and exposes the server, worker,
+// and operator subcommands (serve, worker, migrate, provision, keys, models,
+// version, health, and the quickstart helpers).
 package main
 
 import (
@@ -37,7 +38,8 @@ func rootCmd() *cobra.Command {
 		// Errors are returned by RunE and printed by cobra; don't also dump usage.
 		SilenceUsage: true,
 	}
-	root.AddCommand(serveCmd(), workerCmd(), migrateCmd(), versionCmd(), healthCmd(), keysCmd(), modelsCmd())
+	root.AddCommand(serveCmd(), workerCmd(), migrateCmd(), versionCmd(), healthCmd(), keysCmd(), modelsCmd(),
+		provisionCmd(), packCmd(), doctorCmd())
 	return root
 }
 
