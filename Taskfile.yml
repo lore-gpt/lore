@@ -10,6 +10,7 @@ vars:
   BIN: bin/lore
   MAIN_PKG: ./server/cmd/lore
   COMPOSE: infra/docker-compose.yml
+  TS_DIR: clients/typescript
   GOLANGCI_VERSION: v2.12.2
   SQLC_VERSION: v1.31.1
   REDOCLY_VERSION: 2.38.0
@@ -63,6 +64,21 @@ tasks:
     desc: Lint the OpenAPI spec (redocly).
     cmds:
       - npx --yes @redocly/cli@{{.REDOCLY_VERSION}} lint --config spec/redocly.yaml spec/openapi.yaml
+
+  sdk:gen:
+    desc: Regenerate the committed TS SDK types from the OpenAPI spec (commit the result).
+    cmds:
+      - cd {{.TS_DIR}} && pnpm run gen
+
+  sdk:build:
+    desc: Type-check and build the TS SDK (tsc, ESM — dist/*.js + *.d.ts).
+    cmds:
+      - cd {{.TS_DIR}} && pnpm install && pnpm run build
+
+  sdk:test:
+    desc: Run the TS SDK checks (gen-drift, typecheck, node:test, README-hero example) — mirrors CI.
+    cmds:
+      - cd {{.TS_DIR}} && pnpm install && pnpm run check
 
   compose:up:
     desc: Start the local stack (ParadeDB, Valkey, MinIO, server, worker), provision a first project, and wait until healthy.
