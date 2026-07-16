@@ -1,9 +1,46 @@
-"""Lore — the coordination memory layer for multi-agent AI systems.
+"""Lore — coordination memory for multi-agent AI systems.
 
-Placeholder release (0.0.1). The real SDK (``LoreClient``: write / recall / pack, with the
-read-your-writes ``seq`` contract) lands with Lore v0.1.
-
-Track progress: https://loregpt.ai  ·  https://github.com/lore-gpt/lore
+Create runs, write events, and fetch read-your-writes context packs. See :class:`LoreClient` (sync) and
+:class:`AsyncLoreClient` (async).
 """
 
-__version__ = "0.0.1"
+from ._types import PackResult, PackSource, RunResult, Scopes, WorkingSource, WriteResult
+from .client import AsyncLoreClient, LoreClient
+from .errors import (
+    InvalidBodyError,
+    InvalidRunIdError,
+    LoreApiError,
+    LoreConnectionError,
+    LoreError,
+    LoreParseError,
+    MinSeqOutOfRangeError,
+    ModelMismatchError,
+    NotFoundError,
+    UnauthorizedError,
+    UnknownLoreError,
+)
+
+__version__ = "0.1.0"
+
+__all__ = [
+    "AsyncLoreClient",
+    "InvalidBodyError",
+    "InvalidRunIdError",
+    "LoreApiError",
+    "LoreClient",
+    "LoreConnectionError",
+    "LoreError",
+    "LoreParseError",
+    "MinSeqOutOfRangeError",
+    "ModelMismatchError",
+    "NotFoundError",
+    "PackResult",
+    "PackSource",
+    "RunResult",
+    "Scopes",
+    "UnauthorizedError",
+    "UnknownLoreError",
+    "WorkingSource",
+    "WriteResult",
+    "__version__",
+]

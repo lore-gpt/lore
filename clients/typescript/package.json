@@ -1,7 +1,7 @@
 {
   "name": "@loregpt/sdk",
-  "version": "0.0.1",
-  "description": "TypeScript SDK for Lore — the coordination memory layer for multi-agent AI systems. Placeholder release; the real API lands with Lore v0.1.",
+  "version": "0.1.0",
+  "description": "TypeScript SDK for Lore — coordination memory for multi-agent AI systems: create runs, write events, and fetch read-your-writes context packs.",
   "license": "Apache-2.0",
   "author": "The LoreGPT Authors",
   "homepage": "https://loregpt.ai",
@@ -25,9 +25,19 @@
     "read-your-writes"
   ],
   "type": "module",
-  "main": "index.js",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
+  },
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "sideEffects": false,
   "files": [
-    "index.js",
+    "dist",
     "README.md"
   ],
   "engines": {
@@ -35,5 +45,20 @@
   },
   "publishConfig": {
     "access": "public"
+  },
+  "scripts": {
+    "gen": "openapi-typescript ../../spec/openapi.yaml -o src/generated/openapi.ts",
+    "gen:check": "pnpm gen && git diff --exit-code -- src/generated/openapi.ts",
+    "build": "tsc -p tsconfig.json",
+    "prepack": "pnpm run build",
+    "typecheck": "tsc -p tsconfig.check.json",
+    "test": "node --test",
+    "example": "node scripts/check-readme-hero.mjs",
+    "check": "pnpm gen:check && pnpm typecheck && pnpm test && pnpm example"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "openapi-typescript": "7.13.0",
+    "typescript": "5.9.3"
   }
 }
