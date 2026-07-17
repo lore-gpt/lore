@@ -35,11 +35,13 @@ func rootCmd() *cobra.Command {
 	root := &cobra.Command{
 		Use:   "lore",
 		Short: "Lore — the coordination memory layer for multi-agent AI systems",
+		// Setting Version makes cobra add a `--version` flag alongside the `version` subcommand.
+		Version: core.Version,
 		// Errors are returned by RunE and printed by cobra; don't also dump usage.
 		SilenceUsage: true,
 	}
 	root.AddCommand(serveCmd(), workerCmd(), migrateCmd(), versionCmd(), healthCmd(), keysCmd(), modelsCmd(),
-		provisionCmd(), packCmd(), doctorCmd())
+		provisionCmd(), packCmd(), doctorCmd(), initCmd())
 	return root
 }
 
