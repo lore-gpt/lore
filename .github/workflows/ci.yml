@@ -77,6 +77,36 @@ jobs:
       - name: readme hero example matches
         run: pnpm example
 
+  mcp:
+    name: mcp (@loregpt/mcp)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: clients/mcp
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: clients/mcp/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      # Regenerate the committed OpenAPI types and fail if the spec drifted without a regen.
+      - name: gen drift check
+        run: pnpm gen:check
+      # Type-check the server, the REST client, and the node:test files.
+      - name: typecheck
+        run: pnpm typecheck
+      # Tool round-trip + error-mapping tests via node:test (node 22 type-stripping); no test-runner dep.
+      - name: test
+        run: pnpm test
+      # The published server must build to runnable ESM (the lore-mcp bin included).
+      - name: build
+        run: pnpm build
+
   python:
     name: python (loregpt)
     runs-on: ubuntu-latest
