@@ -60,6 +60,40 @@ communicates over **stdio**; all diagnostics go to stderr, and the key is never 
 | `LORE_API_KEY` | yes | — | Bearer key from `lore provision` / `lore keys create`. |
 | `LORE_BASE_URL` | no | `http://localhost:8080` | URL of the Lore server. |
 | `LORE_TIMEOUT_MS` | no | `30000` | Per-request timeout in milliseconds. |
+| `LORE_MCP_HOST` | no | `127.0.0.1` | HTTP mode only: bind host (loopback by default). |
+| `LORE_MCP_PORT` | no | `3000` | HTTP mode only: listen port (or `--port`). |
+| `LORE_MCP_ALLOWED_HOSTS` | no | — | HTTP mode only: comma-separated Host allowlist; enables DNS-rebinding protection when set. |
+| `LORE_MAX_BODY_BYTES` | no | `4194304` | HTTP mode only: maximum request body size, in bytes (4 MiB). |
+
+## Remote clients (streamable HTTP)
+
+For clients that connect over HTTP instead of spawning the server, run it with `--http`:
+
+```console
+$ LORE_BASE_URL=http://localhost:8080 npx -y @loregpt/mcp --http --port 3000
+lore-mcp on http://127.0.0.1:3000/mcp -> http://localhost:8080
+```
+
+The HTTP transport is **stateless** and uses **per-request auth**: there is no server-held key. Each client
+sends its OWN Lore key in the `Authorization` header of every request, and the server passes it through to the
+Lore server — so one HTTP endpoint safely serves many keys. Register it as a URL-based MCP server:
+
+```json
+{
+  "mcpServers": {
+    "lore": {
+      "type": "http",
+      "url": "http://127.0.0.1:3000/mcp",
+      "headers": { "Authorization": "Bearer lore_sk_..." }
+    }
+  }
+}
+```
+
+The server binds to loopback (`127.0.0.1`) by default. Setting `LORE_MCP_HOST=0.0.0.0` exposes it beyond the
+local machine — only do that behind auth/TLS you control (e.g. a reverse proxy), and set
+`LORE_MCP_ALLOWED_HOSTS` to your expected host(s) to turn on DNS-rebinding protection. Request bodies are
+capped at 4 MiB by default (`LORE_MAX_BODY_BYTES`).
 
 ## The tool contract
 
