@@ -5,7 +5,10 @@
     "module": "nodenext",
     "moduleResolution": "nodenext",
     "strict": true,
-    "exactOptionalPropertyTypes": true,
+    // exactOptionalPropertyTypes is intentionally OFF here (the sibling SDK package keeps it for its XOR
+    // union). The @modelcontextprotocol/sdk types are not EOPT-clean — its transports declare fields as
+    // `X | undefined` and the stateless streamable-HTTP transport requires `sessionIdGenerator: undefined` —
+    // so EOPT would reject the SDK's own types with no correctness gain in this package.
     "noUncheckedIndexedAccess": true,
     "noImplicitOverride": true,
     "verbatimModuleSyntax": true,
