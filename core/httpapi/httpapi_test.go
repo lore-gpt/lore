@@ -132,6 +132,25 @@ func TestHealthz(t *testing.T) {
 	}
 }
 
+// TestHealthzReportsEmbedderID checks that the composed embedder's model@dim
+// identity is surfaced in the body, so an operator can confirm the server and
+// worker share one vector space.
+func TestHealthzReportsEmbedderID(t *testing.T) {
+	ok := fakePinger{}
+	handler := New(Config{DB: ok, Queue: ok, Version: "v-test", EmbedderID: "text-embedding-3-small@1536"}).Handler()
+	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	var got Health
+	if err := json.NewDecoder(rr.Body).Decode(&got); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if got.Embedder != "text-embedding-3-small@1536" {
+		t.Errorf("embedder = %q, want the composed model@dim identity", got.Embedder)
+	}
+}
+
 // TestCreateEventValidation covers the 400 paths that reject before any database
 // work, so it runs without a pool. A malformed kind:"state" payload is rejected
 // here too (invalid_state_fact), before the event is written. The happy path and

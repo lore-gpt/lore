@@ -13,6 +13,10 @@ type Health struct {
 	// visibility but never affects Status — the stripe is optional and Postgres stays authoritative, so a
 	// degraded or absent cache must not fail the instance.
 	Workmem string `json:"workmem"`
+	// Embedder is the model@dim identity of the composed embedding model (e.g. "fixture-embed-v1@64" or
+	// "text-embedding-3-small@1536"). It is reported so an operator can confirm the server and worker share
+	// one vector space; it never affects Status.
+	Embedder string `json:"embedder"`
 }
 
 // handleHealthz reports process version and dependency health. It returns 200
@@ -27,7 +31,7 @@ type Health struct {
 // /readyz (dependencies ok) when we add that deployment target.
 func (a *API) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	h := Health{Status: "ok", Version: a.version, DB: "ok", Queue: "ok", Workmem: a.workmem.Mode().String()}
+	h := Health{Status: "ok", Version: a.version, DB: "ok", Queue: "ok", Workmem: a.workmem.Mode().String(), Embedder: a.embedderID}
 
 	if err := a.db.Ping(ctx); err != nil {
 		h.DB = "error"

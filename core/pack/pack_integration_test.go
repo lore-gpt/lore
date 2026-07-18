@@ -25,7 +25,7 @@ import (
 
 const (
 	paradeDBImage = "paradedb/paradedb:0.24.2-pg17"
-	testModel     = "fixture-embed-v1"
+	testModel     = "fixture-embed-v1@64"
 )
 
 // migratedStore starts a ParadeDB container, applies the store migrations, and returns an open store.

@@ -300,6 +300,7 @@ components:
         - db
         - queue
         - workmem
+        - embedder
       properties:
         status:
           type: string
@@ -321,6 +322,13 @@ components:
             stays authoritative.
           enum: [ok, degraded, disabled]
           example: disabled
+        embedder:
+          type: string
+          description: >-
+            Composed embedding model identity (model@dim). Reported so an
+            operator can confirm the server and worker share one vector space;
+            it never affects status.
+          example: fixture-embed-v1@64
     CreateEventRequest:
       type: object
       required:

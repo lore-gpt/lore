@@ -98,7 +98,12 @@ def test_gate_passes_when_answer_variance_std_under_target() -> None:
 def test_artifact_embeds_provenance_and_both_protocols(tmp_path: Path) -> None:
     answer = _variance(VARIANCE_ANSWER)
     pipeline = VarianceResult(VARIANCE_PIPELINE, ((_v("q1", "t", True),), (_v("q1", "t", False),)))
-    prov = _provenance(3, extraction_mode="economy", system_config="mem0ai 2.0.12 (oss-default)")
+    prov = _provenance(
+        3,
+        extraction_mode="economy",
+        system_config="mem0ai 2.0.12 (oss-default)",
+        embedding_model="text-embedding-3-small@1536",
+    )
     report = SystemReport("mem0", prov, answer, cache_hit_rate=0.5, stats=RunStats(), variance_pipeline=pipeline)
     out = tmp_path / "reports" / "run.json"
     report.write(out)
@@ -106,6 +111,8 @@ def test_artifact_embeds_provenance_and_both_protocols(tmp_path: Path) -> None:
     assert data["provenance"]["dataset_revision"] == "abc123"
     assert data["provenance"]["extraction_mode"] == "economy"
     assert data["provenance"]["system_config"] == "mem0ai 2.0.12 (oss-default)"
+    # The embedding model completes the provenance chain (extraction + answerer + judge + embedding).
+    assert data["provenance"]["embedding_model"] == "text-embedding-3-small@1536"
     # Both protocols are present and labelled, never conflated.
     assert data["variance_answer"]["label"] == VARIANCE_ANSWER
     assert data["variance_pipeline"]["label"] == VARIANCE_PIPELINE
@@ -117,13 +124,19 @@ def test_markdown_shows_gate_and_both_variances() -> None:
     answer = _variance(VARIANCE_ANSWER)
     pipeline = _variance(VARIANCE_PIPELINE)
     report = SystemReport(
-        "lore", _provenance(3), answer, cache_hit_rate=0.0, stats=RunStats(), variance_pipeline=pipeline
+        "lore",
+        _provenance(3, embedding_model="text-embedding-3-small@1536"),
+        answer,
+        cache_hit_rate=0.0,
+        stats=RunStats(),
+        variance_pipeline=pipeline,
     )
     md = report.markdown()
     assert VARIANCE_ANSWER in md
     assert VARIANCE_PIPELINE in md
     assert "abstention accuracy" in md
     assert "gate" in md.lower()
+    assert "text-embedding-3-small@1536" in md  # the embedding line renders when the model is recorded
 
 
 def test_leaderboard_lists_systems() -> None:

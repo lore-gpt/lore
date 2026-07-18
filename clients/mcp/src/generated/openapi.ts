@@ -221,6 +221,11 @@ export interface components {
              * @enum {string}
              */
             workmem: "ok" | "degraded" | "disabled";
+            /**
+             * @description Composed embedding model identity (model@dim). Reported so an operator can confirm the server and worker share one vector space; it never affects status.
+             * @example fixture-embed-v1@64
+             */
+            embedder: string;
         };
         CreateEventRequest: {
             /** Format: uuid */

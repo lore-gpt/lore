@@ -66,6 +66,9 @@ type Config struct {
 	Workmem workmem.Store
 	// WorkmemMaxValueBytes bounds a state fact's value at ingestion; 0 uses the package default.
 	WorkmemMaxValueBytes int
+	// EmbedderID is the composed embedder's model@dim identity, reported by /healthz so an operator can
+	// confirm the server and worker share one vector space. Empty is reported as an empty string.
+	EmbedderID string
 }
 
 // API holds the wired dependencies and builds the router.
@@ -79,6 +82,7 @@ type API struct {
 	version              string
 	workmem              workmem.Store
 	workmemMaxValueBytes int
+	embedderID           string
 }
 
 // New returns an API bound to cfg. A nil Workmem coerces to the disabled no-op so
@@ -98,6 +102,7 @@ func New(cfg Config) *API {
 		version:              cfg.Version,
 		workmem:              wm,
 		workmemMaxValueBytes: cfg.WorkmemMaxValueBytes,
+		embedderID:           cfg.EmbedderID,
 	}
 }
 

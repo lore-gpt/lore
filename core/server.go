@@ -166,6 +166,7 @@ func NewServer(ctx context.Context, cfg Config, opts ...Option) (*Server, error)
 		Version:              Version,
 		Workmem:              e.workmem,
 		WorkmemMaxValueBytes: cfg.WorkmemMaxValueBytes,
+		EmbedderID:           e.embedder.ModelID(),
 	})
 
 	return &Server{

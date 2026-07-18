@@ -75,3 +75,7 @@ class Provenance:
     # (default vs tuned). Empty when not applicable.
     extraction_mode: str = ""
     system_config: str = ""
+    # The embedding model that produced the retrieval vector space, completing the provenance chain
+    # (extraction + answerer + judge + embedding). For Lore it is the composed embedder's model@dim identity
+    # (e.g. "text-embedding-3-small@1536" or the offline "fixture-embed-v1@64"); empty when not applicable.
+    embedding_model: str = ""
