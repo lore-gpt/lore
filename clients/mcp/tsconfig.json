@@ -1,0 +1,28 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022"],
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "strict": true,
+    // exactOptionalPropertyTypes is intentionally OFF here (the sibling SDK package keeps it for its XOR
+    // union). The @modelcontextprotocol/sdk types are not EOPT-clean — its transports declare fields as
+    // `X | undefined` and the stateless streamable-HTTP transport requires `sessionIdGenerator: undefined` —
+    // so EOPT would reject the SDK's own types with no correctness gain in this package.
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "verbatimModuleSyntax": true,
+    "isolatedModules": true,
+    "allowImportingTsExtensions": true,
+    "rewriteRelativeImportExtensions": true,
+    "forceConsistentCasingInFileNames": true,
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "rootDir": "src",
+    "outDir": "dist",
+    "skipLibCheck": true
+  },
+  "include": ["src"],
+  "exclude": ["dist", "node_modules"]
+}
