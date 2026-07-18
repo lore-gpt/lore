@@ -77,33 +77,32 @@ pack.savedTokens; // the number your CFO will ask about
 
 ## Quickstart (self-host)
 
-All you need is **Docker** (with Compose):
+All you need is **Docker** (with Compose). `lore init` runs from the published image and prints a
+docker-compose file — nothing to clone or build:
 
 ```bash
-git clone https://github.com/lore-gpt/lore
-cd lore
-docker compose -f infra/docker-compose.yml up -d --build --wait
+docker run --rm ghcr.io/lore-gpt/lore:v0.0.1 init > docker-compose.yml
+docker compose up -d --wait
 ```
 
-*(Prefer [Task](https://taskfile.dev)? `task compose:up` does the same and is the dev entry point
-for lint/test/build too.)*
+<sub>PowerShell: `docker run --rm ghcr.io/lore-gpt/lore:v0.0.1 init | Set-Content docker-compose.yml`</sub>
 
-`up` builds the server and worker, applies migrations, and runs a one-shot that **provisions a first
-project** and writes its id and API key to `infra/.lore/credentials`. The default extractor is an offline,
-deterministic fixture, so the whole write → consolidate → pack loop runs with no API key. Load your
-credentials:
+`up` starts the stack, applies migrations, and runs a one-shot that **provisions a first project** and writes
+its id and API key to `./.lore/credentials`. The default extractor is an offline, deterministic fixture, so
+the whole write → consolidate → pack loop runs with no API key. Load your credentials:
 
 ```bash
-set -a; source infra/.lore/credentials; set +a   # sets LORE_PROJECT_ID and LORE_API_KEY
+set -a; source ./.lore/credentials; set +a   # sets LORE_PROJECT_ID and LORE_API_KEY
 ```
 
-*(A zero-clone `lore init` that scaffolds this without cloning the repo lands in `v0.1`.)*
+<sub>The generated compose is pinned to the image's version, so `init` and the stack it scaffolds never drift.
+If `./.lore` sits inside a git repository, add `.lore/` to your `.gitignore` — the credentials file holds a key.</sub>
 
 **1 · Check health** — unauthenticated, so orchestrators can probe it:
 
 ```bash
 curl localhost:8080/healthz
-# {"status":"ok","version":"0.0.0-dev","db":"ok","queue":"ok","workmem":"ok"}
+# {"status":"ok","version":"v0.0.1","db":"ok","queue":"ok","workmem":"ok"}
 ```
 
 **2 · Create a run** — a run groups a stream of events; the project comes from your key, never the body:
@@ -139,7 +138,7 @@ curl -sX POST localhost:8080/v1/pack \
 **5 · Tear it down:**
 
 ```bash
-docker compose -f infra/docker-compose.yml down -v   # or: task compose:down
+docker compose down -v
 ```
 
 Every step above is also a `lore` subcommand for running outside Docker: `lore provision` (create a project
@@ -147,7 +146,11 @@ and mint a key), `lore pack` (fetch a context pack), and `lore doctor` (check th
 server). Run `lore --help` for the full list.
 
 > **Port 8080 already in use?** Pick a free host port; the container still listens on 8080:
-> `LORE_HTTP_PORT=18080 docker compose -f infra/docker-compose.yml up -d --build --wait`
+> `LORE_HTTP_PORT=18080 docker compose up -d --wait`
+
+> **Building from source?** Clone the repo and use the build-from-source compose instead of the published
+> image: `docker compose -f infra/docker-compose.yml up -d --build --wait` (or `task compose:up`, the dev
+> entry point for lint/test/build too).
 
 <details>
 <summary><b>Configuration</b> — run the binary outside Compose</summary>

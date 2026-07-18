@@ -6,8 +6,11 @@
 package core
 
 // Version is the single source of truth for the Lore build version. It is
-// surfaced by the GET /healthz endpoint and the `lore version` subcommand.
+// surfaced by the GET /healthz endpoint, the `lore version` subcommand, and the
+// `lore --version` flag.
 //
-// The release train (lockstep semver) overwrites this at build time
-// via -ldflags; the default marks an untagged local/dev build.
-const Version = "0.0.0-dev"
+// It is a var (not a const) precisely so the release build can overwrite it at
+// link time with the git tag via -ldflags "-X
+// github.com/lore-gpt/lore/core.Version=<tag>"; a const cannot be overwritten by
+// -X. The default marks an untagged local/dev build.
+var Version = "0.0.0-dev"
