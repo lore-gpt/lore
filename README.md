@@ -163,6 +163,20 @@ Copy [`.env.example`](.env.example) to `.env` and set:
 | `LORE_ADDR` | no | `:8080` | HTTP listen address |
 | `LORE_VALKEY_URL` | no | — | Working-memory hot lane (Valkey); unset → durable fallback |
 | `LORE_WORKMEM_MAX_VALUE_BYTES` | no | `8192` | Max bytes per working-memory fact value (enforced at ingestion) |
+| `LORE_EMBEDDING_PROVIDER` | no | fixture | `openai` for a real vector space; unset/`fixture` keeps the offline fixture |
+| `LORE_EMBEDDING_BASE_URL` | no | OpenAI | Any OpenAI-compatible `/v1/embeddings` endpoint (OpenAI, a self-hosted TEI/Ollama/vLLM server) |
+| `LORE_EMBEDDING_MODEL` | with `openai` | — | Embedding model name |
+| `LORE_EMBEDDING_DIM` | with `openai` | — | Vector dimension (asserted against every response) |
+| `LORE_EMBEDDING_SEND_DIMENSIONS` | no | `false` | Send the `dimensions` request field (OpenAI-family truncation); leave off for a self-hosted server that rejects an unknown field |
+| `LORE_EMBEDDING_API_KEY` | no | — | Bearer token for the endpoint; omit for a self-hosted server that needs none |
+
+**Embeddings.** Retrieval embeds each memory and each query. By default that runs on an offline, deterministic
+**fixture** embedder — reproducible, but not a semantic vector space. For real semantic recall, set
+`LORE_EMBEDDING_PROVIDER=openai` with a model and dimension pointing at any OpenAI-compatible endpoint. Set the
+same values for **both** `serve` and `worker` so the query and the stored vectors share one space. The active
+model is pinned per project on first embed; **changing the model or the dimension opens a new vector space**, so
+an existing project would need a re-embedding migration. `lore doctor` and `/healthz` report the active
+embedder identity (`model@dim`).
 
 API keys are not configured through the environment: mint one per project with `lore keys create --project
 <id>` (it prints the token once) and revoke it with `lore keys revoke <id>`.

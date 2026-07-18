@@ -179,6 +179,8 @@ class SystemReport:
                 + (f" (mode: {self.provenance.extraction_mode})" if self.provenance.extraction_mode else ""),
             ]
         )
+        if self.provenance.embedding_model:
+            lines.append(f"- embedding: `{self.provenance.embedding_model}`")
         if self.provenance.system_config:
             lines.append(f"- system config: {self.provenance.system_config}")
         lines.extend(

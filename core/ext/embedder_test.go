@@ -16,8 +16,10 @@ func TestFixtureEmbedderDeterministicAndShaped(t *testing.T) {
 	if e.Dim() != fixtureEmbedDim {
 		t.Fatalf("Dim() = %d, want %d", e.Dim(), fixtureEmbedDim)
 	}
-	if e.ModelID() != fixtureEmbedModelID {
-		t.Fatalf("ModelID() = %q, want %q", e.ModelID(), fixtureEmbedModelID)
+	// ModelID is the model@dim identity every embedder reports, so the fixture's is
+	// "fixture-embed-v1@64" — this is the value stored under and shown by the CLI.
+	if e.ModelID() != "fixture-embed-v1@64" {
+		t.Fatalf("ModelID() = %q, want %q", e.ModelID(), "fixture-embed-v1@64")
 	}
 
 	// Index 0 and 2 are the same text, index 1 differs.

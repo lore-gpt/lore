@@ -61,7 +61,7 @@ func TestPackEndpoint(t *testing.T) {
 	if err := store.CreateProjectPartitions(ctx, st.Pool, mustUUID(t, projA)); err != nil {
 		t.Fatalf("create partitions: %v", err)
 	}
-	setActiveModel(ctx, t, st.Pool, projA, "fixture-embed-v1")
+	setActiveModel(ctx, t, st.Pool, projA, "fixture-embed-v1@64")
 	keyA, _ := provisionKey(ctx, t, st.Pool, projA)
 
 	seq := postEvent(t, handler, keyA, `{"run_id":"`+runA+`","agent_id":"a","payload":{"note":"uncovered_write"}}`)

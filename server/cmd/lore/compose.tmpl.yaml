@@ -63,6 +63,15 @@ services:
       LORE_DATABASE_URL: postgres://lore:lore@paradedb:5432/lore?sslmode=disable
       LORE_ADDR: ":8080"
       LORE_VALKEY_URL: redis://valkey:6379
+      # Embeddings default to the offline fixture. To enable semantic recall, export
+      # LORE_EMBEDDING_* before `up`; the SAME values are passed to the worker below
+      # so the query and the stored vectors share one vector space.
+      LORE_EMBEDDING_PROVIDER: "${LORE_EMBEDDING_PROVIDER:-}"
+      LORE_EMBEDDING_BASE_URL: "${LORE_EMBEDDING_BASE_URL:-}"
+      LORE_EMBEDDING_MODEL: "${LORE_EMBEDDING_MODEL:-}"
+      LORE_EMBEDDING_DIM: "${LORE_EMBEDDING_DIM:-}"
+      LORE_EMBEDDING_SEND_DIMENSIONS: "${LORE_EMBEDDING_SEND_DIMENSIONS:-}"
+      LORE_EMBEDDING_API_KEY: "${LORE_EMBEDDING_API_KEY:-}"
     ports:
       # The container always listens on 8080; the host port is overridable via
       # LORE_HTTP_PORT for when 8080 is already taken (e.g. a local Apache/nginx).
@@ -82,6 +91,14 @@ services:
     command: ["worker"]
     environment:
       LORE_DATABASE_URL: postgres://lore:lore@paradedb:5432/lore?sslmode=disable
+      # Must match lore-server's embedding config: the worker embeds stored memories,
+      # serve embeds the query, and the two share one vector space only if identical.
+      LORE_EMBEDDING_PROVIDER: "${LORE_EMBEDDING_PROVIDER:-}"
+      LORE_EMBEDDING_BASE_URL: "${LORE_EMBEDDING_BASE_URL:-}"
+      LORE_EMBEDDING_MODEL: "${LORE_EMBEDDING_MODEL:-}"
+      LORE_EMBEDDING_DIM: "${LORE_EMBEDDING_DIM:-}"
+      LORE_EMBEDDING_SEND_DIMENSIONS: "${LORE_EMBEDDING_SEND_DIMENSIONS:-}"
+      LORE_EMBEDDING_API_KEY: "${LORE_EMBEDDING_API_KEY:-}"
     depends_on:
       paradedb:
         condition: service_healthy

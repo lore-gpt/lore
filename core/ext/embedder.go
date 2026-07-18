@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/binary"
+	"fmt"
 	"math"
 )
 
@@ -20,16 +21,22 @@ const (
 	// it would spuriously near-merge two distinct memories in a shared entity bucket. A real model's
 	// dimension is larger still.
 	fixtureEmbedDim = 64
-	// fixtureEmbedModelID is the model space fixture vectors are stored under. Reads that query this
-	// model space see them; a project on a different active model does not.
+	// fixtureEmbedModelID is the base name of the fixture model space. The reported
+	// ModelID appends the dimension (see ModelID) so it follows the same model@dim
+	// identity every embedder uses.
 	fixtureEmbedModelID = "fixture-embed-v1"
 )
 
 // Dim reports the fixed dimension of every vector Embed returns.
 func (FixtureEmbedder) Dim() int { return fixtureEmbedDim }
 
-// ModelID identifies the fixture embedding model; embeddings are stored under it.
-func (FixtureEmbedder) ModelID() string { return fixtureEmbedModelID }
+// ModelID identifies the fixture model space embeddings are stored under. It is
+// model@dim, uniform with every real provider: the dimension is part of the
+// identity because reads query a single model space and two dimensions of one
+// model produce incomparable vectors.
+func (FixtureEmbedder) ModelID() string {
+	return fmt.Sprintf("%s@%d", fixtureEmbedModelID, fixtureEmbedDim)
+}
 
 // Embed returns one unit vector per text, in order, each of length Dim(). It is pure and deterministic
 // and never fails: the vector is derived from the text's SHA-256 digest, then L2-normalized so cosine

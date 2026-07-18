@@ -145,7 +145,9 @@ def main() -> None:
     poll_timeout = args.lore_poll_timeout or (600.0 if args.extraction_mode == "economy" else 60.0)
     reports = []
     for name in systems:
-        system, extraction_model, extraction_mode, system_config = _build_system(name, args, poll_timeout)
+        system, extraction_model, extraction_mode, system_config, embedding_model = _build_system(
+            name, args, poll_timeout
+        )
         stats = RunStats()
 
         if args.batch:
@@ -193,6 +195,7 @@ def main() -> None:
             generated_at=_now(),
             extraction_mode=extraction_mode,
             system_config=system_config,
+            embedding_model=embedding_model,
         )
         report = SystemReport(name, provenance, variance_answer, cache.hit_rate, stats, variance_pipeline)
         stamp = provenance.generated_at.replace(":", "").replace("-", "")
@@ -214,24 +217,25 @@ def main() -> None:
         print(Leaderboard(tuple(reports)).markdown())
 
 
-def _build_system(name: str, args: argparse.Namespace, poll_timeout: float) -> tuple[object, str, str, str]:
-    """Construct a memory system + its fairness metadata (extraction_model, extraction_mode, system_config)."""
+def _build_system(name: str, args: argparse.Namespace, poll_timeout: float) -> tuple[object, str, str, str, str]:
+    """Construct a memory system + its fairness metadata (extraction_model, extraction_mode, system_config,
+    embedding_model)."""
     from longmemeval import LoreAdapter, Mem0Adapter
 
     if name == "lore":
         from loregpt import LoreClient
 
-        client = LoreClient(
-            api_key=_require("LORE_API_KEY"),
-            base_url=os.environ.get("LORE_BASE_URL", "http://localhost:8080"),
-        )
+        base_url = os.environ.get("LORE_BASE_URL", "http://localhost:8080")
+        client = LoreClient(api_key=_require("LORE_API_KEY"), base_url=base_url)
         # Dogfooding: the operator runs the worker in this extraction mode; the adapter records it and waits on
         # the matching cadence (economy distillation lands on a batch schedule).
         lore = LoreAdapter(client, poll_timeout=poll_timeout)
         # Record the retrieval-context budget so the fairness record makes each system's context size explicit
         # (a cross-system delta could otherwise reflect a budget asymmetry rather than memory quality).
         extraction_model = os.environ.get("LORE_EXTRACTION_MODEL", "unknown")
-        return lore, extraction_model, args.extraction_mode, f"retrieval token_budget={lore.token_budget}"
+        embedding_model = _lore_embedding_model(base_url)
+        config = f"retrieval token_budget={lore.token_budget}"
+        return lore, extraction_model, args.extraction_mode, config, embedding_model
 
     if name == "mem0":
         from importlib.metadata import version
@@ -239,11 +243,45 @@ def _build_system(name: str, args: argparse.Namespace, poll_timeout: float) -> t
         from mem0 import Memory
 
         adapter = Mem0Adapter(Memory(), top_k=args.mem0_top_k)
-        # mem0 runs its own OpenAI-backed extraction on write; there is no separate "extraction mode".
+        # mem0 runs its own OpenAI-backed extraction and embedding on write; there is no separate "extraction
+        # mode", and its embedder is internal (not configured or introspected here).
         config = f"mem0ai {version('mem0ai')} ({adapter.config_label}); retrieval top_k={adapter.top_k}"
-        return adapter, "mem0-internal", "", config
+        return adapter, "mem0-internal", "", config, "mem0-internal"
 
     raise SystemExit(f"unknown system: {name!r} (expected lore or mem0)")
+
+
+def _lore_embedding_model(base_url: str) -> str:
+    """Read the composed embedder identity (model@dim) from the server's /healthz — the authoritative source,
+    since it reflects the server actually under test. If that read fails, fall back to composing from THIS
+    process's LORE_EMBEDDING_* env only when the server is local (the env plausibly matches the server we
+    launched); for a remote server, return 'unknown' rather than a confident guess that could misreport the
+    vector space and poison the provenance record. A provenance read must never abort the run."""
+    import json
+    import urllib.parse
+    import urllib.request
+
+    try:
+        with urllib.request.urlopen(f"{base_url.rstrip('/')}/healthz", timeout=5) as resp:
+            body = json.loads(resp.read().decode("utf-8"))
+        embedder = body.get("embedder")
+        if isinstance(embedder, str) and embedder:
+            return embedder
+    except Exception:
+        # Best-effort provenance; a health read must never abort the eval.
+        pass
+    # Health read failed (or an older server without the field). Trust this process's env only for a local
+    # server — a remote server's embedder is unrelated to our env, so composing would write a provably-false
+    # identity. Prefer an honest 'unknown' over a confident wrong answer.
+    host = urllib.parse.urlparse(base_url).hostname or ""
+    if host not in ("localhost", "127.0.0.1", "::1"):
+        return "unknown"
+    provider = os.environ.get("LORE_EMBEDDING_PROVIDER", "").strip().lower()
+    if provider in ("", "fixture"):
+        return "fixture-embed-v1@64"
+    model = os.environ.get("LORE_EMBEDDING_MODEL", "unknown")
+    dim = os.environ.get("LORE_EMBEDDING_DIM", "0")
+    return f"{model}@{dim}"
 
 
 if __name__ == "__main__":

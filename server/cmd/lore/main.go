@@ -18,10 +18,12 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/lore-gpt/lore/core"
+	"github.com/lore-gpt/lore/core/ext"
 	"github.com/lore-gpt/lore/core/queue"
 	"github.com/lore-gpt/lore/core/store"
 	"github.com/lore-gpt/lore/core/workmem"
 	"github.com/lore-gpt/lore/server/internal/config"
+	"github.com/lore-gpt/lore/server/internal/embedding"
 	"github.com/lore-gpt/lore/server/internal/extraction"
 )
 
@@ -49,6 +51,21 @@ func rootCmd() *cobra.Command {
 // worker shut down gracefully.
 func signalContext() (context.Context, context.CancelFunc) {
 	return signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+}
+
+// buildEmbedder selects the embedding provider from configuration. Both serve and
+// worker call it so the read path (query embedding) and the write path (stored
+// memories) build the same embedder and share a model space; a misconfiguration
+// fails the process at boot, before it does any work.
+func buildEmbedder(ctx context.Context, cfg config.Config) (ext.Embedder, error) {
+	return embedding.Build(ctx, embedding.Config{
+		Provider:       cfg.EmbeddingProvider,
+		BaseURL:        cfg.EmbeddingBaseURL,
+		APIKey:         cfg.EmbeddingAPIKey,
+		Model:          cfg.EmbeddingModel,
+		Dim:            cfg.EmbeddingDim,
+		SendDimensions: cfg.EmbeddingSendDimensions,
+	})
 }
 
 func serveCmd() *cobra.Command {
@@ -82,11 +99,20 @@ func serveCmd() *cobra.Command {
 			}
 			slog.InfoContext(ctx, "working memory", slog.String("mode", wm.Mode().String()))
 
+			// The read path embeds the query, so serve builds the same embedder the
+			// worker does; a mismatch would put the query and the stored vectors in
+			// different model spaces. A misconfigured provider fails here, at boot.
+			embedder, err := buildEmbedder(ctx, cfg)
+			if err != nil {
+				wm.Close()
+				return err
+			}
+
 			srv, err := core.NewServer(ctx, core.Config{
 				Addr:                 cfg.Addr,
 				DatabaseURL:          cfg.DatabaseURL,
 				WorkmemMaxValueBytes: cfg.WorkmemMaxValueBytes,
-			}, core.WithWorkmem(wm))
+			}, core.WithWorkmem(wm), core.WithEmbedder(embedder))
 			if err != nil {
 				wm.Close()
 				return err
@@ -124,6 +150,13 @@ func workerCmd() *cobra.Command {
 				return err
 			}
 
+			// The write path embeds stored memories; serve embeds the query. Both
+			// build the embedder the same way so the vectors share a model space.
+			embedder, err := buildEmbedder(ctx, cfg)
+			if err != nil {
+				return err
+			}
+
 			// Open the working-memory stripe (same config as serve): the worker routes kind:"state" events
 			// to it when healthy, and to a durable claim otherwise. Unset disables it; a malformed URL is
 			// fatal; unreachable degrades. The worker takes ownership and closes it.
@@ -135,7 +168,7 @@ func workerCmd() *cobra.Command {
 
 			w, err := core.NewWorker(ctx, core.Config{
 				DatabaseURL: cfg.DatabaseURL,
-			}, core.WithExtractor(extractor), core.WithWorkmem(wm))
+			}, core.WithExtractor(extractor), core.WithWorkmem(wm), core.WithEmbedder(embedder))
 			if err != nil {
 				wm.Close()
 				return err

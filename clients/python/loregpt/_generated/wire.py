@@ -13,6 +13,7 @@ class Health(TypedDict):
     db: str
     queue: str
     workmem: Literal['ok', 'degraded', 'disabled']
+    embedder: str
 
 
 class CreateEventRequest(TypedDict):

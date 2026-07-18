@@ -63,7 +63,7 @@ func TestPGPersisterRejectsModelMismatch(t *testing.T) {
 	if _, err := st.Pool.Exec(ctx, `UPDATE projects SET active_model_id = 'other-model' WHERE id = $1`, proj.ID); err != nil {
 		t.Fatalf("pin other model: %v", err)
 	}
-	p := jobs.NewPGPersister(st, ext.LWW{}, ext.FixtureEmbedder{}) // embedder model "fixture-embed-v1"
+	p := jobs.NewPGPersister(st, ext.LWW{}, ext.FixtureEmbedder{}) // embedder model "fixture-embed-v1@64"
 
 	err := p.Persist(ctx, jobs.PersistInput{
 		ProjectID:          proj.ID,

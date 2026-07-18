@@ -7,11 +7,14 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/spf13/cobra"
+
+	"github.com/lore-gpt/lore/server/internal/embedding"
 )
 
 // doctorCmd diagnoses a Lore install for the quickstart: can it reach the database, is the schema migrated,
@@ -54,6 +57,26 @@ func doctorCmd() *cobra.Command {
 			}
 
 			check("server /healthz", checkHealthz(ctx, url))
+
+			// Embedding provider: report the configured model identity, and warn
+			// (not fail) when it's the offline fixture, so a real install doesn't
+			// silently ship deterministic fixture vectors instead of semantic ones.
+			dim, _ := strconv.Atoi(strings.TrimSpace(os.Getenv("LORE_EMBEDDING_DIM")))
+			modelID, isFixture, embErr := embedding.Describe(embedding.Config{
+				Provider: strings.TrimSpace(os.Getenv("LORE_EMBEDDING_PROVIDER")),
+				BaseURL:  strings.TrimSpace(os.Getenv("LORE_EMBEDDING_BASE_URL")),
+				Model:    strings.TrimSpace(os.Getenv("LORE_EMBEDDING_MODEL")),
+				Dim:      dim,
+			})
+			switch {
+			case embErr != nil:
+				check("embedding provider", embErr)
+			case isFixture:
+				_, _ = fmt.Fprintf(out, "! embedding provider: offline fixture (%s) — set LORE_EMBEDDING_PROVIDER=openai "+
+					"with LORE_EMBEDDING_MODEL and LORE_EMBEDDING_DIM for semantic recall\n", modelID)
+			default:
+				check(fmt.Sprintf("embedding provider: %s", modelID), nil)
+			}
 
 			if failed {
 				return errors.New("one or more checks failed")
