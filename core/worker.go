@@ -34,7 +34,7 @@ func NewWorker(ctx context.Context, cfg Config, opts ...Option) (*Worker, error)
 	if err != nil {
 		return nil, fmt.Errorf("open store: %w", err)
 	}
-	q, err := queue.NewWorker(st, e.extractor, e.adjudicator, e.embedder, e.workmem)
+	q, err := queue.NewWorker(st, e.extractor, e.adjudicator, e.embedder, e.workmem, e.metrics)
 	if err != nil {
 		st.Close()
 		return nil, fmt.Errorf("build worker queue: %w", err)
@@ -66,6 +66,12 @@ func (w *Worker) Start(ctx context.Context) error {
 			slog.InfoContext(ctx, "index backfill sweep enqueued builds", slog.Int("count", n))
 		}
 	}()
+
+	// Scrape queue depth and oldest-available-job age periodically (River exposes no Go API for aggregate
+	// queue state). Best-effort, stops with ctx; the metrics registry is the no-op default when telemetry is
+	// off, so this is a cheap query loop that exports nothing in that case.
+	w.ext.metrics.WorkmemMode.Set(workmemModeValue(w.workmem.Mode()))
+	go w.queue.CollectStats(ctx, w.ext.metrics, 15*time.Second)
 
 	<-ctx.Done()
 

@@ -15,6 +15,7 @@ import (
 	pgvector "github.com/pgvector/pgvector-go"
 
 	"github.com/lore-gpt/lore/core/ext"
+	"github.com/lore-gpt/lore/core/metrics"
 	"github.com/lore-gpt/lore/core/store/db"
 )
 
@@ -40,6 +41,7 @@ type Hybrid struct {
 	depth    int
 	timeout  time.Duration
 	logger   *slog.Logger
+	metrics  *metrics.Registry
 }
 
 // ErrModelMismatch means the composed embedder's model does not match the project's active embedding model,
@@ -175,6 +177,16 @@ func WithLogger(l *slog.Logger) HybridOption {
 	}
 }
 
+// WithHybridMetrics sets the Prometheus instrument set; a nil registry is ignored
+// (the no-op default stays), so instrumentation runs unconditionally.
+func WithHybridMetrics(m *metrics.Registry) HybridOption {
+	return func(h *Hybrid) {
+		if m != nil {
+			h.metrics = m
+		}
+	}
+}
+
 // NewHybrid builds a hybrid retriever over the dense retriever and the query embedder. The lexical leg is
 // live; the entity leg is a registered stub (it returns nothing and contributes nothing to fusion) until
 // the entity-memory substrate lands — the fan-out shape is in place so wiring the real leg is filling in a
@@ -190,6 +202,7 @@ func NewHybrid(dense *Retriever, embedder ext.Embedder, opts ...HybridOption) *H
 		depth:    legDepth,
 		timeout:  partialTimeout,
 		logger:   slog.Default(),
+		metrics:  metrics.NewNoop(),
 	}
 	for _, o := range opts {
 		o(h)
@@ -218,6 +231,7 @@ func (h *Hybrid) Retrieve(ctx context.Context, tx pgx.Tx, projectID pgtype.UUID,
 		return nil, nil, ErrNoActiveModel
 	}
 	if *modelID != h.embedder.ModelID() {
+		h.metrics.RetrievalModelMismatch.Inc()
 		return nil, nil, fmt.Errorf("%w: project uses %q, embedder is %q", ErrModelMismatch, *modelID, h.embedder.ModelID())
 	}
 
@@ -299,7 +313,46 @@ func (h *Hybrid) Retrieve(ctx context.Context, tx pgx.Tx, projectID pgtype.UUID,
 	}
 
 	h.logStats(ctx, projectID, stats)
+	h.recordLegMetrics(stats)
 	return reranked, stats, nil
+}
+
+// recordLegMetrics observes each leg's duration and candidate count into Prometheus. The dense leg's Status
+// is overloaded — it carries the query PATH (exact|iterative|hnsw) on success, or "timeout" when it missed
+// the budget — so the leg histograms map any path value to "ok" (keeping the leg status enum {ok,stub,
+// timeout} bounded) while the path and cache result land on their own dense-specific counters.
+func (h *Hybrid) recordLegMetrics(stats []LegStat) {
+	for _, s := range stats {
+		class := legStatusClass(s.Status)
+		h.metrics.RetrievalLegDuration.WithLabelValues(s.Name, class).Observe(s.Latency.Seconds())
+		h.metrics.RetrievalLegCandidates.WithLabelValues(s.Name, class).Observe(float64(s.Count))
+		if s.Name != "dense" {
+			continue
+		}
+		if class == statusTimeout {
+			h.metrics.RetrievalLateEmbedDrop.Inc()
+			continue
+		}
+		h.metrics.RetrievalDensePath.WithLabelValues(s.Status).Inc()
+		result := "miss"
+		if s.Cached {
+			result = "hit"
+		}
+		h.metrics.RetrievalQueryCache.WithLabelValues(result).Inc()
+	}
+}
+
+// legStatusClass folds a leg's Status into the bounded {ok, stub, timeout} enum for the leg histograms; a
+// dense path value (exact|iterative|hnsw) is a healthy leg and folds to "ok".
+func legStatusClass(status string) string {
+	switch status {
+	case statusStub:
+		return statusStub
+	case statusTimeout:
+		return statusTimeout
+	default:
+		return statusOK
+	}
 }
 
 // embedOutcome is the result of the off-transaction query embedding.
@@ -334,6 +387,7 @@ func (h *Hybrid) embedQuery(ctx context.Context, projectID pgtype.UUID, modelID,
 // degrading embedding provider stays visible rather than being silently swallowed by the timeout path.
 func (h *Hybrid) drainLateEmbed(ch <-chan embedOutcome) {
 	if out := <-ch; out.err != nil {
+		h.metrics.RetrievalLateEmbedErr.Inc()
 		h.logger.Warn("query embedding failed after the partial-result budget; dense leg was dropped", "err", out.err)
 	}
 }

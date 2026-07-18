@@ -5,9 +5,11 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -88,5 +90,34 @@ func (a *API) logRequests(next http.Handler) http.Handler {
 			slog.Duration("duration", time.Since(start)),
 			slog.String("request_id", middleware.GetReqID(r.Context())),
 		)
+	})
+}
+
+// recordMetrics observes HTTP request count, duration, and in-flight into the
+// Prometheus registry. The route label is chi's matched route TEMPLATE (e.g.
+// /v1/memories/{id}), read after ServeHTTP, never the raw path — a raw path would
+// make the {id} segment an unbounded label and explode the series count. The
+// scrape endpoint itself is excluded so a Prometheus poll doesn't inflate the
+// counters.
+func (a *API) recordMetrics(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/metrics" {
+			next.ServeHTTP(w, r)
+			return
+		}
+		a.metrics.HTTPInFlight.Inc()
+		defer a.metrics.HTTPInFlight.Dec()
+
+		ww := middleware.NewWrapResponseWriter(w, r.ProtoMajor)
+		start := time.Now()
+		next.ServeHTTP(ww, r)
+
+		route := chi.RouteContext(r.Context()).RoutePattern()
+		if route == "" {
+			route = "unmatched" // a 404: bucket together so arbitrary client paths never become labels
+		}
+		status := strconv.Itoa(ww.Status())
+		a.metrics.HTTPRequests.WithLabelValues(route, r.Method, status).Inc()
+		a.metrics.HTTPDuration.WithLabelValues(route, r.Method, status).Observe(time.Since(start).Seconds())
 	})
 }

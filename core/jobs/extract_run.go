@@ -18,6 +18,7 @@ import (
 	"github.com/riverqueue/river/rivertype"
 
 	"github.com/lore-gpt/lore/core/ext"
+	"github.com/lore-gpt/lore/core/metrics"
 	"github.com/lore-gpt/lore/core/store/db"
 	"github.com/lore-gpt/lore/core/workmem"
 )
@@ -98,6 +99,7 @@ type ExtractRunWorker struct {
 	persister Persister
 	debounce  Debounce
 	workmem   workmem.Store
+	metrics   *metrics.Registry
 }
 
 // ExtractRunOption configures optional ExtractRunWorker dependencies.
@@ -111,11 +113,21 @@ func WithWorkmemStore(s workmem.Store) ExtractRunOption {
 	return func(w *ExtractRunWorker) { w.workmem = s }
 }
 
+// WithExtractMetrics wires the Prometheus instrument set; a nil registry is ignored (the no-op default
+// stays), so instrumentation runs unconditionally.
+func WithExtractMetrics(m *metrics.Registry) ExtractRunOption {
+	return func(w *ExtractRunWorker) {
+		if m != nil {
+			w.metrics = m
+		}
+	}
+}
+
 // NewExtractRunWorker builds the worker from its event source, extractor, persister, and debounce
 // window. Options inject optional dependencies (the working-memory store); by default the store is the
 // disabled no-op.
 func NewExtractRunWorker(source EventSource, extractor ext.Extractor, persister Persister, debounce Debounce, opts ...ExtractRunOption) *ExtractRunWorker {
-	w := &ExtractRunWorker{source: source, extractor: extractor, persister: persister, debounce: debounce, workmem: workmem.NewDisabled()}
+	w := &ExtractRunWorker{source: source, extractor: extractor, persister: persister, debounce: debounce, workmem: workmem.NewDisabled(), metrics: metrics.NewNoop()}
 	for _, o := range opts {
 		o(w)
 	}
@@ -176,6 +188,9 @@ func (w *ExtractRunWorker) Work(ctx context.Context, job *river.Job[ExtractRunAr
 
 	window, stateEvents, bySeq, gated := gate(ctx, job.Args.RunID, events)
 	coveredSeq := events[len(events)-1].Seq // events are seq-ordered; the last is the highest read.
+	w.metrics.ExtractEventsIngested.Add(float64(len(events)))
+	w.metrics.ExtractEventsGated.Add(float64(gated))
+	w.metrics.ExtractEventsExtracted.Add(float64(len(window)))
 	slog.InfoContext(ctx, "extract_run window",
 		slog.String("run_id", job.Args.RunID),
 		slog.Int("events", len(events)),
@@ -383,6 +398,8 @@ func (w *ExtractRunWorker) routeStateFacts(ctx context.Context, projectID, runID
 		})
 	}
 	if hotLane > 0 || len(claims) > 0 {
+		w.metrics.ExtractStateRouted.WithLabelValues("hot").Add(float64(hotLane))
+		w.metrics.ExtractStateRouted.WithLabelValues("durable").Add(float64(len(claims)))
 		slog.InfoContext(ctx, "extract_run state facts routed",
 			slog.String("run_id", uuidString(runID)),
 			slog.Int("hot_lane", hotLane),

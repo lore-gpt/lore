@@ -10,6 +10,7 @@ import (
 
 	"github.com/lore-gpt/lore/core/ext"
 	"github.com/lore-gpt/lore/core/httpapi"
+	"github.com/lore-gpt/lore/core/metrics"
 	"github.com/lore-gpt/lore/core/pack"
 	"github.com/lore-gpt/lore/core/queue"
 	"github.com/lore-gpt/lore/core/retrieval"
@@ -40,6 +41,13 @@ type extensions struct {
 	// workmem is optional infrastructure, not a swappable ext seam: the run-scoped working-memory store.
 	// It defaults to a disabled no-op, so a composition without a cache runs unchanged.
 	workmem workmem.Store
+	// metrics is optional infrastructure: the Prometheus instrument set. It defaults to a no-op registry
+	// (backed by a throwaway registerer), so instrumentation sites call it unconditionally and a composition
+	// without telemetry exports nothing.
+	metrics *metrics.Registry
+	// metricsHandler serves /metrics when set (the promhttp handler over the process registry). The OSS binary
+	// injects it; nil leaves /metrics unregistered. Only the server consumes it — the worker exposes its own.
+	metricsHandler http.Handler
 }
 
 func defaultExtensions() extensions {
@@ -50,6 +58,7 @@ func defaultExtensions() extensions {
 		extractor:   ext.FixtureExtractor{},
 		embedder:    ext.FixtureEmbedder{},
 		workmem:     workmem.NewDisabled(),
+		metrics:     metrics.NewNoop(),
 	}
 }
 
@@ -69,6 +78,9 @@ func resolveExtensions(opts []Option) (extensions, error) {
 	if e.workmem == nil {
 		e.workmem = workmem.NewDisabled()
 	}
+	if e.metrics == nil {
+		e.metrics = metrics.NewNoop()
+	}
 	return e, nil
 }
 
@@ -79,7 +91,21 @@ func (e extensions) logComposed(ctx context.Context, role string) {
 		slog.String("metering", fmt.Sprintf("%T", e.metering)),
 		slog.String("extractor", fmt.Sprintf("%T", e.extractor)),
 		slog.String("embedder", fmt.Sprintf("%T", e.embedder)),
+		slog.Bool("metrics", e.metricsHandler != nil),
 	)
+}
+
+// workmemModeValue maps the working-memory stripe mode to the numeric gauge value
+// exported as lore_workmem_mode (0 disabled, 1 healthy, 2 degraded).
+func workmemModeValue(m workmem.Mode) float64 {
+	switch m {
+	case workmem.Healthy:
+		return 1
+	case workmem.Degraded:
+		return 2
+	default:
+		return 0
+	}
 }
 
 // Option overrides a default extension point. A closed-source build injects its
@@ -112,6 +138,24 @@ func WithExtractor(x ext.Extractor) Option {
 // real embedding provider.
 func WithEmbedder(x ext.Embedder) Option {
 	return func(e *extensions) { e.embedder = x }
+}
+
+// WithMeterRegistry injects the Prometheus instrument set the subsystems observe
+// into. The OSS binary builds it against a process-owned registry; a nil argument
+// coerces to the no-op registry so callers can pass unconditionally.
+func WithMeterRegistry(m *metrics.Registry) Option {
+	return func(e *extensions) {
+		if m != nil {
+			e.metrics = m
+		}
+	}
+}
+
+// WithMetricsHandler injects the /metrics HTTP handler (the promhttp handler over
+// the process registry). The server registers it unauthenticated beside /healthz;
+// nil leaves /metrics unregistered.
+func WithMetricsHandler(h http.Handler) Option {
+	return func(e *extensions) { e.metricsHandler = h }
 }
 
 // WithWorkmem injects the working-memory store. The OSS binary opens it from
@@ -154,7 +198,10 @@ func NewServer(ctx context.Context, cfg Config, opts ...Option) (*Server, error)
 
 	// The read path: the hybrid retriever over the composed embedder, wrapped by the context-pack builder.
 	// A downstream build swaps the embedder (and later the cache/reranker) via the same composition.
-	packer := pack.New(retrieval.NewHybrid(retrieval.New(), e.embedder), e.workmem)
+	packer := pack.New(
+		retrieval.NewHybrid(retrieval.New(), e.embedder, retrieval.WithHybridMetrics(e.metrics)),
+		e.workmem, pack.WithMetrics(e.metrics),
+	)
 
 	api := httpapi.New(httpapi.Config{
 		Pool:                 st.Pool,
@@ -167,6 +214,8 @@ func NewServer(ctx context.Context, cfg Config, opts ...Option) (*Server, error)
 		Workmem:              e.workmem,
 		WorkmemMaxValueBytes: cfg.WorkmemMaxValueBytes,
 		EmbedderID:           e.embedder.ModelID(),
+		Metrics:              e.metrics,
+		MetricsHandler:       e.metricsHandler,
 	})
 
 	return &Server{

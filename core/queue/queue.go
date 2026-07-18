@@ -14,6 +14,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -21,9 +23,11 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/riverdriver/riverpgxv5"
+	"github.com/riverqueue/river/rivertype"
 
 	"github.com/lore-gpt/lore/core/ext"
 	"github.com/lore-gpt/lore/core/jobs"
+	"github.com/lore-gpt/lore/core/metrics"
 	"github.com/lore-gpt/lore/core/store"
 	"github.com/lore-gpt/lore/core/store/db"
 	"github.com/lore-gpt/lore/core/workmem"
@@ -54,7 +58,10 @@ func New(pool *pgxpool.Pool) (*Queue, error) {
 // and embeds stored memories with the given Embedder. The working-memory store
 // routes kind:"state" events (hot lane when healthy, a durable claim otherwise).
 // `lore worker` uses this and calls Start.
-func NewWorker(st *store.Store, extractor ext.Extractor, adjudicator ext.Adjudicator, embedder ext.Embedder, wm workmem.Store) (*Queue, error) {
+func NewWorker(st *store.Store, extractor ext.Extractor, adjudicator ext.Adjudicator, embedder ext.Embedder, wm workmem.Store, m *metrics.Registry) (*Queue, error) {
+	if m == nil {
+		m = metrics.NewNoop()
+	}
 	pool := st.Pool
 	workers := river.NewWorkers()
 	// The worker reads events straight through db.New(pool) but writes through the store's
@@ -64,8 +71,9 @@ func NewWorker(st *store.Store, extractor ext.Extractor, adjudicator ext.Adjudic
 	// store), or the tenant policies would return no rows and extraction would silently stall — the
 	// writes are already scoped, the reads are not yet.
 	river.AddWorker(workers, jobs.NewExtractRunWorker(
-		db.New(pool), extractor, jobs.NewPGPersister(st, adjudicator, embedder, jobs.WithIndexEnqueuer(indexEnqueuer{})), jobs.DefaultDebounce(),
-		jobs.WithWorkmemStore(wm)))
+		db.New(pool), extractor,
+		jobs.NewPGPersister(st, adjudicator, embedder, jobs.WithIndexEnqueuer(indexEnqueuer{}), jobs.WithPersisterMetrics(m)),
+		jobs.DefaultDebounce(), jobs.WithWorkmemStore(wm), jobs.WithExtractMetrics(m)))
 	// The vector-index build runs off the write path: the persister enqueues it when a project first pins its
 	// model, and it builds the per-partition HNSW with the composed embedder's dimension.
 	river.AddWorker(workers, jobs.NewEnsureIndexWorker(store.NewPgVectorIndex(pool), embedder))
@@ -77,7 +85,8 @@ func NewWorker(st *store.Store, extractor ext.Extractor, adjudicator ext.Adjudic
 			// never starves the extraction workers.
 			jobs.IndexQueue: {MaxWorkers: 1},
 		},
-		Workers: workers,
+		Workers:    workers,
+		Middleware: []rivertype.Middleware{&jobMetricsMiddleware{m: m}},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create river worker client: %w", err)
@@ -161,6 +170,97 @@ func (q *Queue) EnqueueExtract(ctx context.Context, tx pgx.Tx, projectID, runID 
 		return fmt.Errorf("enqueue extract_run: %w", err)
 	}
 	return nil
+}
+
+// jobMetricsMiddleware records each worked job's duration and outcome. It observes
+// the per-ATTEMPT result (completed or error) — the state River finally assigns
+// (retryable vs discarded) is a queue-depth concern, tracked by the periodic
+// scrape below, not by a single work attempt.
+type jobMetricsMiddleware struct {
+	river.MiddlewareDefaults
+	m *metrics.Registry
+}
+
+func (mw *jobMetricsMiddleware) Work(ctx context.Context, job *rivertype.JobRow, doInner func(context.Context) error) error {
+	start := time.Now()
+	err := doInner(ctx)
+	outcome := "completed"
+	if err != nil {
+		outcome = "error"
+	}
+	mw.m.QueueJobs.WithLabelValues(job.Kind, outcome).Inc()
+	mw.m.QueueJobDuration.WithLabelValues(job.Kind).Observe(time.Since(start).Seconds())
+	return err
+}
+
+// CollectStats scrapes queue depth (jobs by kind and state) and the oldest
+// available job's age into the metrics registry every interval until ctx is done,
+// starting immediately. River exposes no Go API for aggregate queue state, so it
+// reads river_job directly. Best-effort: a scrape error is logged, never fatal —
+// telemetry must not take the worker down. The oldest-available-age is the single
+// most important queue-health signal: extraction falling behind ingest drives the
+// pack freshness SLO.
+func (q *Queue) CollectStats(ctx context.Context, m *metrics.Registry, interval time.Duration) {
+	if m == nil || interval <= 0 {
+		return
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		q.scrapeStats(ctx, m)
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
+func (q *Queue) scrapeStats(ctx context.Context, m *metrics.Registry) {
+	// Depth by kind+state. Reset first so a kind/state pair that emptied since the last scrape drops to no
+	// series rather than reporting a stale count.
+	m.QueueDepth.Reset()
+	if rows, err := q.pool.Query(ctx, `SELECT kind, state::text, count(*) FROM river_job GROUP BY kind, state`); err != nil {
+		slog.WarnContext(ctx, "queue depth scrape failed", slog.Any("err", err))
+	} else {
+		for rows.Next() {
+			var kind, state string
+			var n int64
+			if err := rows.Scan(&kind, &state, &n); err != nil {
+				slog.WarnContext(ctx, "queue depth scan failed", slog.Any("err", err))
+				continue
+			}
+			m.QueueDepth.WithLabelValues(kind, state).Set(float64(n))
+		}
+		rows.Close()
+		// A mid-stream error ends the loop early, so after the Reset above the gauge would silently
+		// under-report backlog. Log it so a truncated scrape is observable, not mistaken for a clean read.
+		if err := rows.Err(); err != nil {
+			slog.WarnContext(ctx, "queue depth scrape truncated", slog.Any("err", err))
+		}
+	}
+
+	// Oldest available (ready-to-run) job age by kind — how far the worker is behind.
+	m.QueueOldestJobAge.Reset()
+	rows, err := q.pool.Query(ctx,
+		`SELECT kind, EXTRACT(EPOCH FROM (now() - min(scheduled_at))) FROM river_job WHERE state = 'available' GROUP BY kind`)
+	if err != nil {
+		slog.WarnContext(ctx, "queue oldest-age scrape failed", slog.Any("err", err))
+		return
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var kind string
+		var age float64
+		if err := rows.Scan(&kind, &age); err != nil {
+			slog.WarnContext(ctx, "queue oldest-age scan failed", slog.Any("err", err))
+			continue
+		}
+		m.QueueOldestJobAge.WithLabelValues(kind).Set(age)
+	}
+	if err := rows.Err(); err != nil {
+		slog.WarnContext(ctx, "queue oldest-age scrape truncated", slog.Any("err", err))
+	}
 }
 
 // Ping reports queue health for /healthz: the River schema must be migrated and

@@ -6,6 +6,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -25,6 +26,7 @@ import (
 	"github.com/lore-gpt/lore/server/internal/config"
 	"github.com/lore-gpt/lore/server/internal/embedding"
 	"github.com/lore-gpt/lore/server/internal/extraction"
+	"github.com/lore-gpt/lore/server/internal/telemetry"
 )
 
 func main() {
@@ -68,6 +70,31 @@ func buildEmbedder(ctx context.Context, cfg config.Config) (ext.Embedder, error)
 	})
 }
 
+// serveWorkerMetrics exposes /metrics on addr for the worker, which has no API
+// server of its own. It runs until ctx is done, then shuts down with a short
+// grace. A nil handler (metrics disabled) is a no-op. A bind failure is logged,
+// not fatal: telemetry is optional and must not take the worker down.
+func serveWorkerMetrics(ctx context.Context, addr string, handler http.Handler) {
+	if handler == nil {
+		return
+	}
+	mux := http.NewServeMux()
+	mux.Handle("/metrics", handler)
+	srv := &http.Server{Addr: addr, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+	go func() {
+		<-ctx.Done()
+		shutCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancel()
+		_ = srv.Shutdown(shutCtx)
+	}()
+	go func() {
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			slog.ErrorContext(ctx, "worker metrics listener failed", slog.String("addr", addr), slog.Any("error", err))
+		}
+	}()
+	slog.InfoContext(ctx, "worker metrics listener", slog.String("addr", addr))
+}
+
 func serveCmd() *cobra.Command {
 	var autoMigrate bool
 	cmd := &cobra.Command{
@@ -108,11 +135,18 @@ func serveCmd() *cobra.Command {
 				return err
 			}
 
+			// Build the metrics registry + /metrics handler; the server exposes the
+			// handler on its main port, unauthenticated beside /healthz.
+			meter, metricsHandler := telemetry.Build(telemetry.Config{
+				MetricsEnabled: cfg.MetricsEnabled, Version: core.Version, Role: "server",
+			})
+
 			srv, err := core.NewServer(ctx, core.Config{
 				Addr:                 cfg.Addr,
 				DatabaseURL:          cfg.DatabaseURL,
 				WorkmemMaxValueBytes: cfg.WorkmemMaxValueBytes,
-			}, core.WithWorkmem(wm), core.WithEmbedder(embedder))
+			}, core.WithWorkmem(wm), core.WithEmbedder(embedder),
+				core.WithMeterRegistry(meter), core.WithMetricsHandler(metricsHandler))
 			if err != nil {
 				wm.Close()
 				return err
@@ -166,9 +200,18 @@ func workerCmd() *cobra.Command {
 			}
 			slog.InfoContext(ctx, "working memory", slog.String("mode", wm.Mode().String()))
 
+			// The worker has no API server, so it exposes /metrics on its own listener
+			// (LORE_METRICS_ADDR). Build the registry, inject it for the job
+			// instrumentation, and serve the handler.
+			meter, metricsHandler := telemetry.Build(telemetry.Config{
+				MetricsEnabled: cfg.MetricsEnabled, Version: core.Version, Role: "worker",
+			})
+			serveWorkerMetrics(ctx, cfg.MetricsAddr, metricsHandler)
+
 			w, err := core.NewWorker(ctx, core.Config{
 				DatabaseURL: cfg.DatabaseURL,
-			}, core.WithExtractor(extractor), core.WithWorkmem(wm), core.WithEmbedder(embedder))
+			}, core.WithExtractor(extractor), core.WithWorkmem(wm), core.WithEmbedder(embedder),
+				core.WithMeterRegistry(meter))
 			if err != nil {
 				wm.Close()
 				return err

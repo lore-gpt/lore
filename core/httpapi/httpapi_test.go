@@ -12,7 +12,10 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 
+	"github.com/lore-gpt/lore/core/metrics"
 	"github.com/lore-gpt/lore/core/pack"
 	"github.com/lore-gpt/lore/core/retrieval"
 	"github.com/lore-gpt/lore/core/store/db"
@@ -148,6 +151,109 @@ func TestHealthzReportsEmbedderID(t *testing.T) {
 	}
 	if got.Embedder != "text-embedding-3-small@1536" {
 		t.Errorf("embedder = %q, want the composed model@dim identity", got.Embedder)
+	}
+}
+
+// TestMetricsEndpointAndRoutePatternLabel checks that /metrics serves the process
+// registry and that the HTTP middleware labels requests by the chi route TEMPLATE
+// (bounded) — never the raw path, which would make an id an unbounded label.
+func TestMetricsEndpointAndRoutePatternLabel(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	m := metrics.New(reg)
+	h := promhttp.HandlerFor(reg, promhttp.HandlerOpts{})
+	ok := fakePinger{}
+	handler := New(Config{DB: ok, Queue: ok, Version: "v-test", Metrics: m, MetricsHandler: h}).Handler()
+
+	do := func(method, path string) int {
+		rr := httptest.NewRecorder()
+		handler.ServeHTTP(rr, httptest.NewRequest(method, path, nil))
+		return rr.Code
+	}
+
+	// An authenticated route with an id segment, called WITHOUT a token: requireAuth
+	// 401s before any DB work, but chi has already matched the route, so the label
+	// must be the template, not the raw id.
+	if code := do(http.MethodGet, "/v1/memories/abc-123-not-a-label"); code != http.StatusUnauthorized {
+		t.Fatalf("GET /v1/memories/{id} without auth = %d, want 401", code)
+	}
+	// A route that matches nothing buckets as "unmatched" so arbitrary client paths never become labels.
+	if code := do(http.MethodGet, "/no/such/route"); code != http.StatusNotFound {
+		t.Fatalf("unmatched route = %d, want 404", code)
+	}
+
+	families, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("gather: %v", err)
+	}
+	routes := map[string]bool{}
+	for _, mf := range families {
+		if mf.GetName() != "lore_http_requests_total" {
+			continue
+		}
+		for _, metric := range mf.GetMetric() {
+			for _, lp := range metric.GetLabel() {
+				if lp.GetName() == "route" {
+					routes[lp.GetValue()] = true
+				}
+			}
+		}
+	}
+	if !routes["/v1/memories/{id}"] {
+		t.Errorf("route label should be the template /v1/memories/{id}; got routes %v", routes)
+	}
+	if !routes["unmatched"] {
+		t.Errorf("a 404 should bucket as route=unmatched; got routes %v", routes)
+	}
+	if routes["/v1/memories/abc-123-not-a-label"] {
+		t.Error("the raw path leaked into the route label — series-explosion risk")
+	}
+
+	// /metrics itself serves the registry and is excluded from the HTTP counters.
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("GET /metrics = %d, want 200", rr.Code)
+	}
+	if !strings.Contains(rr.Body.String(), "lore_http_requests_total") {
+		t.Error("/metrics body should expose lore_http_requests_total")
+	}
+	// Re-gather AFTER the scrape: the counter Inc happens after ServeHTTP writes the body, so asserting the
+	// scrape's own body is a false-green (it can't observe its own series yet). Gathering the registry after
+	// the request is what actually proves the /metrics route was never counted — it kills the mutant that
+	// deletes the exclusion guard.
+	families, err = reg.Gather()
+	if err != nil {
+		t.Fatalf("gather after scrape: %v", err)
+	}
+	for _, mf := range families {
+		if mf.GetName() != "lore_http_requests_total" {
+			continue
+		}
+		for _, metric := range mf.GetMetric() {
+			for _, lp := range metric.GetLabel() {
+				if lp.GetName() == "route" && lp.GetValue() == "/metrics" {
+					t.Error("the /metrics scrape was counted in the HTTP metrics — the exclusion guard is not working")
+				}
+			}
+		}
+	}
+}
+
+// TestMetricsDefaultsToNoop proves the middleware runs unconditionally: an API
+// built without a Metrics registry must still serve requests (nil coerces to noop).
+func TestMetricsDefaultsToNoop(t *testing.T) {
+	ok := fakePinger{}
+	handler := New(Config{DB: ok, Queue: ok, Version: "v-test"}).Handler() // no Metrics, no MetricsHandler
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("healthz with noop metrics = %d, want 200", rr.Code)
+	}
+	// No handler wired → /metrics is unregistered (404).
+	rr = httptest.NewRecorder()
+	handler.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	if rr.Code != http.StatusNotFound {
+		t.Errorf("GET /metrics with no handler = %d, want 404 (unregistered)", rr.Code)
 	}
 }
 
