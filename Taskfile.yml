@@ -12,6 +12,7 @@ vars:
   COMPOSE: infra/docker-compose.yml
   TS_DIR: clients/typescript
   PY_DIR: clients/python
+  MCP_DIR: clients/mcp
   IMAGE: ghcr.io/lore-gpt/lore
   GOLANGCI_VERSION: v2.12.2
   SQLC_VERSION: v1.31.1
@@ -31,6 +32,7 @@ tasks:
       - go mod download
       - cd clients/typescript && pnpm install
       - cd clients/python && uv sync
+      - cd clients/mcp && pnpm install
 
   sqlc:
     desc: Regenerate typed DB access code from SQL.
@@ -102,6 +104,21 @@ tasks:
       - cd {{.PY_DIR}} && uv run pytest
       - cd {{.PY_DIR}} && uv run python scripts/check_readme_hero.py
       - cd {{.PY_DIR}} && uvx ruff@0.14.4 check .
+
+  mcp:gen:
+    desc: Regenerate the committed MCP-server wire types from the OpenAPI spec (commit the result).
+    cmds:
+      - cd {{.MCP_DIR}} && pnpm run gen
+
+  mcp:build:
+    desc: Type-check and build the MCP server (tsc, ESM — dist/*.js incl. the lore-mcp bin).
+    cmds:
+      - cd {{.MCP_DIR}} && pnpm install && pnpm run build
+
+  mcp:test:
+    desc: Run the MCP-server checks (gen-drift, typecheck, node:test) — mirrors CI.
+    cmds:
+      - cd {{.MCP_DIR}} && pnpm install && pnpm run check
 
   compose:up:
     desc: Start the local stack (ParadeDB, Valkey, MinIO, server, worker), provision a first project, and wait until healthy.
