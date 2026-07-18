@@ -5,6 +5,9 @@ layer for multi-agent AI systems. Create runs, write events, and fetch read-your
 
 > 🚧 **Pre-release.** Lore is building in the open toward `v0.1`; this SDK tracks the live API.
 
+**Compatibility.** SDK `0.1.x` targets the Lore **v1** API (server `≥ 0.0.1`). The SDK and the server version
+independently — match on the API version, not the release number.
+
 ## Install
 
 ```bash

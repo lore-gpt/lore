@@ -26,6 +26,40 @@ open an issue, comment on an RFC, or send a patch — thank you.
   will guide you on your first PR). This keeps future licensing flexibility open and protects the project
   and its contributors.
 
+## Releasing the SDKs
+
+The TypeScript (`@loregpt/sdk` → npm) and Python (`loregpt` → PyPI) SDKs release together, in lockstep, from a
+`sdk-v*` tag (independent of the server image, which releases on `v*`). Publishing is **OIDC trusted
+publishing** — no registry token is stored in the repo.
+
+**One-time maintainer setup** (before the first release):
+
+- **npm** — create the `@loregpt` org, then add a Trusted Publisher on `@loregpt/sdk`:
+  - Repository: `lore-gpt/lore` · Workflow: `release-sdk.yml` · Environment: `release`
+- **PyPI** — add a Trusted Publisher (a *pending* publisher works before the project's first release) on
+  project `loregpt`:
+  - Owner/Repo: `lore-gpt/lore` · Workflow: `release-sdk.yml` · Environment: `release`
+- **GitHub** — create a `release` environment with **yourself as a required reviewer** (Settings →
+  Environments), so an irreversible publish waits for an explicit approval.
+
+**Cutting a release:**
+
+1. Bump the version in **both** `clients/typescript/package.json` and `clients/python/pyproject.toml` to the
+   same `X.Y.Z`; commit and merge to `main`.
+2. Tag and push: `git tag sdk-vX.Y.Z && git push origin sdk-vX.Y.Z`.
+3. The `build` job re-runs every SDK check, verifies the tag matches both versions, and writes a plan (package
+   names, version, spec commit, file lists) to the run summary. The `publish` job then waits in the `release`
+   environment — review the plan and approve. A post-publish job installs both packages from the registries and
+   constructs the client as a smoke check.
+
+**If something goes wrong:**
+
+- A check fails **before** publish → delete the tag, fix, and re-tag the *same* version (nothing was published,
+  so the version number is not burned).
+- A **partial** publish (one registry succeeded, the other failed) → that version is now taken on the succeeded
+  registry, so bump the patch (`X.Y.Z+1`), re-tag, and release again; both packages move to the new version and
+  stay in lockstep.
+
 ## The OSS and paid boundary
 
 Lore is **open-core**. The principle: **the engine is open; operations, governance depth, and
