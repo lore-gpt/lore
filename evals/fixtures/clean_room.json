@@ -1,0 +1,59 @@
+[
+  {
+    "question_id": "cr_ssu_01",
+    "question_type": "single-session-user",
+    "question": "What kind of pet did the user say they adopted?",
+    "answer": "A three-legged greyhound named Biscuit.",
+    "question_date": "2031/02/10 (Mon) 09:00",
+    "haystack_session_ids": ["cr_sess_a", "cr_sess_b"],
+    "haystack_dates": ["2031/01/04 (Sat) 14:20", "2031/01/19 (Sun) 11:05"],
+    "haystack_sessions": [
+      [
+        {"role": "user", "content": "I finally adopted a three-legged greyhound this weekend. His name is Biscuit.", "has_answer": true},
+        {"role": "assistant", "content": "Congratulations on adopting Biscuit! Three-legged greyhounds are wonderful companions."}
+      ],
+      [
+        {"role": "user", "content": "Any tips for a rainy-day indoor workout?"},
+        {"role": "assistant", "content": "Sure — a circuit of bodyweight squats, push-ups, and planks works well indoors."}
+      ]
+    ]
+  },
+  {
+    "question_id": "cr_ms_01",
+    "question_type": "multi-session",
+    "question": "Across our chats, which two cities did the user mention visiting for work?",
+    "answer": "Reykjavik and Montevideo.",
+    "question_date": "2031/03/01 (Sat) 18:00",
+    "haystack_session_ids": ["cr_sess_c", "cr_sess_d", "cr_sess_e"],
+    "haystack_dates": ["2031/02/02 (Sun) 08:30", "2031/02/15 (Sat) 20:10", "2031/02/22 (Sat) 07:45"],
+    "haystack_sessions": [
+      [
+        {"role": "user", "content": "Flying to Reykjavik next week for a client workshop.", "has_answer": true},
+        {"role": "assistant", "content": "Reykjavik is a great trip — pack layers, the weather shifts fast."}
+      ],
+      [
+        {"role": "user", "content": "What's a good gift to bring back from a work trip for a coworker?"},
+        {"role": "assistant", "content": "Something local and small — a specialty food or a nice notebook usually lands well."}
+      ],
+      [
+        {"role": "user", "content": "Back-to-back travel — Montevideo this time, another client site.", "has_answer": true},
+        {"role": "assistant", "content": "Montevideo has a lovely waterfront; try to catch a sunset on the Rambla."}
+      ]
+    ]
+  },
+  {
+    "question_id": "cr_ssu_02_abs",
+    "question_type": "single-session-user",
+    "question": "What did the user say their sailboat is named?",
+    "answer": "",
+    "question_date": "2031/03/10 (Mon) 12:00",
+    "haystack_session_ids": ["cr_sess_f"],
+    "haystack_dates": ["2031/02/28 (Fri) 16:00"],
+    "haystack_sessions": [
+      [
+        {"role": "user", "content": "Thinking about taking up kayaking this spring."},
+        {"role": "assistant", "content": "Kayaking is a great low-impact way to get on the water — start on calm, flat water."}
+      ]
+    ]
+  }
+]

@@ -1,0 +1,13 @@
+# Runtime artifacts — result reports, model outputs, and scores never enter the repo (measurement stays out
+# of source control; the number is published only when a parity slice lands).
+judge_cache/
+reports/
+.hf_cache/
+
+# Python / tooling
+__pycache__/
+*.pyc
+.venv/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
