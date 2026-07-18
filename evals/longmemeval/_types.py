@@ -69,3 +69,9 @@ class Provenance:
     answerer_model: str
     extraction_model: str
     generated_at: str  # stamped by the caller (the library never reads the clock)
+    # The system-under-test's ingestion mode and configuration — the fairness record. A score is only
+    # defensible next to how the system was driven: for Lore, whether ingestion ran realtime or the economy
+    # (batched) extraction mode; for a competitor, its package version + the configuration label the run used
+    # (default vs tuned). Empty when not applicable.
+    extraction_mode: str = ""
+    system_config: str = ""

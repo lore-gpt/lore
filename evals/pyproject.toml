@@ -17,6 +17,14 @@ dependencies = [
   "loregpt",
 ]
 
+# Competitor memory systems are heavy (their own vector/graph stacks) and only a real competitor run needs
+# them, so they are an optional extra rather than a base dependency — the keyless CI unit layer drives them
+# through fakes and never installs them. `pip install longmemeval-harness[competitors]` for a real run.
+[project.optional-dependencies]
+competitors = [
+  "mem0ai>=2.0,<3",
+]
+
 [project.urls]
 Repository = "https://github.com/lore-gpt/lore"
 Issues = "https://github.com/lore-gpt/lore/issues"
@@ -47,6 +55,12 @@ python_version = "3.10"
 strict = true
 warn_unreachable = true
 files = ["longmemeval", "tests"]
+
+# mem0ai is an optional extra (not installed in the keyless dev/CI env); the adapter types against the local
+# Mem0Like Protocol, not mem0's own types, so treat the package as untyped when it is absent.
+[[tool.mypy.overrides]]
+module = ["mem0.*"]
+ignore_missing_imports = true
 
 [tool.ruff]
 target-version = "py310"

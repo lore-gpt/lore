@@ -1,20 +1,24 @@
-"""Run the LongMemEval smoke against a real Lore stack.
+"""Run the LongMemEval harness against real memory systems, under one shared answerer + one shared judge.
 
-Staged and cost-conscious: start with `--dry-run` (no API calls — it loads the questions and prints the plan
-and a coarse cost estimate), then a small `--n 10` sanity run, then `--n 50`. The full 500-question, 3-trial
-run (with the Batch API for economy) is a later slice.
+Staged and cost-conscious:
+  --dry-run            no API calls; loads the questions and prints the plan + a coarse cost estimate (keyless).
+  --systems lore,mem0  which systems to score (default: lore).
+  --trials N           trials for the GATED answer-variance (default: 3).
+  --batch              route the answerer + judge through the Batch API (half rate — the full-run economy path).
+  --pipeline           also run the (non-gated) pipeline-variance on a fixed small subset.
 
-Requires a running Lore stack (serve + worker with LORE_EXTRACTION_PROVIDER=anthropic) plus three keys, all
-read from the environment:
-  LORE_API_KEY / LORE_BASE_URL   — the provisioned project the eval writes into
-  ANTHROPIC_API_KEY              — the answerer (and Lore's extractor)
-  OPENAI_API_KEY                 — the official GPT-4o judge
+The competitor answers through the SAME answerer and grades through the SAME judge as Lore — the parity is in
+the shared pipeline, not each vendor's bundled models. Report artifacts land under a gitignored directory; a
+bare number is never committed.
 
-Report artifacts land under a gitignored directory; a bare number is never committed.
+Real runs read keys from the environment:
+  LORE_API_KEY / LORE_BASE_URL   the lore system
+  OPENAI_API_KEY                 the shared GPT-4o judge (also Mem0's internal extraction LLM)
+  ANTHROPIC_API_KEY              the shared Claude answerer
 
     uv run python -m examples.smoke --dry-run
-    uv run python -m examples.smoke --split fixture --n 3
-    uv run python -m examples.smoke --split s --n 50
+    uv run python -m examples.smoke --split s --n 50 --systems lore --trials 3
+    uv run python -m examples.smoke --split s --n 500 --systems lore,mem0 --trials 3 --batch --pipeline
 """
 
 from __future__ import annotations
@@ -31,17 +35,23 @@ from longmemeval import (
     DEFAULT_ANSWERER_MODEL,
     DEFAULT_JUDGE_MODEL,
     PROMPT_HASH,
+    VARIANCE_ANSWER,
+    VARIANCE_PIPELINE,
     JudgeCache,
-    LoreAdapter,
+    Leaderboard,
     Provenance,
     Question,
-    TrialReport,
-    anthropic_answerer,
+    ResumeStore,
+    RunStats,
+    SystemReport,
+    VarianceResult,
     deterministic_subset,
     download_split,
     load_questions,
-    openai_judge,
-    run_trial,
+    run_variance_pipeline,
+    run_variance_pipeline_batched,
+    run_variance_reuse_ingest,
+    run_variance_reuse_ingest_batched,
 )
 
 _FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "clean_room.json"
@@ -53,11 +63,15 @@ def _load(split: str, cache_dir: Path) -> list[Question]:
     return load_questions(download_split(split, cache_dir / "hf"))
 
 
-def _estimate(questions: list[Question]) -> None:
-    turns = sum(len(s.turns) for q in questions for s in q.sessions)
-    ingest_chars = sum(len(t.content) for q in questions for s in q.sessions for t in s.turns)
-    print(f"plan: {len(questions)} question(s), {turns} turns to ingest (~{ingest_chars // 4} tokens)")
-    print(f"api calls: ~{len(questions)} answerer + {len(questions)} judge (pack-size-dependent tokens each)")
+def _estimate(systems: list[str], answer_qs: list[Question], pipeline_qs: list[Question], trials: int) -> None:
+    turns = sum(len(s.turns) for q in answer_qs for s in q.sessions)
+    per_system_answer = len(answer_qs) * trials
+    per_system_pipeline = len(pipeline_qs) * trials if pipeline_qs else 0
+    print(f"plan: {len(systems)} system(s) {systems}, {len(answer_qs)} questions x {trials} trials")
+    print(f"  ingest: ~{turns} turns per system (answer-variance ingests once; pipeline re-ingests each trial)")
+    print(f"  answer-variance: ~{per_system_answer} answerer + ~{per_system_answer} judge calls per system")
+    if pipeline_qs:
+        print(f"  pipeline-variance: ~{per_system_pipeline} answerer + ~{per_system_pipeline} judge calls per system")
     print("no API calls made (dry run).")
 
 
@@ -69,47 +83,167 @@ def _require(name: str) -> str:
     return value
 
 
+def _now() -> str:
+    return datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+
 def main() -> None:
-    parser = argparse.ArgumentParser(description="LongMemEval smoke against a real Lore stack")
+    parser = argparse.ArgumentParser(description="LongMemEval harness against real memory systems")
     parser.add_argument("--split", default="fixture", choices=["fixture", "s", "m", "oracle"])
-    parser.add_argument("--n", type=int, default=10)
+    parser.add_argument("--n", type=int, default=50, help="questions for the gated answer-variance")
+    parser.add_argument("--pipeline-n", type=int, default=50, help="fixed subset for the non-gated pipeline-variance")
+    parser.add_argument("--systems", default="lore", help="comma-separated: lore,mem0")
+    parser.add_argument("--trials", type=int, default=3)
+    parser.add_argument("--batch", action="store_true", help="use the Batch API for the answerer + judge")
+    parser.add_argument("--pipeline", action="store_true", help="also run the pipeline-variance")
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument(
+        "--quiet",
+        action="store_true",
+        help="print only the variance gate (PASS/FAIL) + cost, never the accuracy — for a public CI run where "
+        "the score stays in the gitignored artifact, not the logs",
+    )
     parser.add_argument("--judge-model", default=DEFAULT_JUDGE_MODEL)
     parser.add_argument("--answerer-model", default=os.environ.get("LORE_ANSWERER_MODEL", DEFAULT_ANSWERER_MODEL))
+    parser.add_argument("--extraction-mode", default="realtime", choices=["realtime", "economy"])
+    parser.add_argument("--lore-poll-timeout", type=float, default=0.0, help="0 = auto (60s realtime, 600s economy)")
+    parser.add_argument("--mem0-top-k", type=int, default=20)
     parser.add_argument("--report-dir", default="reports")
     parser.add_argument("--cache-dir", default="judge_cache")
+    parser.add_argument("--resume-dir", default="batch_resume")
     args = parser.parse_args()
 
-    questions = deterministic_subset(_load(args.split, Path(args.cache_dir)), args.n)
+    systems = [s.strip() for s in args.systems.split(",") if s.strip()]
+    all_questions = _load(args.split, Path(args.cache_dir))
+    answer_questions = deterministic_subset(all_questions, args.n)
+    pipeline_questions = deterministic_subset(all_questions, args.pipeline_n) if args.pipeline else []
+
     if args.dry_run:
-        _estimate(questions)
+        _estimate(systems, answer_questions, pipeline_questions, args.trials)
         return
 
+    # Real run: import the live clients + build the shared answerer/judge (kept out of the keyless dry-run).
     from anthropic import Anthropic
-    from loregpt import LoreClient
     from openai import OpenAI
 
-    lore = LoreClient(api_key=_require("LORE_API_KEY"), base_url=os.environ.get("LORE_BASE_URL", "http://localhost:8080"))
-    answerer = anthropic_answerer(Anthropic(api_key=_require("ANTHROPIC_API_KEY")), model=args.answerer_model)
-    judge = openai_judge(OpenAI(api_key=_require("OPENAI_API_KEY")), model=args.judge_model)
+    from longmemeval import AnthropicBatchProvider, Judge, OpenAIBatchProvider, anthropic_answerer, openai_judge
+    from longmemeval.answerer import ANSWER_MAX_TOKENS
+
+    anthropic = Anthropic(api_key=_require("ANTHROPIC_API_KEY"))
+    openai = OpenAI(api_key=_require("OPENAI_API_KEY"))
+    answerer = anthropic_answerer(anthropic, model=args.answerer_model)
+    judge: Judge = openai_judge(openai, model=args.judge_model)
     cache = JudgeCache(Path(args.cache_dir))
 
-    verdicts = run_trial(LoreAdapter(lore, answerer), questions, judge, cache)
-    provenance = Provenance(
-        dataset=DATASET_REPO if args.split != "fixture" else "clean-room-fixture",
-        dataset_revision=DATASET_REVISION if args.split != "fixture" else "n/a",
-        split=args.split,
-        n=len(questions),
-        judge_model=judge.model,
-        judge_prompt_hash=PROMPT_HASH,
-        answerer_model=args.answerer_model,
-        extraction_model=os.environ.get("LORE_EXTRACTION_MODEL", "unknown"),
-        generated_at=datetime.datetime.now(datetime.timezone.utc).isoformat(),
-    )
-    report = TrialReport("lore", provenance, tuple(verdicts), cache_hit_rate=cache.hit_rate)
-    stamp = provenance.generated_at.replace(":", "").replace("-", "")
-    report.write(Path(args.report_dir) / f"lore.{args.split}.n{len(questions)}.{stamp}.json")
-    print(report.markdown())
+    answer_batch = judge_batch = None
+    if args.batch:
+        answer_batch = AnthropicBatchProvider(
+            anthropic, args.answerer_model, name="answerer", max_tokens=ANSWER_MAX_TOKENS
+        )
+        judge_batch = OpenAIBatchProvider(openai, args.judge_model, name="judge", max_tokens=10)
+
+    poll_timeout = args.lore_poll_timeout or (600.0 if args.extraction_mode == "economy" else 60.0)
+    reports = []
+    for name in systems:
+        system, extraction_model, extraction_mode, system_config = _build_system(name, args, poll_timeout)
+        stats = RunStats()
+
+        if args.batch:
+            resume = ResumeStore(Path(args.resume_dir) / f"{name}.json")
+            answer_trials = run_variance_reuse_ingest_batched(
+                system,
+                answer_questions,
+                answer_batch,
+                judge,
+                judge_batch,
+                cache,
+                args.trials,
+                stats=stats,
+                resume=resume,
+            )
+        else:
+            answer_trials = run_variance_reuse_ingest(
+                system, answer_questions, answerer, judge, cache, args.trials, stats=stats
+            )
+        variance_answer = VarianceResult(VARIANCE_ANSWER, tuple(tuple(t) for t in answer_trials))
+
+        variance_pipeline = None
+        if args.pipeline:
+            if args.batch:
+                pipe_resume = ResumeStore(Path(args.resume_dir) / f"{name}.pipeline.json")
+                pipe_trials = run_variance_pipeline_batched(
+                    system, pipeline_questions, answer_batch, judge, judge_batch, cache, args.trials,
+                    stats=stats, resume=pipe_resume,
+                )
+            else:
+                pipe_trials = run_variance_pipeline(
+                    system, pipeline_questions, answerer, judge, cache, args.trials, stats=stats
+                )
+            variance_pipeline = VarianceResult(VARIANCE_PIPELINE, tuple(tuple(t) for t in pipe_trials))
+
+        provenance = Provenance(
+            dataset=DATASET_REPO if args.split != "fixture" else "clean-room-fixture",
+            dataset_revision=DATASET_REVISION if args.split != "fixture" else "n/a",
+            split=args.split,
+            n=len(answer_questions),
+            judge_model=judge.model,
+            judge_prompt_hash=PROMPT_HASH,
+            answerer_model=args.answerer_model,
+            extraction_model=extraction_model,
+            generated_at=_now(),
+            extraction_mode=extraction_mode,
+            system_config=system_config,
+        )
+        report = SystemReport(name, provenance, variance_answer, cache.hit_rate, stats, variance_pipeline)
+        stamp = provenance.generated_at.replace(":", "").replace("-", "")
+        out_path = Path(args.report_dir) / f"{name}.{args.split}.n{len(answer_questions)}.{stamp}.json"
+        report.write(out_path)
+        if args.quiet:
+            # Public-CI mode: the accuracy stays in the gitignored artifact; the logs carry only the stability
+            # gate and the cost, never the score.
+            print(f"{name}: answer-variance gate {'PASS' if report.passes_gate else 'FAIL'} (report -> {out_path})")
+            for line in stats.summary_lines():
+                print(f"  {line}")
+        else:
+            print(report.markdown())
+            print()
+        reports.append(report)
+
+    # The leaderboard shows accuracy, so it is only for a local/private run — never the public --quiet path.
+    if len(reports) > 1 and not args.quiet:
+        print(Leaderboard(tuple(reports)).markdown())
+
+
+def _build_system(name: str, args: argparse.Namespace, poll_timeout: float) -> tuple[object, str, str, str]:
+    """Construct a memory system + its fairness metadata (extraction_model, extraction_mode, system_config)."""
+    from longmemeval import LoreAdapter, Mem0Adapter
+
+    if name == "lore":
+        from loregpt import LoreClient
+
+        client = LoreClient(
+            api_key=_require("LORE_API_KEY"),
+            base_url=os.environ.get("LORE_BASE_URL", "http://localhost:8080"),
+        )
+        # Dogfooding: the operator runs the worker in this extraction mode; the adapter records it and waits on
+        # the matching cadence (economy distillation lands on a batch schedule).
+        lore = LoreAdapter(client, poll_timeout=poll_timeout)
+        # Record the retrieval-context budget so the fairness record makes each system's context size explicit
+        # (a cross-system delta could otherwise reflect a budget asymmetry rather than memory quality).
+        extraction_model = os.environ.get("LORE_EXTRACTION_MODEL", "unknown")
+        return lore, extraction_model, args.extraction_mode, f"retrieval token_budget={lore.token_budget}"
+
+    if name == "mem0":
+        from importlib.metadata import version
+
+        from mem0 import Memory
+
+        adapter = Mem0Adapter(Memory(), top_k=args.mem0_top_k)
+        # mem0 runs its own OpenAI-backed extraction on write; there is no separate "extraction mode".
+        config = f"mem0ai {version('mem0ai')} ({adapter.config_label}); retrieval top_k={adapter.top_k}"
+        return adapter, "mem0-internal", "", config
+
+    raise SystemExit(f"unknown system: {name!r} (expected lore or mem0)")
 
 
 if __name__ == "__main__":

@@ -6,11 +6,13 @@ dependency; it is not part of the Lore product."""
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING
 
 from ._types import Question
+from .batch import BatchProvider, BatchRequest, ResumeStore, run_batch
 from .cache import CacheKey, JudgeCache, JudgeDecision, hash_answer
+from .stats import RunStats, estimate_tokens
 
 if TYPE_CHECKING:
     from openai import OpenAI
@@ -103,35 +105,104 @@ class Judge:
         self.rubric_version = rubric_version
         self.prompt_hash = PROMPT_HASH
 
-    def score(self, question: Question, answer: str, cache: JudgeCache) -> JudgeDecision:
-        key = CacheKey(
+    def _key(self, question: Question, answer: str, variant: str = "") -> CacheKey:
+        return CacheKey(
             question_id=question.question_id,
             answer_hash=hash_answer(answer),
             judge_model=self.model,
             rubric_version=self.rubric_version,
+            variant=variant,
         )
-        cached = cache.get(key)
-        if cached is not None:
-            return cached
 
-        prompt = build_grading_prompt(
+    def _prompt(self, question: Question, answer: str) -> str:
+        return build_grading_prompt(
             question.question_type,
             question.question,
             question.answer,
             answer,
             abstention=question.is_abstention,
         )
-        raw = self._complete(prompt)
+
+    def _decision(self, raw: str) -> JudgeDecision:
         # Official label parsing: the judge is instructed to answer yes/no only.
-        correct = "yes" in raw.lower()
-        decision = JudgeDecision(
-            correct=correct,
+        return JudgeDecision(
+            correct="yes" in raw.lower(),
             reasoning=raw.strip(),
             judge_model=self.model,
             rubric_version=self.rubric_version,
         )
+
+    def score(self, question: Question, answer: str, cache: JudgeCache) -> JudgeDecision:
+        key = self._key(question, answer)
+        cached = cache.get(key)
+        if cached is not None:
+            return cached
+        decision = self._decision(self._complete(self._prompt(question, answer)))
         cache.put(key, decision)
         return decision
+
+    def score_many(
+        self,
+        pairs: Sequence[tuple[Question, str]],
+        cache: JudgeCache,
+        *,
+        batch: BatchProvider | None = None,
+        resume: ResumeStore | None = None,
+        resume_key: str | None = None,
+        sleep: Callable[[float], None] | None = None,
+        stats: RunStats | None = None,
+        variant: str = "",
+    ) -> dict[str, JudgeDecision]:
+        """Grade many (question, answer) pairs, returning question_id -> decision. Cache hits are served
+        without a model call; only cache misses are judged. With `batch=None` the misses are graded
+        synchronously (one call each); with a batch provider they are graded in ONE Batch-API job (the same
+        grading prompt bytes, matched back on question_id). Either way each fresh decision is cached, so a
+        re-run judges only genuinely new (answer, rubric, variant) pairs. `variant` scopes the cache (a variance
+        trial passes its index so each trial re-judges). `stats` records the judge call count by mode — a
+        Batch-API item the batch dropped and had to fill synchronously is counted as a sync call (it bills at
+        the full rate)."""
+        decisions: dict[str, JudgeDecision] = {}
+        misses: list[tuple[Question, str, CacheKey, str]] = []
+        for question, answer in pairs:
+            key = self._key(question, answer, variant)
+            cached = cache.get(key)
+            if cached is not None:
+                decisions[question.question_id] = cached
+                if stats is not None:
+                    stats.cache_hits += 1
+            else:
+                misses.append((question, answer, key, self._prompt(question, answer)))
+
+        if not misses:
+            return decisions
+
+        if stats is not None:
+            for _, _, _, prompt in misses:
+                stats.judge_input_tokens += estimate_tokens(prompt)
+
+        if batch is None:
+            if stats is not None:
+                stats.judge_sync_calls += len(misses)
+            for question, _answer, key, prompt in misses:
+                decision = self._decision(self._complete(prompt))
+                cache.put(key, decision)
+                decisions[question.question_id] = decision
+            return decisions
+
+        requests = [
+            BatchRequest(custom_id=question.question_id, system="", prompt=prompt)
+            for question, _answer, _key, prompt in misses
+        ]
+        outcome = run_batch(batch, requests, resume=resume, resume_key=resume_key, sleep=sleep)
+        if stats is not None:
+            fallbacks = len(outcome.fallback_ids)
+            stats.judge_batch_calls += len(misses) - fallbacks
+            stats.judge_sync_calls += fallbacks
+        for question, _answer, key, _prompt in misses:
+            decision = self._decision(outcome.results[question.question_id])
+            cache.put(key, decision)
+            decisions[question.question_id] = decision
+        return decisions
 
 
 def openai_judge(client: OpenAI, model: str = DEFAULT_JUDGE_MODEL) -> Judge:

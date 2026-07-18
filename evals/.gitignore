@@ -2,6 +2,7 @@
 # of source control; the number is published only when a parity slice lands).
 judge_cache/
 reports/
+batch_resume/
 .hf_cache/
 
 # Python / tooling

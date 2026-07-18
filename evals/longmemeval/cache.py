@@ -27,13 +27,17 @@ class JudgeDecision:
 
 @dataclass(frozen=True, slots=True)
 class CacheKey:
-    """The full identity of a judge decision. All four fields participate: a new answer, a new judge model, or
-    a bumped rubric version each forces a fresh judgement."""
+    """The full identity of a judge decision. A new answer, a new judge model, or a bumped rubric version each
+    forces a fresh judgement. `variant` distinguishes otherwise-identical judgements that must NOT share a
+    cache entry — a variance trial folds its trial index in here, so trial 2 re-judges the same answer rather
+    than being served trial 1's decision (a variance measurement must actually sample N times). It stays "" for
+    an ordinary single pass, where re-judging an unchanged answer is pure waste."""
 
     question_id: str
     answer_hash: str
     judge_model: str
     rubric_version: str
+    variant: str = ""
 
 
 class JudgeCache:
@@ -47,7 +51,8 @@ class JudgeCache:
 
     def _path(self, key: CacheKey) -> Path:
         safe_model = key.judge_model.replace("/", "_").replace(":", "_")
-        name = f"{key.question_id}.{key.answer_hash[:16]}.{safe_model}.{key.rubric_version}.json"
+        variant = f".{key.variant}" if key.variant else ""
+        name = f"{key.question_id}.{key.answer_hash[:16]}.{safe_model}.{key.rubric_version}{variant}.json"
         return self._root / name
 
     def get(self, key: CacheKey) -> JudgeDecision | None:

@@ -34,5 +34,7 @@ jobs:
       - name: ruff
         run: uvx ruff@0.14.4 check .
       # The smoke script must import, load the fixture, and plan without any key — a real keyed run is nightly.
+      # The dry-run exercises the full wiring (both systems, the batch + pipeline flags) so a plumbing break is
+      # caught keyless.
       - name: smoke dry-run (keyless)
-        run: uv run python -m examples.smoke --dry-run --split fixture --n 3
+        run: uv run python -m examples.smoke --dry-run --split fixture --n 3 --systems lore,mem0 --batch --pipeline
