@@ -20,6 +20,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/lore-gpt/lore/core/metrics"
 	"github.com/lore-gpt/lore/core/pack"
 	"github.com/lore-gpt/lore/core/workmem"
 )
@@ -69,6 +70,12 @@ type Config struct {
 	// EmbedderID is the composed embedder's model@dim identity, reported by /healthz so an operator can
 	// confirm the server and worker share one vector space. Empty is reported as an empty string.
 	EmbedderID string
+	// Metrics is the Prometheus instrument set the HTTP middleware observes into. A nil value coerces to a
+	// no-op registry so the middleware runs unconditionally.
+	Metrics *metrics.Registry
+	// MetricsHandler serves GET /metrics (the promhttp handler over the process registry). Nil leaves the
+	// route unregistered; when set it is exposed unauthenticated, beside /healthz.
+	MetricsHandler http.Handler
 }
 
 // API holds the wired dependencies and builds the router.
@@ -83,6 +90,8 @@ type API struct {
 	workmem              workmem.Store
 	workmemMaxValueBytes int
 	embedderID           string
+	metrics              *metrics.Registry
+	metricsHandler       http.Handler
 }
 
 // New returns an API bound to cfg. A nil Workmem coerces to the disabled no-op so
@@ -91,6 +100,10 @@ func New(cfg Config) *API {
 	wm := cfg.Workmem
 	if wm == nil {
 		wm = workmem.NewDisabled()
+	}
+	m := cfg.Metrics
+	if m == nil {
+		m = metrics.NewNoop()
 	}
 	return &API{
 		pool:                 cfg.Pool,
@@ -103,6 +116,8 @@ func New(cfg Config) *API {
 		workmem:              wm,
 		workmemMaxValueBytes: cfg.WorkmemMaxValueBytes,
 		embedderID:           cfg.EmbedderID,
+		metrics:              m,
+		metricsHandler:       cfg.MetricsHandler,
 	}
 }
 
@@ -114,8 +129,15 @@ func (a *API) Handler() http.Handler {
 	r.Use(middleware.RequestID)
 	r.Use(middleware.Recoverer)
 	r.Use(a.logRequests)
+	r.Use(a.recordMetrics)
 
 	r.Get("/healthz", a.handleHealthz)
+
+	// /metrics is unauthenticated (like /healthz) so a Prometheus scraper needs no credentials; operators
+	// bind it to an internal network and must not expose it publicly. Unregistered when no handler is wired.
+	if a.metricsHandler != nil {
+		r.Handle("/metrics", a.metricsHandler)
+	}
 
 	r.Group(func(r chi.Router) {
 		r.Use(a.requireAuth)

@@ -46,6 +46,13 @@ type Config struct {
 	// endpoint that needs no auth leaves it unset. It is LORE_-prefixed (not a
 	// provider-native name) because one adapter serves many backends.
 	EmbeddingAPIKey string // LORE_EMBEDDING_API_KEY
+
+	// Observability. MetricsEnabled exposes the Prometheus /metrics endpoint (on by
+	// default; the endpoint is unauthenticated like /healthz, so bind it to an
+	// internal network). MetricsAddr is the worker's dedicated /metrics listener
+	// (the server exposes /metrics on its main port; the worker has no HTTP server).
+	MetricsEnabled bool   // LORE_METRICS_ENABLED (default true)
+	MetricsAddr    string // LORE_METRICS_ADDR (default ":9090"; worker only)
 }
 
 // Load reads the configuration from the environment, applies defaults, and
@@ -68,6 +75,9 @@ func Load() (Config, error) {
 		EmbeddingDim:            getenvInt("LORE_EMBEDDING_DIM"),
 		EmbeddingSendDimensions: getenvBool("LORE_EMBEDDING_SEND_DIMENSIONS"),
 		EmbeddingAPIKey:         strings.TrimSpace(os.Getenv("LORE_EMBEDDING_API_KEY")),
+
+		MetricsEnabled: getenvBoolDefault("LORE_METRICS_ENABLED", true),
+		MetricsAddr:    getenv("LORE_METRICS_ADDR", ":9090"),
 	}
 
 	for _, req := range []struct{ name, val string }{
@@ -104,8 +114,16 @@ func getenvInt(key string) int {
 // getenvBool reports whether key is set to a truthy value ("1", "true", "yes",
 // "on", case-insensitively). Anything else — including unset — is false, so the
 // default is off.
-func getenvBool(key string) bool {
-	switch strings.ToLower(strings.TrimSpace(os.Getenv(key))) {
+func getenvBool(key string) bool { return getenvBoolDefault(key, false) }
+
+// getenvBoolDefault is getenvBool with a caller-chosen default for the unset case,
+// for a flag that should default on.
+func getenvBoolDefault(key string, def bool) bool {
+	v := strings.ToLower(strings.TrimSpace(os.Getenv(key)))
+	if v == "" {
+		return def
+	}
+	switch v {
 	case "1", "true", "yes", "on":
 		return true
 	default:

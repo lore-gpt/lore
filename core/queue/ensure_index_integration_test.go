@@ -15,6 +15,7 @@ import (
 
 	"github.com/lore-gpt/lore/core/ext"
 	"github.com/lore-gpt/lore/core/jobs"
+	"github.com/lore-gpt/lore/core/metrics"
 	"github.com/lore-gpt/lore/core/queue"
 	"github.com/lore-gpt/lore/core/store"
 	"github.com/lore-gpt/lore/core/store/db"
@@ -121,7 +122,7 @@ func TestPersisterEnqueuesIndexBuildOnFirstPin(t *testing.T) {
 func TestBackfillMissingIndexesEnqueuesPinnedWithoutIndex(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(ctx, t)
-	q, err := queue.NewWorker(st, ext.FixtureExtractor{}, ext.LWW{}, ext.FixtureEmbedder{}, workmem.NewDisabled())
+	q, err := queue.NewWorker(st, ext.FixtureExtractor{}, ext.LWW{}, ext.FixtureEmbedder{}, workmem.NewDisabled(), metrics.NewNoop())
 	if err != nil {
 		t.Fatalf("new worker queue: %v", err)
 	}
@@ -195,7 +196,7 @@ func ensureIndexJobProjects(ctx context.Context, t *testing.T, st *store.Store) 
 func TestEnsureIndexEndToEnd(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(ctx, t)
-	w, err := queue.NewWorker(st, ext.FixtureExtractor{}, ext.LWW{}, ext.FixtureEmbedder{}, workmem.NewDisabled())
+	w, err := queue.NewWorker(st, ext.FixtureExtractor{}, ext.LWW{}, ext.FixtureEmbedder{}, workmem.NewDisabled(), metrics.NewNoop())
 	if err != nil {
 		t.Fatalf("new worker: %v", err)
 	}

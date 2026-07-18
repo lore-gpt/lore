@@ -20,6 +20,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
+	"github.com/lore-gpt/lore/core/metrics"
 	"github.com/lore-gpt/lore/core/retrieval"
 	"github.com/lore-gpt/lore/core/store/db"
 	"github.com/lore-gpt/lore/core/workmem"
@@ -152,6 +153,7 @@ type Pack struct {
 	hybrid     *retrieval.Hybrid
 	workmem    workmem.Store
 	logger     *slog.Logger
+	metrics    *metrics.Registry
 	rawTailMax int
 }
 
@@ -163,6 +165,16 @@ func WithLogger(l *slog.Logger) Option {
 	return func(p *Pack) {
 		if l != nil {
 			p.logger = l
+		}
+	}
+}
+
+// WithMetrics sets the Prometheus instrument set; a nil registry is ignored (the
+// no-op default stays), so instrumentation runs unconditionally.
+func WithMetrics(m *metrics.Registry) Option {
+	return func(p *Pack) {
+		if m != nil {
+			p.metrics = m
 		}
 	}
 }
@@ -186,6 +198,7 @@ func New(hybrid *retrieval.Hybrid, wm workmem.Store, opts ...Option) *Pack {
 		hybrid:     hybrid,
 		workmem:    wm,
 		logger:     slog.Default(),
+		metrics:    metrics.NewNoop(),
 		rawTailMax: rawTailMax,
 	}
 	for _, o := range opts {
@@ -227,6 +240,9 @@ func (p *Pack) Build(ctx context.Context, tx pgx.Tx, projectID, runID pgtype.UUI
 	// real anomaly and still propagates.
 	results, _, err := p.hybrid.Retrieve(ctx, tx, projectID, req.Query, req.Filters, req.Limit)
 	if err != nil && !errors.Is(err, retrieval.ErrNoActiveModel) {
+		if errors.Is(err, retrieval.ErrModelMismatch) {
+			p.metrics.PackModelMismatch.Inc()
+		}
 		return Result{}, fmt.Errorf("retrieve: %w", err)
 	}
 
@@ -290,6 +306,20 @@ func (p *Pack) Build(ctx context.Context, tx pgx.Tx, projectID, runID pgtype.UUI
 	// end-to-end HTTP figure is a later observability increment); tokens_saved and pack_hash are NULL here.
 	if err := writeLog(ctx, q, projectID, runID, req, res, estSource, packed, time.Since(start)); err != nil {
 		return Result{}, fmt.Errorf("write pack log: %w", err)
+	}
+
+	// Metrics: the freshness lag is the read-your-writes SLO; the rest split the two truncation modes and the
+	// working-source degrade so a dashboard can tell a budget drop from a stalled-extraction tail.
+	p.metrics.PackBuildDuration.WithLabelValues(workingSource).Observe(time.Since(start).Seconds())
+	p.metrics.PackFreshnessLag.Observe(float64(freshness) / 1000)
+	if workingSource != workingLive {
+		p.metrics.PackDegrade.WithLabelValues(workingSource).Inc()
+	}
+	if budgetDropped {
+		p.metrics.PackBudgetExceeded.Inc()
+	}
+	if tailTruncated {
+		p.metrics.PackRawtailTruncate.Inc()
 	}
 
 	p.logger.DebugContext(ctx, "context pack built",

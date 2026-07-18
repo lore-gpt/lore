@@ -14,6 +14,7 @@ import (
 	pgvector "github.com/pgvector/pgvector-go"
 
 	"github.com/lore-gpt/lore/core/ext"
+	"github.com/lore-gpt/lore/core/metrics"
 	"github.com/lore-gpt/lore/core/store/db"
 )
 
@@ -140,6 +141,7 @@ type PGPersister struct {
 	adjudicator   ext.Adjudicator
 	embedder      ext.Embedder
 	indexEnqueuer IndexEnqueuer
+	metrics       *metrics.Registry
 }
 
 // PersisterOption configures an optional dependency of the persister.
@@ -152,11 +154,21 @@ func WithIndexEnqueuer(e IndexEnqueuer) PersisterOption {
 	return func(p *PGPersister) { p.indexEnqueuer = e }
 }
 
+// WithPersisterMetrics wires the Prometheus instrument set; a nil registry is ignored (the no-op default
+// stays), so instrumentation runs unconditionally.
+func WithPersisterMetrics(m *metrics.Registry) PersisterOption {
+	return func(p *PGPersister) {
+		if m != nil {
+			p.metrics = m
+		}
+	}
+}
+
 // NewPGPersister builds the OSS persister over a tenant-scoped transaction runner (the store), the
 // conflict-resolution policy, and the embedding provider. A downstream build injects a different
 // Adjudicator or Embedder without forking the persister.
 func NewPGPersister(store tenantRunner, adjudicator ext.Adjudicator, embedder ext.Embedder, opts ...PersisterOption) *PGPersister {
-	p := &PGPersister{store: store, adjudicator: adjudicator, embedder: embedder}
+	p := &PGPersister{store: store, adjudicator: adjudicator, embedder: embedder, metrics: metrics.NewNoop()}
 	for _, opt := range opts {
 		opt(p)
 	}
@@ -183,7 +195,10 @@ func (p *PGPersister) Persist(ctx context.Context, in PersistInput) error {
 		return err
 	}
 
-	return p.store.WithProject(ctx, in.ProjectID, func(tx pgx.Tx) error {
+	// Consolidation outcome counts, declared outside the transaction so they can be recorded to metrics only
+	// after the transaction commits (the closure accumulates them; a commit-phase failure discards them).
+	var inserted, exactMerged, nearMerged, grayZone int
+	err = p.store.WithProject(ctx, in.ProjectID, func(tx pgx.Tx) error {
 		q := db.New(tx)
 
 		// The entity context of this pass: every entity it touches (mentions and claim subjects). It both
@@ -259,7 +274,6 @@ func (p *PGPersister) Persist(ctx context.Context, in PersistInput) error {
 		// changed; an exact restatement leaves content and vector unchanged, so its embedding is not
 		// rewritten.
 		memoryBySeq := make(map[int64]pgtype.UUID, len(in.Memories))
-		var inserted, exactMerged, nearMerged, grayZone int
 		for _, m := range in.Memories {
 			res, err := consolidateMemory(ctx, q, in.ProjectID, names, m, memoryVectors[m.Content], p.embedder.ModelID())
 			if err != nil {
@@ -431,6 +445,35 @@ func (p *PGPersister) Persist(ctx context.Context, in PersistInput) error {
 			slog.Int("entities", len(in.Entities)))
 		return nil
 	})
+	p.recordPassOutcome(err)
+	if err == nil {
+		// Record the per-memory outcomes only after the commit succeeds, so the counters reflect the committed
+		// state (a commit-phase failure that rolled the rows back must not count them, and a River retry that
+		// re-runs the pass must not double-count).
+		p.metrics.ConsolidationMemories.WithLabelValues("inserted").Add(float64(inserted))
+		p.metrics.ConsolidationMemories.WithLabelValues("exact_merged").Add(float64(exactMerged))
+		p.metrics.ConsolidationMemories.WithLabelValues("near_merged").Add(float64(nearMerged))
+		p.metrics.ConsolidationMemories.WithLabelValues("gray_zone").Add(float64(grayZone))
+	}
+	return err
+}
+
+// recordPassOutcome records the consolidation pass result after the transaction resolves, so the outcome
+// reflects the committed state (not a pre-commit optimism). A checkpoint conflict and a write-side model
+// mismatch each get their own counter as well as folding into the pass result.
+func (p *PGPersister) recordPassOutcome(err error) {
+	switch {
+	case err == nil:
+		p.metrics.ConsolidationPass.WithLabelValues("committed").Inc()
+	case errors.Is(err, errCheckpointConflict):
+		p.metrics.ConsolidationCheckpointCnf.Inc()
+		p.metrics.ConsolidationPass.WithLabelValues("checkpoint_conflict").Inc()
+	case errors.Is(err, ErrModelMismatch):
+		p.metrics.ConsolidationModelMismatch.Inc()
+		p.metrics.ConsolidationPass.WithLabelValues("error").Inc()
+	default:
+		p.metrics.ConsolidationPass.WithLabelValues("error").Inc()
+	}
 }
 
 // SetRunBatch records a submitted batch's handle and covered seq on the run inside a tenant-scoped
