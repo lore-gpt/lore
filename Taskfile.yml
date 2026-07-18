@@ -127,7 +127,7 @@ tasks:
       - cd evals && uv run mypy
       - cd evals && uv run pytest
       - cd evals && uvx ruff@0.14.4 check .
-      - cd evals && uv run python -m examples.smoke --dry-run --split fixture --n 3
+      - cd evals && uv run python -m examples.smoke --dry-run --split fixture --n 3 --systems lore,mem0 --batch --pipeline
 
   compose:up:
     desc: Start the local stack (ParadeDB, Valkey, MinIO, server, worker), provision a first project, and wait until healthy.

@@ -1,7 +1,7 @@
-"""The Lore adapter: drive the Lore server as a memory system. Ingest the conversation into a run, wait for
-async distillation via Lore's OWN read-your-writes contract (poll `covered_seq` up to the last ingested seq —
-not a fixed sleep; the harness dogfoods RYW), pack context for the question, then answer with a separate
-model."""
+"""The Lore adapter: drive the Lore server as a memory system. Ingest the conversation into a fresh run, wait
+for async distillation via Lore's OWN read-your-writes contract (poll `covered_seq` up to the last ingested
+seq — not a fixed sleep; the harness dogfoods RYW), then pack context for the question. Answering is a shared
+harness step over the returned context, not the adapter's job."""
 
 from __future__ import annotations
 
@@ -11,7 +11,6 @@ from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING, Protocol
 
 from .._types import Session
-from ..answerer import Answerer
 from .base import MemorySystem
 
 if TYPE_CHECKING:
@@ -38,7 +37,6 @@ class LoreAdapter(MemorySystem):
     def __init__(
         self,
         client: LoreLike,
-        answerer: Answerer,
         *,
         token_budget: int = 2000,
         poll_interval: float = 0.5,
@@ -47,11 +45,12 @@ class LoreAdapter(MemorySystem):
     ) -> None:
         """`poll_interval` / `poll_timeout` bound the read-your-writes wait: distillation is polled every
         `poll_interval` seconds for up to `ceil(poll_timeout / poll_interval)` attempts (rounded up so the wait
-        never undershoots the requested timeout). `sleep` is injected so tests drive the poll deterministically;
-        it defaults to `time.sleep`."""
+        never undershoots the requested timeout). When the project runs Lore's economy (batched) extraction
+        mode — the dogfooded full-run path — distillation lands on a batch cadence, so a caller should raise
+        `poll_timeout` accordingly. `sleep` is injected so tests drive the poll deterministically; it defaults
+        to `time.sleep`."""
         self._client = client
-        self._answerer = answerer
-        self._token_budget = token_budget
+        self.token_budget = token_budget  # the retrieval-context budget — recorded in the fairness record
         self._poll_interval = poll_interval
         self._max_attempts = max(1, math.ceil(poll_timeout / poll_interval))
         self._sleep = sleep
@@ -87,7 +86,7 @@ class LoreAdapter(MemorySystem):
             return
         for attempt in range(self._max_attempts):
             pack = self._client.pack(
-                run_id=self._run_id, query=_PROBE_QUERY, min_seq=0, token_budget=self._token_budget
+                run_id=self._run_id, query=_PROBE_QUERY, min_seq=0, token_budget=self.token_budget
             )
             if pack.covered_seq >= last_seq:
                 return
@@ -98,13 +97,13 @@ class LoreAdapter(MemorySystem):
             f"~{self._max_attempts * self._poll_interval:.1f}s ({self._max_attempts} polls)",
         )
 
-    def answer(self, question: str, question_date: str) -> str:
+    def retrieve(self, question: str, question_date: str) -> str:
         if self._run_id is None:
-            raise RuntimeError("answer() called before ingest()")
+            raise RuntimeError("retrieve() called before ingest()")
         pack = self._client.pack(
             run_id=self._run_id,
             query=question,
             min_seq=self._last_seq,
-            token_budget=self._token_budget,
+            token_budget=self.token_budget,
         )
-        return self._answerer(pack.text, question, question_date)
+        return pack.text

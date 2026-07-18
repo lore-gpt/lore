@@ -1,0 +1,74 @@
+name: evals-nightly
+
+# The real, keyed LongMemEval run — scores Lore (and Mem0 OSS) through the shared judge on a schedule.
+#
+# DORMANT BY DEFAULT. It runs only when the repo variable `EVALS_NIGHTLY_ENABLED` is set to "true" AND the
+# required secrets are configured, so a fork or an un-provisioned repo never spends. To enable:
+#   - set repo variable EVALS_NIGHTLY_ENABLED = true
+#   - set secrets: OPENAI_API_KEY, ANTHROPIC_API_KEY, LORE_API_KEY, LORE_BASE_URL
+#     (LORE_BASE_URL points at a running Lore deployment; run its worker in economy extraction mode to dogfood
+#      the batched extraction path, and pass extraction_mode=economy below to record it.)
+#
+# RESULT PRIVACY: this repo is public. The run uses --quiet, so ONLY the stability gate (std<2 PASS/FAIL) and
+# call-count cost reach the logs — never the accuracy. The score stays in the gitignored report on the runner
+# and is NOT uploaded as an artifact. Publishing a number is a separate, measurement-gated decision.
+#
+# COST GUARDRAIL: the schedule runs a SMALL rotation (n=50, no pipeline-variance). The full n=500 + pipeline
+# run is manual only (workflow_dispatch with full=true).
+
+on:
+  schedule:
+    - cron: "0 4 * * *" # nightly, small rotation
+  workflow_dispatch:
+    inputs:
+      split:
+        description: "dataset split"
+        default: "s"
+        type: choice
+        options: ["s", "m"]
+      n:
+        description: "questions for the gated answer-variance"
+        default: "50"
+      full:
+        description: "full run (n=500 + pipeline-variance)"
+        default: false
+        type: boolean
+      extraction_mode:
+        description: "how the Lore worker is configured (recorded for fairness)"
+        default: "realtime"
+        type: choice
+        options: ["realtime", "economy"]
+
+permissions:
+  contents: read
+
+jobs:
+  nightly:
+    # Gate: dormant until the repo owner opts in. Secrets are checked at run time by the smoke script.
+    if: ${{ vars.EVALS_NIGHTLY_ENABLED == 'true' }}
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: evals
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.11.26"
+          python-version: "3.10"
+      # The competitor extra (mem0ai) is only needed for the real run.
+      - run: uv sync --extra competitors
+      - name: eval (quiet — gate + cost only, score stays in the gitignored report)
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          LORE_API_KEY: ${{ secrets.LORE_API_KEY }}
+          LORE_BASE_URL: ${{ secrets.LORE_BASE_URL }}
+          SPLIT: ${{ inputs.split || 's' }}
+          N: ${{ (inputs.full && '500') || inputs.n || '50' }}
+          MODE: ${{ inputs.extraction_mode || 'realtime' }}
+          PIPELINE: ${{ (inputs.full && '--pipeline') || '' }}
+        run: >
+          uv run python -m examples.smoke
+          --split "$SPLIT" --n "$N" --systems lore,mem0 --trials 3 --batch --quiet
+          --extraction-mode "$MODE" $PIPELINE

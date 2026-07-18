@@ -51,7 +51,7 @@ def _sessions() -> list[Session]:
 
 def test_ingest_writes_turns_with_role_and_date_prefix() -> None:
     fake = FakeLore(covered_after=1)
-    adapter = LoreAdapter(fake, answerer=lambda ctx, q, d: "x", sleep=lambda s: None)
+    adapter = LoreAdapter(fake, sleep=lambda s: None)
     adapter.ingest(_sessions())
     assert [agent for _, agent, _ in fake.writes] == ["user", "assistant", "user"]
     assert fake.writes[0][2] == "[2031/01/04] user: hi"
@@ -61,9 +61,7 @@ def test_ingest_writes_turns_with_role_and_date_prefix() -> None:
 def test_ryw_poll_waits_until_covered() -> None:
     fake = FakeLore(covered_after=3)  # covered_seq catches up on the 3rd probe
     sleeps: list[float] = []
-    adapter = LoreAdapter(
-        fake, answerer=lambda ctx, q, d: "x", sleep=sleeps.append, poll_interval=0.1, poll_timeout=10.0
-    )
+    adapter = LoreAdapter(fake, sleep=sleeps.append, poll_interval=0.1, poll_timeout=10.0)
     adapter.ingest(_sessions())
     probes = [p for p in fake.packs if p[0] == "distillation probe"]
     assert len(probes) == 3
@@ -71,26 +69,24 @@ def test_ryw_poll_waits_until_covered() -> None:
     assert sleeps == [0.1, 0.1]
 
 
-def test_answer_packs_with_read_your_writes_and_calls_answerer() -> None:
+def test_retrieve_packs_with_read_your_writes() -> None:
     fake = FakeLore(covered_after=1)
-    adapter = LoreAdapter(fake, answerer=lambda ctx, q, d: f"ANS<{q}|{ctx}>", sleep=lambda s: None)
+    adapter = LoreAdapter(fake, sleep=lambda s: None)
     adapter.ingest(_sessions())
-    out = adapter.answer("what?", "2031/02/01")
+    context = adapter.retrieve("what?", "2031/02/01")
     answer_pack = next(p for p in fake.packs if p[0] == "what?")
     assert answer_pack[1] == 3  # min_seq == the last ingested seq (read-your-writes)
-    assert out == "ANS<what?|PACK[what?]>"
+    assert context == "PACK[what?]"  # retrieve returns the pack context, not an answer
 
 
 def test_distillation_timeout_when_never_caught_up() -> None:
     fake = FakeLore(covered_after=999)
-    adapter = LoreAdapter(
-        fake, answerer=lambda ctx, q, d: "x", sleep=lambda s: None, poll_interval=0.1, poll_timeout=0.3
-    )
+    adapter = LoreAdapter(fake, sleep=lambda s: None, poll_interval=0.1, poll_timeout=0.3)
     with pytest.raises(DistillationTimeout):
         adapter.ingest(_sessions())
 
 
-def test_answer_before_ingest_raises() -> None:
-    adapter = LoreAdapter(FakeLore(), answerer=lambda ctx, q, d: "x")
+def test_retrieve_before_ingest_raises() -> None:
+    adapter = LoreAdapter(FakeLore())
     with pytest.raises(RuntimeError):
-        adapter.answer("q", "d")
+        adapter.retrieve("q", "d")

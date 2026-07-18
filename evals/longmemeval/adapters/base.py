@@ -1,5 +1,10 @@
-"""The memory-system-under-test interface. Every system the harness scores — Lore now, Mem0/Zep later —
-implements this one ABC, so adding a competitor is plugging in an adapter, never a harness change."""
+"""The memory-system-under-test interface. Every system the harness scores — Lore, Mem0, later Graphiti —
+implements this one ABC, so adding a competitor is plugging in an adapter, never a harness change.
+
+An adapter's job is MEMORY only: ingest a conversation, then retrieve the relevant context for a question. It
+does NOT answer. Answering (and judging) are shared harness steps applied identically to every system's
+retrieved context — that shared answerer is what makes a cross-system comparison a parity comparison rather
+than a comparison of each vendor's bundled answer model."""
 
 from __future__ import annotations
 
@@ -10,7 +15,7 @@ from .._types import Session
 
 
 class MemorySystem(ABC):
-    """A memory system under evaluation: ingest a conversation history, then answer a question from memory."""
+    """A memory system under evaluation: ingest a conversation history, then retrieve context for a question."""
 
     @property
     @abstractmethod
@@ -19,11 +24,13 @@ class MemorySystem(ABC):
 
     @abstractmethod
     def ingest(self, sessions: Sequence[Session]) -> None:
-        """Ingest a timestamped multi-session conversation history into the system's memory. Blocks until the
-        history is durably stored AND retrievable (each adapter is responsible for any async-distillation
-        wait, so `answer` sees a settled memory)."""
+        """Ingest a timestamped multi-session conversation history into a FRESH, isolated memory scope (a new
+        run/user per call, so re-ingesting the same history — as the pipeline-variance protocol does — never
+        contaminates a prior ingestion). Blocks until the history is durably stored AND retrievable (each
+        adapter owns any async-distillation wait, so `retrieve` sees a settled memory)."""
 
     @abstractmethod
-    def answer(self, question: str, question_date: str) -> str:
-        """Recall relevant memory for the question and produce a natural-language answer. `question_date` is the
-        wall-clock the question is asked at (some question types are temporal)."""
+    def retrieve(self, question: str, question_date: str) -> str:
+        """Recall the memory relevant to the question and return it as a plain-text context block (no answer
+        generation — the shared answerer turns this context into an answer). `question_date` is the wall-clock
+        the question is asked at (some question types are temporal)."""
