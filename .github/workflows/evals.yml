@@ -1,0 +1,38 @@
+name: evals
+
+# Keyless CI for the LongMemEval harness: type-check, unit tests, lint, and a dry-run of the smoke wiring
+# (which loads the questions and prints a plan without any API call). The real keyed run — against a live Lore
+# stack with the GPT-4o judge and the Anthropic answerer — is secret-gated and run manually / nightly, so it
+# never blocks a PR and forks never need secrets.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  unit:
+    name: evals (unit · keyless)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: evals
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.11.26"
+          python-version: "3.10"
+      # Installs the harness (editable) + the in-repo loregpt SDK path dependency + the dev group.
+      - run: uv sync
+      - name: mypy (strict)
+        run: uv run mypy
+      - name: test
+        run: uv run pytest
+      - name: ruff
+        run: uvx ruff@0.14.4 check .
+      # The smoke script must import, load the fixture, and plan without any key — a real keyed run is nightly.
+      - name: smoke dry-run (keyless)
+        run: uv run python -m examples.smoke --dry-run --split fixture --n 3
