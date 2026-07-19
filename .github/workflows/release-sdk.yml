@@ -29,7 +29,7 @@ jobs:
     outputs:
       version: ${{ steps.ver.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       # Version truth = the tag, verified against both committed package versions. A mismatch fails loud, so a
       # declared-vs-tagged drift can never be published silently (bump both packages to X.Y.Z before tagging
@@ -48,10 +48,10 @@ jobs:
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
       # --- TypeScript: the full CI mirror + build ---
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
         with:
           version: 11
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: pnpm
@@ -67,7 +67,7 @@ jobs:
           pnpm build
 
       # --- Python: the full CI mirror + build ---
-      - uses: astral-sh/setup-uv@v6
+      - uses: astral-sh/setup-uv@v7
         with:
           version: "0.11.26"
           python-version: "3.13"
@@ -118,13 +118,13 @@ jobs:
       contents: read
       id-token: write # OIDC — ONLY this job: npm provenance + PyPI trusted publishing, no stored token
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       # --- npm: OIDC trusted publishing (no token; provenance is automatic) ---
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
         with:
           version: 11
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
           # Points npm at the public registry for the OIDC exchange. NODE_AUTH_TOKEN is deliberately NOT set —
@@ -142,7 +142,7 @@ jobs:
           npm publish --access public
 
       # --- PyPI: OIDC trusted publishing ---
-      - uses: astral-sh/setup-uv@v6
+      - uses: astral-sh/setup-uv@v7
         with:
           version: "0.11.26"
           python-version: "3.13"
@@ -159,7 +159,7 @@ jobs:
     needs: [build, publish]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
       - name: npm install + construct (retry for propagation)
@@ -171,7 +171,7 @@ jobs:
             echo "npm not propagated yet (attempt ${attempt}); waiting…"; sleep 20
           done
           node --input-type=module -e "import { LoreClient } from '@loregpt/sdk'; new LoreClient({ apiKey: 'smoke' }); console.log('npm import + construct ok');"
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.13"
       - name: pip install + construct (retry for propagation)

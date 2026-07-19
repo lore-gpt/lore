@@ -20,8 +20,8 @@ jobs:
     name: go (vet · lint · test)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
         with:
           go-version: "1.26"
           cache: true
@@ -36,8 +36,8 @@ jobs:
     name: tenant-lint (project_id required · first isolation belt)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
         with:
           go-version: "1.26"
           cache: true
@@ -53,11 +53,11 @@ jobs:
       run:
         working-directory: clients/typescript
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v6
         with:
           version: 11
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: pnpm
@@ -84,11 +84,11 @@ jobs:
       run:
         working-directory: clients/mcp
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v6
         with:
           version: 11
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: pnpm
@@ -118,8 +118,8 @@ jobs:
       run:
         working-directory: clients/python
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v7
         with:
           version: "0.11.26"
           python-version: ${{ matrix.python-version }}
@@ -146,8 +146,8 @@ jobs:
     name: integration (testcontainers · ParadeDB)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
         with:
           go-version: "1.26"
           cache: true
@@ -175,7 +175,7 @@ jobs:
     name: forbidden-strings (criterion 7)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       # Fails if the placeholder token or the rejected product name leaks into the
       # tree. The [x] character classes keep this pattern from matching its own
       # source line, so every file — including this workflow — is scanned.
@@ -191,8 +191,8 @@ jobs:
     name: spec-lint (openapi)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
       # The redocly ruleset lives next to the spec (spec/redocly.yaml).
@@ -202,7 +202,7 @@ jobs:
     name: docker-build (image size · criterion 5)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: build distroless image
         run: docker build -f infra/Dockerfile -t lore:ci .
       # Budget for the single static distroless binary. It is a realistic ceiling for the full server —
@@ -226,8 +226,8 @@ jobs:
     name: import-smoke (open-core surface · criterion 8)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
         with:
           go-version: "1.26"
           cache: true
