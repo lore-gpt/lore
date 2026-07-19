@@ -72,8 +72,8 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * List memories.
-         * @description Not implemented yet.
+         * List (and optionally search) the project's memories.
+         * @description Lists the project's currently-valid memories (soft-deleted and superseded rows are excluded), newest first. Optional filters narrow by kind, run, trust tier, and review status. When `q` is set the endpoint runs a lexical full-text search over memory content and returns rank-ordered results; it uses ONLY the lexical index, so it needs no embedding model and works on a deployment that has never pinned one. Browse mode (no `q`) is keyset-paginated via `cursor`; search mode returns the first `limit` results. All reads are scoped to the API key's project.
          */
         get: operations["listMemories"];
         put?: never;
@@ -99,14 +99,14 @@ export interface paths {
         };
         /**
          * Get a memory.
-         * @description Not implemented yet.
+         * @description Returns one currently-valid memory by id, scoped to the API key's project. A soft-deleted, superseded, or unknown id — or one belonging to another project — is a 404 (the same response, so a key cannot probe for the existence of another project's memory).
          */
         get: operations["getMemory"];
         put?: never;
         post?: never;
         /**
-         * Delete a memory.
-         * @description Not implemented yet.
+         * Soft-delete a memory.
+         * @description Soft-deletes a memory by stamping its validity window closed. The row is retained (its version history stays inspectable) but drops immediately out of retrieval, packs, and this list — a soft delete, not an erasure. Idempotent per live row: deleting an already-deleted, superseded, or unknown memory (or one in another project) is a 404. Claims previously distilled from the memory keep their own lifecycle. Permanent erasure and cascading are a separate governance flow.
          */
         delete: operations["deleteMemory"];
         options?: never;
@@ -129,7 +129,7 @@ export interface paths {
         };
         /**
          * List a memory's version history.
-         * @description Not implemented yet.
+         * @description Returns the memory's version history oldest-first — each prior version's content and the reason it was superseded — so a client can render a diff. Scoped to the API key's project; an unknown memory (or one in another project) is a 404.
          */
         get: operations["listMemoryVersions"];
         put?: never;
@@ -171,7 +171,7 @@ export interface paths {
         };
         /**
          * Get a run's pack trace.
-         * @description Not implemented yet.
+         * @description Returns the run's context-pack history newest-first — one entry per pack built for the run, with the query, coverage, freshness, timing, and the memory ids that composed it. It is the audit substrate for reviewing what a run saw; comparing two entries (a diff) is a client concern. Keyset- paginated via `cursor`. Scoped to the API key's project; an unknown run (or one in another project) is a 404.
          */
         get: operations["getRunTrace"];
         put?: never;
@@ -317,6 +317,88 @@ export interface components {
             /** @description The pack section the memory appears in. */
             section: string;
         };
+        Memory: {
+            /** Format: uuid */
+            id: string;
+            /** @description Memory kind (working, semantic, episodic, procedural). */
+            kind: string;
+            /** @description The memory's current content. */
+            content: string;
+            /** @description The agent whose event this memory was distilled from. */
+            created_by_agent: string;
+            /**
+             * Format: date-time
+             * @description When the memory was created.
+             */
+            created_at: string;
+            /** @description Current version; increments each time the memory is superseded. */
+            version: number;
+            /** @description Provenance trust tier (e.g. normal). */
+            trust_tier: string;
+            /** @description Governance review status (e.g. auto_approved). */
+            review_status: string;
+            /** @description Access-scope keys the memory is visible under (empty = project-wide). */
+            scope_keys: string[];
+            /**
+             * Format: uuid
+             * @description The event this memory was distilled from; null for a non-extracted write.
+             */
+            source_event_id?: string | null;
+        };
+        MemoryListResponse: {
+            memories: components["schemas"]["Memory"][];
+            /** @description Whether more results exist beyond this page. */
+            has_more: boolean;
+            /** @description Opaque cursor for the next browse page; absent in search mode (q) and when there are no more results. */
+            next_cursor?: string | null;
+        };
+        MemoryVersion: {
+            /** @description The version number this history entry captures. */
+            version: number;
+            /** @description The content at this version. */
+            content: string;
+            /** @description What changed the memory to the next version (an agent or a policy). */
+            changed_by?: string | null;
+            /** @description Why this version was superseded by the next. */
+            reason?: string | null;
+            /** Format: date-time */
+            created_at: string;
+        };
+        MemoryVersionListResponse: {
+            /** @description Version history, oldest first. */
+            versions: components["schemas"]["MemoryVersion"][];
+        };
+        RunTraceEntry: {
+            /** Format: uuid */
+            id: string;
+            /** Format: date-time */
+            created_at: string;
+            /** @description The retrieval query the pack was built for. */
+            query: string;
+            /**
+             * Format: int64
+             * @description The run's extraction checkpoint at pack time.
+             */
+            covered_seq?: number | null;
+            /**
+             * Format: int64
+             * @description Age (ms) of the oldest not-yet-distilled event at pack time.
+             */
+            freshness_lag_ms?: number | null;
+            /** @description Server-side pack build time. */
+            latency_ms?: number | null;
+            /** @description The memories that composed the pack, in pack order. */
+            memory_ids: string[];
+            /** @description Byte-stable digest of the pack, when computed (else null). */
+            pack_hash?: string | null;
+        };
+        RunTraceResponse: {
+            packs: components["schemas"]["RunTraceEntry"][];
+            /** @description Whether more entries exist beyond this page. */
+            has_more: boolean;
+            /** @description Opaque cursor for the next page; absent when there are no more results. */
+            next_cursor?: string | null;
+        };
         Error: {
             message: string;
             code?: string;
@@ -325,6 +407,15 @@ export interface components {
     responses: {
         /** @description Not implemented yet. */
         NotImplemented: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["Error"];
+            };
+        };
+        /** @description A malformed request parameter — an invalid id, limit, cursor, or filter value. The code names which (invalid_id, invalid_limit, invalid_cursor, invalid_run_id). */
+        BadRequest: {
             headers: {
                 [name: string]: unknown;
             };
@@ -484,14 +575,47 @@ export interface operations {
     };
     listMemories: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Maximum memories to return (capped at 200). */
+                limit?: number;
+                /** @description Opaque keyset cursor from a previous response's `next_cursor`, for browse mode (ignored when `q` is set). */
+                cursor?: string;
+                /** @description Lexical full-text query over memory content. When set, results are rank-ordered and `next_cursor` is not returned (search returns the first `limit` matches). */
+                q?: string;
+                /** @description Restrict to one memory kind. */
+                kind?: "working" | "semantic" | "episodic" | "procedural";
+                /** @description Restrict to memories distilled from events in this run. */
+                run_id?: string;
+                /** @description Restrict to one provenance trust tier (e.g. normal). */
+                trust_tier?: string;
+                /** @description Restrict to one governance review status (e.g. auto_approved). */
+                review_status?: string;
+            };
             header?: never;
             path?: never;
             cookie?: never;
         };
         requestBody?: never;
         responses: {
-            501: components["responses"]["NotImplemented"];
+            /** @description A page of memories. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MemoryListResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            /** @description Missing or invalid API key. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
         };
     };
     createMemory: {
@@ -517,7 +641,25 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            501: components["responses"]["NotImplemented"];
+            /** @description The memory. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Memory"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            /** @description No such memory in this project. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
         };
     };
     deleteMemory: {
@@ -531,7 +673,23 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            501: components["responses"]["NotImplemented"];
+            /** @description The memory was soft-deleted. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["BadRequest"];
+            /** @description No such live memory in this project. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
         };
     };
     updateMemory: {
@@ -559,7 +717,25 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            501: components["responses"]["NotImplemented"];
+            /** @description The version history. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MemoryVersionListResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            /** @description No such memory in this project. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
         };
     };
     createRun: {
@@ -602,7 +778,12 @@ export interface operations {
     };
     getRunTrace: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Maximum pack entries to return (capped at 200). */
+                limit?: number;
+                /** @description Opaque keyset cursor from a previous response's `next_cursor`. */
+                cursor?: string;
+            };
             header?: never;
             path: {
                 id: components["parameters"]["IdPath"];
@@ -611,7 +792,25 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            501: components["responses"]["NotImplemented"];
+            /** @description A page of pack-trace entries. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunTraceResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            /** @description No such run in this project. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
         };
     };
     listPolicies: {

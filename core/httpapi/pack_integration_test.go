@@ -114,12 +114,12 @@ func TestPackEndpoint(t *testing.T) {
 		t.Errorf("fresh-project pack missing the pre-consolidation write in the raw tail:\n%s", respC.Text)
 	}
 
-	// --- Stubbed surfaces answer 501 (behind auth), not the router's 404 — spot-check several routes. ---
+	// --- The still-stubbed surfaces answer 501 (behind auth), not the router's 404. The memory list/get/versions/
+	// delete and run-trace routes are now implemented (see inspect_integration_test.go); only direct memory
+	// create/update and the policy surface remain stubbed. ---
 	for _, s := range []struct{ method, path string }{
-		{http.MethodGet, "/v1/memories"},
 		{http.MethodPost, "/v1/memories"},
-		{http.MethodGet, "/v1/memories/" + runA + "/versions"},
-		{http.MethodGet, "/v1/runs/" + runA + "/trace"},
+		{http.MethodPatch, "/v1/memories/" + runA},
 		{http.MethodGet, "/v1/policies"},
 	} {
 		req := httptest.NewRequest(s.method, s.path, nil)

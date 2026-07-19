@@ -160,13 +160,15 @@ func (a *API) Handler() http.Handler {
 
 		// Contracts that exist but land in a later increment answer 501 (not the router's 404), so a client
 		// sees the endpoint is real but unfinished. Registering them keeps the surface honest.
-		r.Get("/v1/memories", a.notImplemented)
+		r.Get("/v1/memories", a.handleListMemories)
+		r.Get("/v1/memories/{id}", a.handleGetMemory)
+		r.Delete("/v1/memories/{id}", a.handleDeleteMemory)
+		r.Get("/v1/memories/{id}/versions", a.handleListMemoryVersions)
+		r.Get("/v1/runs/{id}/trace", a.handleGetRunTrace)
+
+		// Direct memory create/update and the policy surface exist in the spec but land in a later increment.
 		r.Post("/v1/memories", a.notImplemented)
-		r.Get("/v1/memories/{id}", a.notImplemented)
 		r.Patch("/v1/memories/{id}", a.notImplemented)
-		r.Delete("/v1/memories/{id}", a.notImplemented)
-		r.Get("/v1/memories/{id}/versions", a.notImplemented)
-		r.Get("/v1/runs/{id}/trace", a.notImplemented)
 		r.Get("/v1/policies", a.notImplemented)
 	})
 
