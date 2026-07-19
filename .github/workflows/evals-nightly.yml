@@ -51,8 +51,8 @@ jobs:
       run:
         working-directory: evals
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v7
         with:
           version: "0.11.26"
           python-version: "3.10"
