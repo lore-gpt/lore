@@ -107,6 +107,33 @@ jobs:
       - name: build
         run: pnpm build
 
+  inspector:
+    name: inspector (@loregpt/inspector)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: inspector
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 11
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: inspector/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      # Regenerate the committed OpenAPI types and fail if the spec drifted without a regen.
+      - name: gen drift check
+        run: pnpm gen:check
+      # Biome lint + format check.
+      - name: check
+        run: pnpm check
+      # Type-check and build the standalone Next.js app.
+      - name: build
+        run: pnpm build
+
   python:
     name: python (loregpt)
     runs-on: ubuntu-latest
