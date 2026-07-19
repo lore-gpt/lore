@@ -48,6 +48,54 @@ class PackSource(TypedDict):
     section: str
 
 
+class Memory(TypedDict):
+    id: str
+    kind: str
+    content: str
+    created_by_agent: str
+    created_at: str
+    version: int
+    trust_tier: str
+    review_status: str
+    scope_keys: list[str]
+    source_event_id: NotRequired[str]
+
+
+class MemoryListResponse(TypedDict):
+    memories: list[Memory]
+    has_more: bool
+    next_cursor: NotRequired[str]
+
+
+class MemoryVersion(TypedDict):
+    version: int
+    content: str
+    changed_by: NotRequired[str]
+    reason: NotRequired[str]
+    created_at: str
+
+
+class MemoryVersionListResponse(TypedDict):
+    versions: list[MemoryVersion]
+
+
+class RunTraceEntry(TypedDict):
+    id: str
+    created_at: str
+    query: str
+    covered_seq: NotRequired[int]
+    freshness_lag_ms: NotRequired[int]
+    latency_ms: NotRequired[int]
+    memory_ids: list[str]
+    pack_hash: NotRequired[str]
+
+
+class RunTraceResponse(TypedDict):
+    packs: list[RunTraceEntry]
+    has_more: bool
+    next_cursor: NotRequired[str]
+
+
 class Error(TypedDict):
     message: str
     code: NotRequired[str]

@@ -6,8 +6,10 @@ info:
     HTTP API for Lore, the coordination memory layer for multi-agent AI systems.
 
     This is the source of truth from which the SDKs are generated. It exposes
-    health, event ingest, and the context-pack read path; the remaining memory,
-    version, run-trace, and policy surfaces are stubbed at 501 until they land.
+    health, event ingest, the context-pack read path, and the memory/run
+    inspection surfaces (list, view, version history, soft-delete, run trace).
+    Direct memory create/update and the policy surface are stubbed at 501 until
+    they land.
   license:
     name: Apache-2.0
     url: https://www.apache.org/licenses/LICENSE-2.0
@@ -168,12 +170,85 @@ paths:
   /v1/memories:
     get:
       operationId: listMemories
-      summary: List memories.
-      description: Not implemented yet.
+      summary: List (and optionally search) the project's memories.
+      description: >
+        Lists the project's currently-valid memories (soft-deleted and superseded
+        rows are excluded), newest first. Optional filters narrow by kind, run,
+        trust tier, and review status. When `q` is set the endpoint runs a
+        lexical full-text search over memory content and returns rank-ordered
+        results; it uses ONLY the lexical index, so it needs no embedding model
+        and works on a deployment that has never pinned one. Browse mode (no `q`)
+        is keyset-paginated via `cursor`; search mode returns the first `limit`
+        results. All reads are scoped to the API key's project.
       tags: [memories]
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 50
+          description: Maximum memories to return (capped at 200).
+        - name: cursor
+          in: query
+          required: false
+          schema:
+            type: string
+          description: >
+            Opaque keyset cursor from a previous response's `next_cursor`, for
+            browse mode (ignored when `q` is set).
+        - name: q
+          in: query
+          required: false
+          schema:
+            type: string
+          description: >
+            Lexical full-text query over memory content. When set, results are
+            rank-ordered and `next_cursor` is not returned (search returns the
+            first `limit` matches).
+        - name: kind
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [working, semantic, episodic, procedural]
+          description: Restrict to one memory kind.
+        - name: run_id
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+          description: Restrict to memories distilled from events in this run.
+        - name: trust_tier
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Restrict to one provenance trust tier (e.g. normal).
+        - name: review_status
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Restrict to one governance review status (e.g. auto_approved).
       responses:
-        "501":
-          $ref: "#/components/responses/NotImplemented"
+        "200":
+          description: A page of memories.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MemoryListResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          description: Missing or invalid API key.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
     post:
       operationId: createMemory
       summary: Create a memory.
@@ -188,11 +263,27 @@ paths:
     get:
       operationId: getMemory
       summary: Get a memory.
-      description: Not implemented yet.
+      description: >
+        Returns one currently-valid memory by id, scoped to the API key's
+        project. A soft-deleted, superseded, or unknown id — or one belonging to
+        another project — is a 404 (the same response, so a key cannot probe for
+        the existence of another project's memory).
       tags: [memories]
       responses:
-        "501":
-          $ref: "#/components/responses/NotImplemented"
+        "200":
+          description: The memory.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Memory"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          description: No such memory in this project.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
     patch:
       operationId: updateMemory
       summary: Update a memory.
@@ -203,23 +294,54 @@ paths:
           $ref: "#/components/responses/NotImplemented"
     delete:
       operationId: deleteMemory
-      summary: Delete a memory.
-      description: Not implemented yet.
+      summary: Soft-delete a memory.
+      description: >
+        Soft-deletes a memory by stamping its validity window closed. The row is
+        retained (its version history stays inspectable) but drops immediately
+        out of retrieval, packs, and this list — a soft delete, not an erasure.
+        Idempotent per live row: deleting an already-deleted, superseded, or
+        unknown memory (or one in another project) is a 404. Claims previously
+        distilled from the memory keep their own lifecycle. Permanent erasure and
+        cascading are a separate governance flow.
       tags: [memories]
       responses:
-        "501":
-          $ref: "#/components/responses/NotImplemented"
+        "204":
+          description: The memory was soft-deleted.
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          description: No such live memory in this project.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
   /v1/memories/{id}/versions:
     parameters:
       - $ref: "#/components/parameters/IdPath"
     get:
       operationId: listMemoryVersions
       summary: List a memory's version history.
-      description: Not implemented yet.
+      description: >
+        Returns the memory's version history oldest-first — each prior version's
+        content and the reason it was superseded — so a client can render a diff.
+        Scoped to the API key's project; an unknown memory (or one in another
+        project) is a 404.
       tags: [memories]
       responses:
-        "501":
-          $ref: "#/components/responses/NotImplemented"
+        "200":
+          description: The version history.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MemoryVersionListResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          description: No such memory in this project.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
   /v1/runs:
     post:
       operationId: createRun
@@ -256,11 +378,45 @@ paths:
     get:
       operationId: getRunTrace
       summary: Get a run's pack trace.
-      description: Not implemented yet.
+      description: >
+        Returns the run's context-pack history newest-first — one entry per pack
+        built for the run, with the query, coverage, freshness, timing, and the
+        memory ids that composed it. It is the audit substrate for reviewing what
+        a run saw; comparing two entries (a diff) is a client concern. Keyset-
+        paginated via `cursor`. Scoped to the API key's project; an unknown run
+        (or one in another project) is a 404.
       tags: [runs]
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 50
+          description: Maximum pack entries to return (capped at 200).
+        - name: cursor
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Opaque keyset cursor from a previous response's `next_cursor`.
       responses:
-        "501":
-          $ref: "#/components/responses/NotImplemented"
+        "200":
+          description: A page of pack-trace entries.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RunTraceResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          description: No such run in this project.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
   /v1/policies:
     get:
       operationId: listPolicies
@@ -287,6 +443,15 @@ components:
   responses:
     NotImplemented:
       description: Not implemented yet.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    BadRequest:
+      description: >-
+        A malformed request parameter — an invalid id, limit, cursor, or filter
+        value. The code names which (invalid_id, invalid_limit, invalid_cursor,
+        invalid_run_id).
       content:
         application/json:
           schema:
@@ -499,6 +664,167 @@ components:
         section:
           type: string
           description: The pack section the memory appears in.
+    Memory:
+      type: object
+      required:
+        - id
+        - kind
+        - content
+        - created_by_agent
+        - created_at
+        - version
+        - trust_tier
+        - review_status
+        - scope_keys
+      properties:
+        id:
+          type: string
+          format: uuid
+        kind:
+          type: string
+          description: Memory kind (working, semantic, episodic, procedural).
+        content:
+          type: string
+          description: The memory's current content.
+        created_by_agent:
+          type: string
+          description: The agent whose event this memory was distilled from.
+        created_at:
+          type: string
+          format: date-time
+          description: When the memory was created.
+        version:
+          type: integer
+          minimum: 1
+          description: Current version; increments each time the memory is superseded.
+        trust_tier:
+          type: string
+          description: Provenance trust tier (e.g. normal).
+        review_status:
+          type: string
+          description: Governance review status (e.g. auto_approved).
+        scope_keys:
+          type: array
+          items:
+            type: string
+          description: Access-scope keys the memory is visible under (empty = project-wide).
+        source_event_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: The event this memory was distilled from; null for a non-extracted write.
+    MemoryListResponse:
+      type: object
+      required:
+        - memories
+        - has_more
+      properties:
+        memories:
+          type: array
+          items:
+            $ref: "#/components/schemas/Memory"
+        has_more:
+          type: boolean
+          description: Whether more results exist beyond this page.
+        next_cursor:
+          type: string
+          nullable: true
+          description: >
+            Opaque cursor for the next browse page; absent in search mode (q) and
+            when there are no more results.
+    MemoryVersion:
+      type: object
+      required:
+        - version
+        - content
+        - created_at
+      properties:
+        version:
+          type: integer
+          minimum: 1
+          description: The version number this history entry captures.
+        content:
+          type: string
+          description: The content at this version.
+        changed_by:
+          type: string
+          nullable: true
+          description: What changed the memory to the next version (an agent or a policy).
+        reason:
+          type: string
+          nullable: true
+          description: Why this version was superseded by the next.
+        created_at:
+          type: string
+          format: date-time
+    MemoryVersionListResponse:
+      type: object
+      required:
+        - versions
+      properties:
+        versions:
+          type: array
+          items:
+            $ref: "#/components/schemas/MemoryVersion"
+          description: Version history, oldest first.
+    RunTraceEntry:
+      type: object
+      required:
+        - id
+        - created_at
+        - query
+        - memory_ids
+      properties:
+        id:
+          type: string
+          format: uuid
+        created_at:
+          type: string
+          format: date-time
+        query:
+          type: string
+          description: The retrieval query the pack was built for.
+        covered_seq:
+          type: integer
+          format: int64
+          nullable: true
+          description: The run's extraction checkpoint at pack time.
+        freshness_lag_ms:
+          type: integer
+          format: int64
+          nullable: true
+          description: Age (ms) of the oldest not-yet-distilled event at pack time.
+        latency_ms:
+          type: integer
+          nullable: true
+          description: Server-side pack build time.
+        memory_ids:
+          type: array
+          items:
+            type: string
+            format: uuid
+          description: The memories that composed the pack, in pack order.
+        pack_hash:
+          type: string
+          nullable: true
+          description: Byte-stable digest of the pack, when computed (else null).
+    RunTraceResponse:
+      type: object
+      required:
+        - packs
+        - has_more
+      properties:
+        packs:
+          type: array
+          items:
+            $ref: "#/components/schemas/RunTraceEntry"
+        has_more:
+          type: boolean
+          description: Whether more entries exist beyond this page.
+        next_cursor:
+          type: string
+          nullable: true
+          description: Opaque cursor for the next page; absent when there are no more results.
     Error:
       type: object
       required:

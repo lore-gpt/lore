@@ -135,6 +135,16 @@ curl -sX POST localhost:8080/v1/pack \
 # with the lore binary instead of curl:  lore pack --run-id "$RUN_ID" --query "auth work" --min-seq 1
 ```
 
+**Inspect what's stored** (read-only, project-scoped): browse or lexically search the distilled memories,
+view a memory's version history, soft-delete one, or replay a run's pack trace. Search uses only the lexical
+index, so it needs no embedding model:
+
+```bash
+curl -s "localhost:8080/v1/memories?limit=10"  -H "Authorization: Bearer $LORE_API_KEY"   # browse (keyset-paginated)
+curl -s "localhost:8080/v1/memories?q=auth"    -H "Authorization: Bearer $LORE_API_KEY"   # lexical search
+curl -s "localhost:8080/v1/runs/$RUN_ID/trace" -H "Authorization: Bearer $LORE_API_KEY"   # this run's pack history
+```
+
 **5 · Tear it down:**
 
 ```bash
