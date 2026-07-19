@@ -197,7 +197,10 @@ func (p *PGPersister) Persist(ctx context.Context, in PersistInput) error {
 
 	// Consolidation outcome counts, declared outside the transaction so they can be recorded to metrics only
 	// after the transaction commits (the closure accumulates them; a commit-phase failure discards them).
-	var inserted, exactMerged, nearMerged, grayZone int
+	var inserted, exactMerged, nearMerged, grayZone, bucketOverflows, lockedCount int
+	var lockWaited time.Duration
+	var simDecisions []string
+	var simCosines []float64
 	err = p.store.WithProject(ctx, in.ProjectID, func(tx pgx.Tx) error {
 		q := db.New(tx)
 
@@ -207,10 +210,13 @@ func (p *PGPersister) Persist(ctx context.Context, in PersistInput) error {
 		names := entityNames(in)
 
 		// Serialise the whole per-entity critical section before any write: lock every entity this pass
-		// touches, all at once, deadlock-free.
-		if err := acquireEntityLocks(ctx, q, uuidString(in.RunID), in.ProjectID, names); err != nil {
-			return err
+		// touches, all at once, deadlock-free. Capture the wait for the lock-contention metric.
+		lockedCount = len(names)
+		wait, lerr := acquireEntityLocks(ctx, q, uuidString(in.RunID), in.ProjectID, names)
+		if lerr != nil {
+			return lerr
 		}
+		lockWaited = wait
 
 		// Register mentioned entities up front so their names resolve to ids for the claims below.
 		entityIDs := make(map[string]pgtype.UUID, len(in.Entities))
@@ -289,6 +295,14 @@ func (p *PGPersister) Persist(ctx context.Context, in PersistInput) error {
 				if res.grayZone {
 					grayZone++
 				}
+			}
+			// Accumulate dedup-funnel telemetry to record after the pass commits.
+			if res.decision != "" {
+				simDecisions = append(simDecisions, res.decision)
+				simCosines = append(simCosines, res.cosine)
+			}
+			if res.bucketOverflow {
+				bucketOverflows++
 			}
 			if res.outcome != outcomeExactMerged {
 				if _, err := q.UpsertEmbedding(ctx, db.UpsertEmbeddingParams{
@@ -447,13 +461,22 @@ func (p *PGPersister) Persist(ctx context.Context, in PersistInput) error {
 	})
 	p.recordPassOutcome(err)
 	if err == nil {
-		// Record the per-memory outcomes only after the commit succeeds, so the counters reflect the committed
-		// state (a commit-phase failure that rolled the rows back must not count them, and a River retry that
-		// re-runs the pass must not double-count).
+		// Record the per-memory outcomes and dedup-funnel telemetry only after the commit succeeds, so the
+		// counters reflect the committed state (a commit-phase failure that rolled the rows back must not count
+		// them, and a River retry that re-runs the pass must not double-count).
 		p.metrics.ConsolidationMemories.WithLabelValues("inserted").Add(float64(inserted))
 		p.metrics.ConsolidationMemories.WithLabelValues("exact_merged").Add(float64(exactMerged))
 		p.metrics.ConsolidationMemories.WithLabelValues("near_merged").Add(float64(nearMerged))
 		p.metrics.ConsolidationMemories.WithLabelValues("gray_zone").Add(float64(grayZone))
+		for i, decision := range simDecisions {
+			p.metrics.ConsolidationSimilarity.WithLabelValues(decision).Observe(simCosines[i])
+		}
+		if bucketOverflows > 0 {
+			p.metrics.ConsolidationBucketOverflw.Add(float64(bucketOverflows))
+		}
+		if lockedCount > 0 {
+			p.metrics.ConsolidationLockWait.Observe(lockWaited.Seconds())
+		}
 	}
 	return err
 }

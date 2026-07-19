@@ -127,13 +127,13 @@ func entityNames(in PersistInput) []string {
 // advisory lock for every entity it touches, all at once and before any write. It times the acquire and
 // logs the wait, warning past advisoryLockWarnThreshold so contention is observable. An empty set is a
 // no-op (nothing to serialise), skipped so it costs no round-trip.
-func acquireEntityLocks(ctx context.Context, q *db.Queries, runID string, projectID pgtype.UUID, names []string) error {
+func acquireEntityLocks(ctx context.Context, q *db.Queries, runID string, projectID pgtype.UUID, names []string) (time.Duration, error) {
 	if len(names) == 0 {
-		return nil
+		return 0, nil
 	}
 	start := time.Now()
 	if err := q.AcquireEntityLocks(ctx, db.AcquireEntityLocksParams{ProjectID: projectID, EntityNames: names}); err != nil {
-		return fmt.Errorf("acquire entity locks: %w", err)
+		return 0, fmt.Errorf("acquire entity locks: %w", err)
 	}
 	waited := time.Since(start)
 	attrs := []any{slog.String("run_id", runID), slog.Int("entities", len(names)), slog.Duration("waited", waited)}
@@ -142,7 +142,7 @@ func acquireEntityLocks(ctx context.Context, q *db.Queries, runID string, projec
 	} else {
 		slog.DebugContext(ctx, "extract_run: advisory locks acquired", attrs...)
 	}
-	return nil
+	return waited, nil
 }
 
 // Near-duplicate dedup thresholds and bucket cap. Cosine similarity = 1 - cosine distance for the unit
@@ -186,11 +186,17 @@ const (
 )
 
 // consolidation is the result of consolidating one candidate: the id a same-event claim should link to,
-// how it was resolved, and whether a grey-band neighbour was seen (telemetry only).
+// how it was resolved, and whether a grey-band neighbour was seen (telemetry only). The remaining fields are
+// dedup-funnel telemetry for the caller to record after the pass commits: decision is the similarity outcome
+// (near_merge, gray_zone, distinct; empty when no similarity candidate was probed), cosine is the best
+// candidate's similarity at that decision, and bucketOverflow reports the scan cap was exceeded.
 type consolidation struct {
-	id       pgtype.UUID
-	outcome  dedupOutcome
-	grayZone bool
+	id             pgtype.UUID
+	outcome        dedupOutcome
+	grayZone       bool
+	decision       string
+	cosine         float64
+	bucketOverflow bool
 }
 
 // consolidateMemory deduplicates one distilled memory against the project's live memories, returning the
@@ -228,38 +234,47 @@ func consolidateMemory(ctx context.Context, q *db.Queries, projectID pgtype.UUID
 		return consolidation{}, fmt.Errorf("exact dedup probe: %w", err)
 	}
 
-	// Stage 2 — near duplicate within the entity bucket.
+	// Stage 2 — near duplicate within the entity bucket. decision/cosine/bucketOverflow are dedup-funnel
+	// telemetry returned to the caller (recorded after the pass commits); they stay zero when no similarity
+	// candidate was probed (an exact merge above, or an empty bucket below).
+	var decision string
+	var cosine float64
+	var bucketOverflow bool
 	sim, serr := q.FindNearestLiveMemoryInBucket(ctx, db.FindNearestLiveMemoryInBucketParams{
 		QueryVec: vec, ProjectID: projectID, ContextHash: contextHash, ModelID: modelID, ScanCap: dedupBucketScanCap,
 	})
 	switch {
 	case serr == nil:
-		if sim.BucketSize > int64(dedupBucketScanCap) {
+		bucketOverflow = sim.BucketSize > int64(dedupBucketScanCap)
+		if bucketOverflow {
 			slog.WarnContext(ctx, "consolidation: similarity bucket exceeded scan cap; members beyond it were not compared",
 				slog.Int64("bucket_size", sim.BucketSize), slog.Int("scan_cap", dedupBucketScanCap))
 		}
-		cosine := 1 - sim.Distance
+		cosine = 1 - sim.Distance
 		switch {
 		case sim.Distance <= nearMergeMaxDistance:
+			decision = "near_merge"
 			if merr := recordNearMerge(ctx, q, projectID, sim.ID, m, entityNames, contentHash, contextHash, cosine); merr != nil {
 				return consolidation{}, merr
 			}
 			slog.InfoContext(ctx, "consolidation: near-duplicate merged, incoming supersedes",
 				slog.String("memory_id", uuidString(sim.ID)), slog.Float64("cosine", cosine), slog.Int64("source_seq", m.SourceSeq))
-			return consolidation{id: sim.ID, outcome: outcomeNearMerged}, nil
+			return consolidation{id: sim.ID, outcome: outcomeNearMerged, decision: decision, cosine: cosine, bucketOverflow: bucketOverflow}, nil
 		case sim.Distance <= grayZoneMaxDistance:
 			// Grey band: recorded but not merged (L1). The score feeds the L2 threshold-tuning histogram.
+			decision = "gray_zone"
 			slog.InfoContext(ctx, "consolidation: near-duplicate below merge threshold, kept separate",
 				slog.Float64("cosine", cosine), slog.Int64("source_seq", m.SourceSeq))
 			id, ierr := insertDistilledMemory(ctx, q, projectID, m, contentHash, contextHash)
 			if ierr != nil {
 				return consolidation{}, ierr
 			}
-			return consolidation{id: id, outcome: outcomeInserted, grayZone: true}, nil
+			return consolidation{id: id, outcome: outcomeInserted, grayZone: true, decision: decision, cosine: cosine, bucketOverflow: bucketOverflow}, nil
 		}
-		// distance > grayZoneMaxDistance: no useful neighbour — fall through to insert.
+		// distance > grayZoneMaxDistance: a candidate existed but was too far to merge — a "distinct" decision.
+		decision = "distinct"
 	case errors.Is(serr, pgx.ErrNoRows):
-		// empty bucket — fall through to insert
+		// empty bucket — no candidate probed; fall through to insert with an empty decision.
 	default:
 		return consolidation{}, fmt.Errorf("similarity dedup probe: %w", serr)
 	}
@@ -269,7 +284,7 @@ func consolidateMemory(ctx context.Context, q *db.Queries, projectID pgtype.UUID
 	if ierr != nil {
 		return consolidation{}, ierr
 	}
-	return consolidation{id: id, outcome: outcomeInserted}, nil
+	return consolidation{id: id, outcome: outcomeInserted, decision: decision, cosine: cosine, bucketOverflow: bucketOverflow}, nil
 }
 
 // insertDistilledMemory inserts a fresh memory stamped with both fingerprints so the next pass finds it:

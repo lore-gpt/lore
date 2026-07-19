@@ -35,6 +35,12 @@ var (
 	queueWaitSeconds = []float64{0.05, 0.1, 0.5, 1, 5, 10, 30, 60, 300}
 	// candidateCounts brackets a retrieval leg's returned candidate count.
 	candidateCounts = []float64{1, 5, 10, 25, 50, 100, 250, 500}
+	// lockWaitSeconds spans the advisory-lock wait; the 0.25 s boundary is the
+	// alarm threshold for lock contention.
+	lockWaitSeconds = []float64{0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1}
+	// similarityCosine brackets the near-merge (0.92) and gray-zone (0.85) dedup
+	// thresholds so the decision boundary is legible for L2 threshold tuning.
+	similarityCosine = []float64{0.7, 0.8, 0.85, 0.88, 0.9, 0.92, 0.94, 0.96, 0.98, 1}
 )
 
 // Registry is the process's full set of typed instruments, registered against one
@@ -62,10 +68,13 @@ type Registry struct {
 	RetrievalLateEmbedErr  prometheus.Counter
 	RetrievalModelMismatch prometheus.Counter
 
-	// Consolidation / persist (write path). The dedup FUNNEL detail (per-decision cosine histogram,
-	// bucket-overflow, advisory-lock wait) lives in free functions the persister calls and is a follow-up;
-	// the pass-level outcome, per-memory outcome, and mismatch/conflict counters below cover write health.
-	ConsolidationMemories      *prometheus.CounterVec // [outcome]
+	// Consolidation / persist (write path). The pass-level outcome, per-memory outcome, and mismatch/conflict
+	// counters cover write health; the dedup FUNNEL detail (per-decision cosine histogram, bucket-overflow,
+	// advisory-lock wait) feeds L2 threshold tuning. All are recorded after the pass commits.
+	ConsolidationMemories      *prometheus.CounterVec   // [outcome]
+	ConsolidationSimilarity    *prometheus.HistogramVec // [decision]
+	ConsolidationBucketOverflw prometheus.Counter
+	ConsolidationLockWait      prometheus.Histogram
 	ConsolidationModelMismatch prometheus.Counter
 	ConsolidationCheckpointCnf prometheus.Counter
 	ConsolidationPass          *prometheus.CounterVec // [result]
@@ -75,6 +84,8 @@ type Registry struct {
 	ExtractEventsGated     prometheus.Counter
 	ExtractEventsExtracted prometheus.Counter
 	ExtractStateRouted     *prometheus.CounterVec // [lane]
+	// (ensure_index build outcomes are covered by lore_queue_jobs_total{kind="ensure_index"} + the queue-depth
+	// gauge, from the shared worker middleware — no dedicated counter is needed.)
 
 	// Queue lifecycle.
 	QueueJobs         *prometheus.CounterVec   // [kind, outcome]
@@ -155,6 +166,15 @@ func New(reg prometheus.Registerer) *Registry {
 		ConsolidationMemories: f.NewCounterVec(prometheus.CounterOpts{
 			Name: "lore_consolidation_memories_total", Help: "Consolidation outcomes per memory (inserted, exact_merged, near_merged, gray_zone).",
 		}, []string{"outcome"}),
+		ConsolidationSimilarity: f.NewHistogramVec(prometheus.HistogramOpts{
+			Name: "lore_consolidation_similarity_cosine", Help: "Best-candidate cosine similarity at a dedup decision (near_merge, gray_zone, distinct).", Buckets: similarityCosine,
+		}, []string{"decision"}),
+		ConsolidationBucketOverflw: f.NewCounter(prometheus.CounterOpts{
+			Name: "lore_consolidation_bucket_overflow_total", Help: "Dedup candidate scans that hit the bucket scan cap (members beyond it were not compared).",
+		}),
+		ConsolidationLockWait: f.NewHistogram(prometheus.HistogramOpts{
+			Name: "lore_consolidation_lock_wait_seconds", Help: "Advisory-lock acquisition wait during a consolidation pass.", Buckets: lockWaitSeconds,
+		}),
 		ConsolidationModelMismatch: f.NewCounter(prometheus.CounterOpts{
 			Name: "lore_consolidation_model_mismatch_total", Help: "Consolidation passes failed because the embedder model does not match the project's active model (write side).",
 		}),
