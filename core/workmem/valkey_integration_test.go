@@ -39,7 +39,35 @@ func startValkey(ctx context.Context, t *testing.T) (string, testcontainers.Cont
 	if err != nil {
 		t.Fatalf("valkey port: %v", err)
 	}
-	return "redis://" + host + ":" + port.Port(), ctr
+	url := "redis://" + host + ":" + port.Port()
+
+	// ForListeningPort only proves the port accepts a TCP connection — a beat before Valkey answers commands.
+	// valkey-go's client init (the RESP3 handshake) can still lose the tight 2s op timeout right after boot,
+	// under load, which intermittently degraded an Open/first-op the tests expect to be Healthy (the CI flake in
+	// TestValkeyStoreOpRedialsAndRecovers / TestValkeyStoreDegradesWhenUnreachable). Actively PING until the
+	// server answers a command, so the container is proven command-ready before any test dials it.
+	readyOpt, err := valkey.ParseURL(url)
+	if err != nil {
+		t.Fatalf("parse url for readiness probe: %v", err)
+	}
+	readyOpt.Dialer.Timeout = 5 * time.Second
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		c, derr := valkey.NewClient(readyOpt)
+		if derr == nil {
+			perr := c.Do(ctx, c.B().Ping().Build()).Error()
+			c.Close()
+			if perr == nil {
+				break
+			}
+			derr = perr
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("valkey never became command-ready within 30s: %v", derr)
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	return url, ctr
 }
 
 // TestValkeyStoreRoundTrip proves the Valkey-backed store against a real server: Set/Get/GetAll round
@@ -191,10 +219,21 @@ func TestValkeyStoreOpRedialsAndRecovers(t *testing.T) {
 		t.Fatalf("Mode() = %v before any successful op, want Degraded", vs.Mode())
 	}
 
-	// The first op must lazily create the client (ensureClient re-dial) and flip Healthy.
+	// An op must lazily create the client (ensureClient re-dial) and flip Healthy. The store self-heals ON USE —
+	// ensureClient re-dials on each op until one connects — so poll briefly rather than demanding the single first
+	// call beat a just-booted container: the contract is "recovers on use", not "the first call never races a cold
+	// dependency". A store that NEVER re-dials fails every attempt in the window, so the mutant is still killed.
 	k := Key{ProjectID: "p", RunID: "r", Entity: "e", Predicate: "pr"}
-	if err := vs.Set(ctx, k, Value{Value: []byte(`"x"`)}); err != nil {
-		t.Fatalf("Set (re-dial on first use): %v", err)
+	deadline := time.Now().Add(10 * time.Second)
+	var setErr error
+	for {
+		if setErr = vs.Set(ctx, k, Value{Value: []byte(`"x"`)}); setErr == nil || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	if setErr != nil {
+		t.Fatalf("Set (re-dial on use): %v", setErr)
 	}
 	if vs.Mode() != Healthy {
 		t.Errorf("Mode() = %v after a successful op, want Healthy (the op re-dials and records success)", vs.Mode())
