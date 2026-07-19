@@ -13,9 +13,11 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	pgvector "github.com/pgvector/pgvector-go"
+	"go.opentelemetry.io/otel/attribute"
 
 	"github.com/lore-gpt/lore/core/ext"
 	"github.com/lore-gpt/lore/core/metrics"
+	"github.com/lore-gpt/lore/core/obs"
 	"github.com/lore-gpt/lore/core/store/db"
 )
 
@@ -220,7 +222,19 @@ func NewHybrid(dense *Retriever, embedder ext.Embedder, opts ...HybridOption) *H
 // budget is dropped and the read proceeds on the remaining legs. The budget bounds only the embedding and
 // dense leg; the transaction-side legs (lexical, entity) run to completion — they share the one tenant
 // transaction, which cannot be used concurrently, so they are not raced against a timer.
-func (h *Hybrid) Retrieve(ctx context.Context, tx pgx.Tx, projectID pgtype.UUID, queryText string, filters Filters, limit int) ([]HybridResult, []LegStat, error) {
+func (h *Hybrid) Retrieve(ctx context.Context, tx pgx.Tx, projectID pgtype.UUID, queryText string, filters Filters, limit int) (results []HybridResult, legStats []LegStat, retErr error) {
+	// The business span for one hybrid retrieval, a child of pack.build. It records fusion shape (result and leg
+	// counts, dense path) as attributes — never the query text. A no-active-model result ends the span cleanly:
+	// an empty distilled retrieval is a normal state (a fresh project), not a failure.
+	ctx, span := obs.StartSpan(ctx, "retrieval.hybrid")
+	defer func() {
+		if retErr != nil && !errors.Is(retErr, ErrNoActiveModel) {
+			obs.End(span, retErr)
+			return
+		}
+		obs.End(span, nil)
+	}()
+
 	q := db.New(tx)
 
 	modelID, err := q.GetActiveModelID(ctx, projectID)
@@ -310,6 +324,18 @@ func (h *Hybrid) Retrieve(ctx context.Context, tx pgx.Tx, projectID pgtype.UUID,
 	reranked = append(reranked, tail...)
 	if limit >= 0 && len(reranked) > limit {
 		reranked = reranked[:limit]
+	}
+
+	span.SetAttributes(
+		attribute.Int("results", len(reranked)),
+		attribute.Int("legs", len(stats)),
+	)
+	for _, s := range stats {
+		if s.Name == "dense" {
+			// Status carries the dense query path (exact|iterative|hnsw) on success, or "timeout" when it missed
+			// the budget — the single most useful retrieval attribute for a trace.
+			span.SetAttributes(attribute.String("dense.path", s.Status))
+		}
 	}
 
 	h.logStats(ctx, projectID, stats)

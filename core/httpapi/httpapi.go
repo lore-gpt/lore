@@ -19,6 +19,9 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+	"go.opentelemetry.io/otel/trace"
+	tracenoop "go.opentelemetry.io/otel/trace/noop"
 
 	"github.com/lore-gpt/lore/core/metrics"
 	"github.com/lore-gpt/lore/core/pack"
@@ -76,6 +79,9 @@ type Config struct {
 	// MetricsHandler serves GET /metrics (the promhttp handler over the process registry). Nil leaves the
 	// route unregistered; when set it is exposed unauthenticated, beside /healthz.
 	MetricsHandler http.Handler
+	// Tracer is the OTel TracerProvider the HTTP server root span is recorded against. A nil value coerces to
+	// a no-op provider, so the server runs unchanged with tracing off (the default).
+	Tracer trace.TracerProvider
 }
 
 // API holds the wired dependencies and builds the router.
@@ -92,6 +98,7 @@ type API struct {
 	embedderID           string
 	metrics              *metrics.Registry
 	metricsHandler       http.Handler
+	tracer               trace.TracerProvider
 }
 
 // New returns an API bound to cfg. A nil Workmem coerces to the disabled no-op so
@@ -104,6 +111,10 @@ func New(cfg Config) *API {
 	m := cfg.Metrics
 	if m == nil {
 		m = metrics.NewNoop()
+	}
+	tp := cfg.Tracer
+	if tp == nil {
+		tp = tracenoop.NewTracerProvider()
 	}
 	return &API{
 		pool:                 cfg.Pool,
@@ -118,6 +129,7 @@ func New(cfg Config) *API {
 		embedderID:           cfg.EmbedderID,
 		metrics:              m,
 		metricsHandler:       cfg.MetricsHandler,
+		tracer:               tp,
 	}
 }
 
@@ -130,6 +142,7 @@ func (a *API) Handler() http.Handler {
 	r.Use(middleware.Recoverer)
 	r.Use(a.logRequests)
 	r.Use(a.recordMetrics)
+	r.Use(a.traceRoute)
 
 	r.Get("/healthz", a.handleHealthz)
 
@@ -157,5 +170,17 @@ func (a *API) Handler() http.Handler {
 		r.Get("/v1/policies", a.notImplemented)
 	})
 
-	return r
+	// Wrap the whole router in the OTel HTTP instrumentation: it opens the server root span (extracting any
+	// propagated trace context from the caller's headers), records method/target/status, and — by default —
+	// captures no request or response headers, so the Authorization bearer token cannot leak into a span.
+	// /healthz and /metrics are filtered out so infrastructure polling never floods the trace backend. The
+	// inner traceRoute middleware renames the span to "METHOD {route}" and tags http.route once chi has
+	// matched, keeping the span name low-cardinality (the {id} template, never the raw path). With tracing
+	// off (the no-op default) NewHandler adds no measurable overhead and exports nothing.
+	return otelhttp.NewHandler(r, "http.server",
+		otelhttp.WithTracerProvider(a.tracer),
+		otelhttp.WithFilter(func(req *http.Request) bool {
+			return req.URL.Path != "/healthz" && req.URL.Path != "/metrics"
+		}),
+	)
 }

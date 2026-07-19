@@ -72,6 +72,10 @@ services:
       LORE_EMBEDDING_DIM: "${LORE_EMBEDDING_DIM:-}"
       LORE_EMBEDDING_SEND_DIMENSIONS: "${LORE_EMBEDDING_SEND_DIMENSIONS:-}"
       LORE_EMBEDDING_API_KEY: "${LORE_EMBEDDING_API_KEY:-}"
+      # OpenTelemetry traces are off unless LORE_OTEL_ENABLED=true AND an OTLP endpoint
+      # is set; export both before `up` to ship traces to a collector.
+      LORE_OTEL_ENABLED: "${LORE_OTEL_ENABLED:-}"
+      OTEL_EXPORTER_OTLP_ENDPOINT: "${OTEL_EXPORTER_OTLP_ENDPOINT:-}"
     ports:
       # The container always listens on 8080; the host port is overridable via
       # LORE_HTTP_PORT for when 8080 is already taken (e.g. a local Apache/nginx).
@@ -99,6 +103,10 @@ services:
       LORE_EMBEDDING_DIM: "${LORE_EMBEDDING_DIM:-}"
       LORE_EMBEDDING_SEND_DIMENSIONS: "${LORE_EMBEDDING_SEND_DIMENSIONS:-}"
       LORE_EMBEDDING_API_KEY: "${LORE_EMBEDDING_API_KEY:-}"
+      # OpenTelemetry traces are off unless LORE_OTEL_ENABLED=true AND an OTLP endpoint
+      # is set; export both before `up` to ship traces to a collector.
+      LORE_OTEL_ENABLED: "${LORE_OTEL_ENABLED:-}"
+      OTEL_EXPORTER_OTLP_ENDPOINT: "${OTEL_EXPORTER_OTLP_ENDPOINT:-}"
     depends_on:
       paradedb:
         condition: service_healthy

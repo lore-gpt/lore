@@ -13,6 +13,8 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/lore-gpt/lore/core/apikey"
 	"github.com/lore-gpt/lore/core/store/db"
@@ -119,5 +121,32 @@ func (a *API) recordMetrics(next http.Handler) http.Handler {
 		status := strconv.Itoa(ww.Status())
 		a.metrics.HTTPRequests.WithLabelValues(route, r.Method, status).Inc()
 		a.metrics.HTTPDuration.WithLabelValues(route, r.Method, status).Observe(time.Since(start).Seconds())
+	})
+}
+
+// traceRoute enriches the otelhttp server span with the low-cardinality route TEMPLATE and the request id,
+// AFTER chi has matched the route — RoutePattern is empty before the inner handler runs, exactly like
+// recordMetrics, so the enrichment happens on the way back out. It renames the span to "METHOD {route}" (e.g.
+// "GET /v1/memories/{id}") so the trace backend groups by endpoint rather than exploding on the raw path, and
+// records http.route. It only READS the ambient span, never creates one: with tracing off (or on a filtered
+// route like /healthz) the span is non-recording and this is a cheap no-op. It records the request id as a
+// correlator and deliberately no header or body, so the Authorization bearer token cannot reach a span.
+func (a *API) traceRoute(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		next.ServeHTTP(w, r)
+
+		span := trace.SpanFromContext(r.Context())
+		if !span.IsRecording() {
+			return
+		}
+		route := chi.RouteContext(r.Context()).RoutePattern()
+		if route == "" {
+			route = "unmatched" // a 404: keep arbitrary client paths out of the span name
+		}
+		span.SetName(r.Method + " " + route)
+		span.SetAttributes(attribute.String("http.route", route))
+		if id := middleware.GetReqID(r.Context()); id != "" {
+			span.SetAttributes(attribute.String("request_id", id))
+		}
 	})
 }

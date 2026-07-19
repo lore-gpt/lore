@@ -14,6 +14,7 @@ import (
 	"github.com/riverqueue/river"
 	"github.com/testcontainers/testcontainers-go"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
+	tracenoop "go.opentelemetry.io/otel/trace/noop"
 
 	"github.com/lore-gpt/lore/core/ext"
 	"github.com/lore-gpt/lore/core/jobs"
@@ -199,7 +200,7 @@ func TestExtractRunWorkerEconomyBatchPath(t *testing.T) {
 func TestExtractRunCoalesces(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(ctx, t)
-	q, err := queue.New(st.Pool)
+	q, err := queue.New(st.Pool, tracenoop.NewTracerProvider())
 	if err != nil {
 		t.Fatalf("new queue: %v", err)
 	}
@@ -251,7 +252,7 @@ func TestExtractRunWorkerProcessesRun(t *testing.T) {
 	st := migratedStore(ctx, t)
 
 	rec := &recordingExtractor{ch: make(chan ext.ExtractInput, 1)}
-	w, err := queue.NewWorker(st, rec, ext.LWW{}, ext.FixtureEmbedder{}, workmem.NewDisabled(), metrics.NewNoop())
+	w, err := queue.NewWorker(st, rec, ext.LWW{}, ext.FixtureEmbedder{}, workmem.NewDisabled(), metrics.NewNoop(), tracenoop.NewTracerProvider())
 	if err != nil {
 		t.Fatalf("new worker: %v", err)
 	}
@@ -321,7 +322,7 @@ func TestExtractRunWorkerRetriesOnExtractorError(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(ctx, t)
 
-	w, err := queue.NewWorker(st, ext.FixtureExtractor{}, ext.LWW{}, ext.FixtureEmbedder{}, workmem.NewDisabled(), metrics.NewNoop())
+	w, err := queue.NewWorker(st, ext.FixtureExtractor{}, ext.LWW{}, ext.FixtureEmbedder{}, workmem.NewDisabled(), metrics.NewNoop(), tracenoop.NewTracerProvider())
 	if err != nil {
 		t.Fatalf("new worker: %v", err)
 	}
@@ -403,7 +404,7 @@ func TestExtractRunWorkerDebouncesUntilIdle(t *testing.T) {
 	st := migratedStore(ctx, t)
 
 	rec := &recordingExtractor{ch: make(chan ext.ExtractInput, 1)}
-	w, err := queue.NewWorker(st, rec, ext.LWW{}, ext.FixtureEmbedder{}, workmem.NewDisabled(), metrics.NewNoop()) // DefaultDebounce: 2s idle window
+	w, err := queue.NewWorker(st, rec, ext.LWW{}, ext.FixtureEmbedder{}, workmem.NewDisabled(), metrics.NewNoop(), tracenoop.NewTracerProvider()) // DefaultDebounce: 2s idle window
 	if err != nil {
 		t.Fatalf("new worker: %v", err)
 	}
@@ -560,7 +561,7 @@ func TestExtractRunPersistsMemory(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(ctx, t)
 
-	w, err := queue.NewWorker(st, ext.FixtureExtractor{}, ext.LWW{}, ext.FixtureEmbedder{}, workmem.NewDisabled(), metrics.NewNoop())
+	w, err := queue.NewWorker(st, ext.FixtureExtractor{}, ext.LWW{}, ext.FixtureEmbedder{}, workmem.NewDisabled(), metrics.NewNoop(), tracenoop.NewTracerProvider())
 	if err != nil {
 		t.Fatalf("new worker: %v", err)
 	}
@@ -646,7 +647,7 @@ func TestExtractRunCheckpointProcessesEachEventOnce(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(ctx, t)
 
-	w, err := queue.NewWorker(st, ext.FixtureExtractor{}, ext.LWW{}, ext.FixtureEmbedder{}, workmem.NewDisabled(), metrics.NewNoop())
+	w, err := queue.NewWorker(st, ext.FixtureExtractor{}, ext.LWW{}, ext.FixtureEmbedder{}, workmem.NewDisabled(), metrics.NewNoop(), tracenoop.NewTracerProvider())
 	if err != nil {
 		t.Fatalf("new worker: %v", err)
 	}
@@ -716,7 +717,7 @@ func TestExtractRunPersistsClaimAndEntity(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(ctx, t)
 
-	w, err := queue.NewWorker(st, ext.FixtureExtractor{}, ext.LWW{}, ext.FixtureEmbedder{}, workmem.NewDisabled(), metrics.NewNoop())
+	w, err := queue.NewWorker(st, ext.FixtureExtractor{}, ext.LWW{}, ext.FixtureEmbedder{}, workmem.NewDisabled(), metrics.NewNoop(), tracenoop.NewTracerProvider())
 	if err != nil {
 		t.Fatalf("new worker: %v", err)
 	}
@@ -794,7 +795,7 @@ func TestExtractRunClaimLWWWithinPass(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(ctx, t)
 
-	w, err := queue.NewWorker(st, ext.FixtureExtractor{}, ext.LWW{}, ext.FixtureEmbedder{}, workmem.NewDisabled(), metrics.NewNoop())
+	w, err := queue.NewWorker(st, ext.FixtureExtractor{}, ext.LWW{}, ext.FixtureEmbedder{}, workmem.NewDisabled(), metrics.NewNoop(), tracenoop.NewTracerProvider())
 	if err != nil {
 		t.Fatalf("new worker: %v", err)
 	}
@@ -879,7 +880,7 @@ func TestExtractRunWorkerFieldMergeComposition(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(ctx, t)
 
-	w, err := queue.NewWorker(st, ext.FixtureExtractor{}, ext.FieldMerge{}, ext.FixtureEmbedder{}, workmem.NewDisabled(), metrics.NewNoop())
+	w, err := queue.NewWorker(st, ext.FixtureExtractor{}, ext.FieldMerge{}, ext.FixtureEmbedder{}, workmem.NewDisabled(), metrics.NewNoop(), tracenoop.NewTracerProvider())
 	if err != nil {
 		t.Fatalf("new worker: %v", err)
 	}

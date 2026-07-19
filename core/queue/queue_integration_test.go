@@ -8,6 +8,7 @@ import (
 
 	"github.com/testcontainers/testcontainers-go"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
+	tracenoop "go.opentelemetry.io/otel/trace/noop"
 
 	"github.com/lore-gpt/lore/core/queue"
 	"github.com/lore-gpt/lore/core/store"
@@ -51,7 +52,7 @@ func TestMigrateAndPing(t *testing.T) {
 	}
 	t.Cleanup(st.Close)
 
-	q, err := queue.New(st.Pool)
+	q, err := queue.New(st.Pool, tracenoop.NewTracerProvider())
 	if err != nil {
 		t.Fatalf("new queue: %v", err)
 	}
