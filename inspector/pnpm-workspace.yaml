@@ -1,0 +1,5 @@
+# pnpm settings (pnpm 11 moved build-script approval out of package.json).
+# Approve sharp's build (Next.js's optional image-optimization native dep) so the
+# `pnpm run <script>` pre-run dependency check does not abort on an unapproved build.
+allowBuilds:
+  sharp: true
