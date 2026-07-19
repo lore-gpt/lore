@@ -5,6 +5,7 @@ import { redirect } from "next/navigation";
 
 import { getServerKey } from "@/lib/api/server-key";
 import { probeKey } from "@/lib/api/upstream";
+import { sanitizeNextPath } from "@/lib/nav";
 
 import { SESSION_COOKIE } from "./session";
 
@@ -46,7 +47,9 @@ export async function connect(formData: FormData): Promise<ConnectResult> {
     // Session cookie: no maxAge/expires, so it is cleared when the browser closes.
   });
 
-  redirect("/");
+  // Return to the originally-requested deep link when present (validated), else
+  // the overview.
+  redirect(sanitizeNextPath(String(formData.get("next") ?? "")) ?? "/");
 }
 
 // Clear the session cookie and return to the connect screen.
