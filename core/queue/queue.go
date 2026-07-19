@@ -24,6 +24,10 @@ import (
 	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/riverdriver/riverpgxv5"
 	"github.com/riverqueue/river/rivertype"
+	"github.com/riverqueue/rivercontrib/otelriver"
+	metricnoop "go.opentelemetry.io/otel/metric/noop"
+	"go.opentelemetry.io/otel/trace"
+	tracenoop "go.opentelemetry.io/otel/trace/noop"
 
 	"github.com/lore-gpt/lore/core/ext"
 	"github.com/lore-gpt/lore/core/jobs"
@@ -41,10 +45,38 @@ type Queue struct {
 	worker bool
 }
 
+// otelMiddleware is the River trace-context middleware. It propagates the W3C
+// trace context across the enqueue→work boundary by injecting it into the job's
+// Metadata (never the args, so per-run coalescing is preserved) and re-starting
+// the span in the worker. It is deliberately trace-only: a no-op MeterProvider so
+// it emits no OpenTelemetry metrics — job metrics come from the Prometheus
+// registry. A no-op TracerProvider (tracing off) makes propagation a no-op.
+func otelMiddleware(tp trace.TracerProvider) rivertype.Middleware {
+	return otelriver.NewMiddleware(otelMiddlewareConfig(tp))
+}
+
+// otelMiddlewareConfig builds the otelriver configuration, split out so a unit test can pin the two invariants
+// the middleware depends on: EnableTracePropagation MUST be true (otelriver injects the trace context into job
+// Metadata only when it is set — off silently breaks cross-queue linking) and MeterProvider MUST be the no-op
+// (a nil MeterProvider falls back to the GLOBAL meter, whose OTel job metrics would double-count the Prometheus
+// job metrics). A nil TracerProvider coerces to the no-op so a caller can pass it unconditionally with tracing off.
+func otelMiddlewareConfig(tp trace.TracerProvider) *otelriver.MiddlewareConfig {
+	if tp == nil {
+		tp = tracenoop.NewTracerProvider()
+	}
+	return &otelriver.MiddlewareConfig{
+		EnableTracePropagation: true,
+		TracerProvider:         tp,
+		MeterProvider:          metricnoop.NewMeterProvider(),
+	}
+}
+
 // New builds an insert-only River client for the server. It can enqueue via
 // InsertTx but has no queues or workers, so Start is rejected.
-func New(pool *pgxpool.Pool) (*Queue, error) {
-	client, err := river.NewClient(riverpgxv5.New(pool), &river.Config{})
+func New(pool *pgxpool.Pool, tp trace.TracerProvider) (*Queue, error) {
+	client, err := river.NewClient(riverpgxv5.New(pool), &river.Config{
+		Middleware: []rivertype.Middleware{otelMiddleware(tp)},
+	})
 	if err != nil {
 		return nil, fmt.Errorf("create river client: %w", err)
 	}
@@ -58,7 +90,7 @@ func New(pool *pgxpool.Pool) (*Queue, error) {
 // and embeds stored memories with the given Embedder. The working-memory store
 // routes kind:"state" events (hot lane when healthy, a durable claim otherwise).
 // `lore worker` uses this and calls Start.
-func NewWorker(st *store.Store, extractor ext.Extractor, adjudicator ext.Adjudicator, embedder ext.Embedder, wm workmem.Store, m *metrics.Registry) (*Queue, error) {
+func NewWorker(st *store.Store, extractor ext.Extractor, adjudicator ext.Adjudicator, embedder ext.Embedder, wm workmem.Store, m *metrics.Registry, tp trace.TracerProvider) (*Queue, error) {
 	if m == nil {
 		m = metrics.NewNoop()
 	}
@@ -86,7 +118,7 @@ func NewWorker(st *store.Store, extractor ext.Extractor, adjudicator ext.Adjudic
 			jobs.IndexQueue: {MaxWorkers: 1},
 		},
 		Workers:    workers,
-		Middleware: []rivertype.Middleware{&jobMetricsMiddleware{m: m}},
+		Middleware: []rivertype.Middleware{&jobMetricsMiddleware{m: m}, otelMiddleware(tp)},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create river worker client: %w", err)

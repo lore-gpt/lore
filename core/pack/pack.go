@@ -19,8 +19,10 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"go.opentelemetry.io/otel/attribute"
 
 	"github.com/lore-gpt/lore/core/metrics"
+	"github.com/lore-gpt/lore/core/obs"
 	"github.com/lore-gpt/lore/core/retrieval"
 	"github.com/lore-gpt/lore/core/store/db"
 	"github.com/lore-gpt/lore/core/workmem"
@@ -214,7 +216,21 @@ func New(hybrid *retrieval.Hybrid, wm workmem.Store, opts ...Option) *Pack {
 // uncovered events — computes the coverage and freshness lag, renders the deterministic pack, and inserts the
 // pack_logs trace on the SAME transaction so a pack and its trace commit together (no unaccounted packs). The
 // caller wraps this in store.WithProject(projectID, ...) so RLS scopes every read and the insert.
-func (p *Pack) Build(ctx context.Context, tx pgx.Tx, projectID, runID pgtype.UUID, req Request) (Result, error) {
+func (p *Pack) Build(ctx context.Context, tx pgx.Tx, projectID, runID pgtype.UUID, req Request) (res Result, err error) {
+	// The business span for one pack build, a child of the HTTP server span. It records pack shape (counts,
+	// freshness, working source, truncation) as attributes — never the query text or any retrieved content.
+	ctx, span := obs.StartSpan(ctx, "pack.build")
+	defer func() {
+		// A min_seq past the run head is a client-input 4xx (MinSeqOutOfRangeError), not a server fault: keep the
+		// span green so trace-based server-error signals don't count a caller mistake as a pack failure.
+		var badReq *MinSeqOutOfRangeError
+		if err != nil && !errors.As(err, &badReq) {
+			obs.End(span, err)
+			return
+		}
+		obs.End(span, nil)
+	}()
+
 	start := time.Now()
 	q := db.New(tx)
 
@@ -292,7 +308,7 @@ func (p *Pack) Build(ctx context.Context, tx pgx.Tx, projectID, runID pgtype.UUI
 		saved = 0
 	}
 
-	res := Result{
+	res = Result{
 		Text:           text,
 		Sources:        sources,
 		CoveredSeq:     coveredSeq,
@@ -322,6 +338,14 @@ func (p *Pack) Build(ctx context.Context, tx pgx.Tx, projectID, runID pgtype.UUI
 		p.metrics.PackRawtailTruncate.Inc()
 	}
 
+	span.SetAttributes(
+		attribute.Int64("covered_seq", coveredSeq),
+		attribute.Int64("freshness_lag_ms", freshness),
+		attribute.String("working_source", workingSource),
+		attribute.Int("sources", len(sources)),
+		attribute.Int("raw_tail", len(tail)),
+		attribute.Bool("truncated", res.Truncated),
+	)
 	p.logger.DebugContext(ctx, "context pack built",
 		"covered_seq", coveredSeq, "freshness_lag_ms", freshness, "sources", len(sources),
 		"working_source", workingSource, "raw_tail", len(tail), "truncated", res.Truncated)

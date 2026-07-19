@@ -70,6 +70,17 @@ func buildEmbedder(ctx context.Context, cfg config.Config) (ext.Embedder, error)
 	})
 }
 
+// flushTracing flushes and stops the tracer's exporter with a short grace so the
+// final spans are exported before the process exits. It is a no-op when tracing is
+// off, so it is always deferred.
+func flushTracing(tel telemetry.Telemetry) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := tel.Shutdown(ctx); err != nil {
+		slog.Error("otel tracer shutdown failed", slog.Any("err", err))
+	}
+}
+
 // serveWorkerMetrics exposes /metrics on addr for the worker, which has no API
 // server of its own. It runs until ctx is done, then shuts down with a short
 // grace. A nil handler (metrics disabled) is a no-op. A bind failure is logged,
@@ -135,18 +146,21 @@ func serveCmd() *cobra.Command {
 				return err
 			}
 
-			// Build the metrics registry + /metrics handler; the server exposes the
-			// handler on its main port, unauthenticated beside /healthz.
-			meter, metricsHandler := telemetry.Build(telemetry.Config{
-				MetricsEnabled: cfg.MetricsEnabled, Version: core.Version, Role: "server",
+			// Build the metrics registry + /metrics handler and the OTel tracer. The
+			// server exposes /metrics on its main port, unauthenticated beside /healthz;
+			// tracing is off unless LORE_OTEL_ENABLED + an OTLP endpoint are set.
+			tel := telemetry.Build(ctx, telemetry.Config{
+				MetricsEnabled: cfg.MetricsEnabled, OtelEnabled: cfg.OtelEnabled, Version: core.Version, Role: "server",
 			})
+			defer flushTracing(tel)
 
 			srv, err := core.NewServer(ctx, core.Config{
 				Addr:                 cfg.Addr,
 				DatabaseURL:          cfg.DatabaseURL,
 				WorkmemMaxValueBytes: cfg.WorkmemMaxValueBytes,
 			}, core.WithWorkmem(wm), core.WithEmbedder(embedder),
-				core.WithMeterRegistry(meter), core.WithMetricsHandler(metricsHandler))
+				core.WithMeterRegistry(tel.Metrics), core.WithMetricsHandler(tel.MetricsHandler),
+				core.WithTracerProvider(tel.Tracer))
 			if err != nil {
 				wm.Close()
 				return err
@@ -201,17 +215,18 @@ func workerCmd() *cobra.Command {
 			slog.InfoContext(ctx, "working memory", slog.String("mode", wm.Mode().String()))
 
 			// The worker has no API server, so it exposes /metrics on its own listener
-			// (LORE_METRICS_ADDR). Build the registry, inject it for the job
+			// (LORE_METRICS_ADDR). Build the registry + tracer, inject them for the job
 			// instrumentation, and serve the handler.
-			meter, metricsHandler := telemetry.Build(telemetry.Config{
-				MetricsEnabled: cfg.MetricsEnabled, Version: core.Version, Role: "worker",
+			tel := telemetry.Build(ctx, telemetry.Config{
+				MetricsEnabled: cfg.MetricsEnabled, OtelEnabled: cfg.OtelEnabled, Version: core.Version, Role: "worker",
 			})
-			serveWorkerMetrics(ctx, cfg.MetricsAddr, metricsHandler)
+			defer flushTracing(tel)
+			serveWorkerMetrics(ctx, cfg.MetricsAddr, tel.MetricsHandler)
 
 			w, err := core.NewWorker(ctx, core.Config{
 				DatabaseURL: cfg.DatabaseURL,
 			}, core.WithExtractor(extractor), core.WithWorkmem(wm), core.WithEmbedder(embedder),
-				core.WithMeterRegistry(meter))
+				core.WithMeterRegistry(tel.Metrics), core.WithTracerProvider(tel.Tracer))
 			if err != nil {
 				wm.Close()
 				return err

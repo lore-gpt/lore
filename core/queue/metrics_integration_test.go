@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
+	tracenoop "go.opentelemetry.io/otel/trace/noop"
 
 	"github.com/lore-gpt/lore/core/ext"
 	"github.com/lore-gpt/lore/core/metrics"
@@ -59,7 +60,7 @@ func TestQueueMetricsCompletedOutcomeAndDepth(t *testing.T) {
 	reg := prometheus.NewRegistry()
 	m := metrics.New(reg)
 
-	w, err := queue.NewWorker(st, ext.FixtureExtractor{}, ext.LWW{}, ext.FixtureEmbedder{}, workmem.NewDisabled(), m)
+	w, err := queue.NewWorker(st, ext.FixtureExtractor{}, ext.LWW{}, ext.FixtureEmbedder{}, workmem.NewDisabled(), m, tracenoop.NewTracerProvider())
 	if err != nil {
 		t.Fatalf("new worker: %v", err)
 	}
@@ -115,7 +116,7 @@ func TestQueueMetricsErrorOutcome(t *testing.T) {
 	reg := prometheus.NewRegistry()
 	m := metrics.New(reg)
 
-	w, err := queue.NewWorker(st, ext.FixtureExtractor{}, ext.LWW{}, ext.FixtureEmbedder{}, workmem.NewDisabled(), m)
+	w, err := queue.NewWorker(st, ext.FixtureExtractor{}, ext.LWW{}, ext.FixtureEmbedder{}, workmem.NewDisabled(), m, tracenoop.NewTracerProvider())
 	if err != nil {
 		t.Fatalf("new worker: %v", err)
 	}

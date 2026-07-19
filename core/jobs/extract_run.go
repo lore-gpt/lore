@@ -16,9 +16,12 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/rivertype"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 
 	"github.com/lore-gpt/lore/core/ext"
 	"github.com/lore-gpt/lore/core/metrics"
+	"github.com/lore-gpt/lore/core/obs"
 	"github.com/lore-gpt/lore/core/store/db"
 	"github.com/lore-gpt/lore/core/workmem"
 )
@@ -141,7 +144,19 @@ func NewExtractRunWorker(source EventSource, extractor ext.Extractor, persister 
 // earlier attempt submitted an economy batch that is still processing, this attempt collects it;
 // otherwise it debounces, reads the window, and either distils it synchronously (realtime) or submits
 // it to the batch interface and defers collection (economy).
-func (w *ExtractRunWorker) Work(ctx context.Context, job *river.Job[ExtractRunArgs]) error {
+func (w *ExtractRunWorker) Work(ctx context.Context, job *river.Job[ExtractRunArgs]) (err error) {
+	// The business span for one extraction pass, a child of the otelriver worker span. A snooze is the debounce
+	// working as designed, not a failure, so it must not paint the span red — only a real error does.
+	ctx, span := obs.StartSpan(ctx, "extract.run")
+	defer func() {
+		var snooze *river.JobSnoozeError
+		if err != nil && !errors.As(err, &snooze) {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+		}
+		span.End()
+	}()
+
 	projectID, err := parseUUID(job.Args.ProjectID)
 	if err != nil {
 		return fmt.Errorf("extract_run: project_id: %w", err)
@@ -191,6 +206,12 @@ func (w *ExtractRunWorker) Work(ctx context.Context, job *river.Job[ExtractRunAr
 	w.metrics.ExtractEventsIngested.Add(float64(len(events)))
 	w.metrics.ExtractEventsGated.Add(float64(gated))
 	w.metrics.ExtractEventsExtracted.Add(float64(len(window)))
+	span.SetAttributes(
+		attribute.Int("events.ingested", len(events)),
+		attribute.Int("events.gated", gated),
+		attribute.Int("events.extracted", len(window)),
+		attribute.String("mode", state.ExtractionMode),
+	)
 	slog.InfoContext(ctx, "extract_run window",
 		slog.String("run_id", job.Args.RunID),
 		slog.Int("events", len(events)),

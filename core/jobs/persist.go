@@ -12,9 +12,11 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	pgvector "github.com/pgvector/pgvector-go"
+	"go.opentelemetry.io/otel/attribute"
 
 	"github.com/lore-gpt/lore/core/ext"
 	"github.com/lore-gpt/lore/core/metrics"
+	"github.com/lore-gpt/lore/core/obs"
 	"github.com/lore-gpt/lore/core/store/db"
 )
 
@@ -188,7 +190,26 @@ func NewPGPersister(store tenantRunner, adjudicator ext.Adjudicator, embedder ex
 // Candidate contents are embedded BEFORE the transaction opens, so a real, network-backed embedder's
 // latency never holds the entity locks (or the transaction) open; a newly inserted memory's vector is
 // then stored inside the transaction, keyed by content.
-func (p *PGPersister) Persist(ctx context.Context, in PersistInput) error {
+func (p *PGPersister) Persist(ctx context.Context, in PersistInput) (err error) {
+	// The business span for one consolidation pass: it covers the up-front embed and the whole write transaction.
+	ctx, span := obs.StartSpan(ctx, "consolidation.persist")
+	defer func() {
+		// A checkpoint conflict is an expected outcome of River's at-least-once delivery (a concurrent pass won
+		// the compare-and-swap), not a failure: the caller swallows it to nil and it has its own metric bucket
+		// (checkpoint_conflict, distinct from error). Keep the span green so trace-based error rates agree with the
+		// clean parent span and the metrics layer — mirroring the snooze and no-active-model carve-outs.
+		if err != nil && !errors.Is(err, errCheckpointConflict) {
+			obs.End(span, err)
+			return
+		}
+		obs.End(span, nil)
+	}()
+	span.SetAttributes(
+		attribute.Int("memories.candidate", len(in.Memories)),
+		attribute.Int("claims", len(in.Claims)),
+		attribute.Int("entities", len(in.Entities)),
+	)
+
 	// Embed candidate contents up front, outside the transaction and its entity locks.
 	memoryVectors, err := p.embedContents(ctx, in.Memories)
 	if err != nil {
@@ -477,6 +498,12 @@ func (p *PGPersister) Persist(ctx context.Context, in PersistInput) error {
 		if lockedCount > 0 {
 			p.metrics.ConsolidationLockWait.Observe(lockWaited.Seconds())
 		}
+		span.SetAttributes(
+			attribute.Int("memories.inserted", inserted),
+			attribute.Int("memories.exact_merged", exactMerged),
+			attribute.Int("memories.near_merged", nearMerged),
+			attribute.Int("memories.gray_zone", grayZone),
+		)
 	}
 	return err
 }
@@ -547,7 +574,7 @@ func upsertEntity(ctx context.Context, q *db.Queries, projectID pgtype.UUID, nam
 // would accept, only to fail later at index build) is rejected before any write. Only contents that turn
 // out to be new inserts are stored by the caller; a content that merges into an existing memory is
 // embedded here but its vector goes unused. An empty set is a no-op.
-func (p *PGPersister) embedContents(ctx context.Context, memories []MemoryWrite) (map[string]pgvector.Vector, error) {
+func (p *PGPersister) embedContents(ctx context.Context, memories []MemoryWrite) (out map[string]pgvector.Vector, err error) {
 	seen := make(map[string]struct{}, len(memories))
 	texts := make([]string, 0, len(memories))
 	for _, m := range memories {
@@ -560,6 +587,13 @@ func (p *PGPersister) embedContents(ctx context.Context, memories []MemoryWrite)
 	if len(texts) == 0 {
 		return nil, nil
 	}
+
+	// The embed span times the (possibly network-backed) provider call; opened only when there is real work.
+	// It records the count of distinct contents embedded, never the contents themselves.
+	ctx, span := obs.StartSpan(ctx, "consolidation.embed")
+	defer func() { obs.End(span, err) }()
+	span.SetAttributes(attribute.Int("contents", len(texts)))
+
 	vecs, err := p.embedder.Embed(ctx, texts)
 	if err != nil {
 		return nil, fmt.Errorf("embed memories: %w", err)
@@ -569,7 +603,7 @@ func (p *PGPersister) embedContents(ctx context.Context, memories []MemoryWrite)
 	}
 	dim := p.embedder.Dim()
 	modelID := p.embedder.ModelID()
-	out := make(map[string]pgvector.Vector, len(texts))
+	out = make(map[string]pgvector.Vector, len(texts))
 	for i, vec := range vecs {
 		if len(vec) != dim {
 			return nil, fmt.Errorf("embed memories: vector for content %d has length %d, want %d (model %q)",

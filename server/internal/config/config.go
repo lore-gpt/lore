@@ -53,6 +53,9 @@ type Config struct {
 	// (the server exposes /metrics on its main port; the worker has no HTTP server).
 	MetricsEnabled bool   // LORE_METRICS_ENABLED (default true)
 	MetricsAddr    string // LORE_METRICS_ADDR (default ":9090"; worker only)
+	// OtelEnabled turns on OpenTelemetry tracing. Off by default; it also needs an
+	// OTLP endpoint (OTEL_EXPORTER_OTLP_ENDPOINT) or tracing stays a no-op.
+	OtelEnabled bool // LORE_OTEL_ENABLED (default false)
 }
 
 // Load reads the configuration from the environment, applies defaults, and
@@ -78,6 +81,7 @@ func Load() (Config, error) {
 
 		MetricsEnabled: getenvBoolDefault("LORE_METRICS_ENABLED", true),
 		MetricsAddr:    getenv("LORE_METRICS_ADDR", ":9090"),
+		OtelEnabled:    getenvBool("LORE_OTEL_ENABLED"),
 	}
 
 	for _, req := range []struct{ name, val string }{

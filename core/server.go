@@ -8,6 +8,9 @@ import (
 	"net/http"
 	"time"
 
+	"go.opentelemetry.io/otel/trace"
+	tracenoop "go.opentelemetry.io/otel/trace/noop"
+
 	"github.com/lore-gpt/lore/core/ext"
 	"github.com/lore-gpt/lore/core/httpapi"
 	"github.com/lore-gpt/lore/core/metrics"
@@ -48,6 +51,10 @@ type extensions struct {
 	// metricsHandler serves /metrics when set (the promhttp handler over the process registry). The OSS binary
 	// injects it; nil leaves /metrics unregistered. Only the server consumes it — the worker exposes its own.
 	metricsHandler http.Handler
+	// tracer is optional infrastructure: the OTel TracerProvider spans are recorded against. It defaults to a
+	// no-op provider, so a composition with tracing off (the default) creates spans that record nothing and
+	// export nowhere — instrumentation sites start spans unconditionally.
+	tracer trace.TracerProvider
 }
 
 func defaultExtensions() extensions {
@@ -59,6 +66,7 @@ func defaultExtensions() extensions {
 		embedder:    ext.FixtureEmbedder{},
 		workmem:     workmem.NewDisabled(),
 		metrics:     metrics.NewNoop(),
+		tracer:      tracenoop.NewTracerProvider(),
 	}
 }
 
@@ -80,6 +88,9 @@ func resolveExtensions(opts []Option) (extensions, error) {
 	}
 	if e.metrics == nil {
 		e.metrics = metrics.NewNoop()
+	}
+	if e.tracer == nil {
+		e.tracer = tracenoop.NewTracerProvider()
 	}
 	return e, nil
 }
@@ -158,6 +169,17 @@ func WithMetricsHandler(h http.Handler) Option {
 	return func(e *extensions) { e.metricsHandler = h }
 }
 
+// WithTracerProvider injects the OTel TracerProvider spans are recorded against.
+// The OSS binary builds a real provider only when tracing is enabled; a nil
+// argument coerces to the no-op provider, so callers can pass unconditionally.
+func WithTracerProvider(tp trace.TracerProvider) Option {
+	return func(e *extensions) {
+		if tp != nil {
+			e.tracer = tp
+		}
+	}
+}
+
 // WithWorkmem injects the working-memory store. The OSS binary opens it from
 // LORE_VALKEY_URL; when that is unset the store is disabled and hot facts fall
 // through to durable extraction. Tests inject an in-memory store. A nil argument
@@ -190,7 +212,7 @@ func NewServer(ctx context.Context, cfg Config, opts ...Option) (*Server, error)
 	if err != nil {
 		return nil, fmt.Errorf("open store: %w", err)
 	}
-	q, err := queue.New(st.Pool)
+	q, err := queue.New(st.Pool, e.tracer)
 	if err != nil {
 		st.Close()
 		return nil, fmt.Errorf("build queue: %w", err)
@@ -216,6 +238,7 @@ func NewServer(ctx context.Context, cfg Config, opts ...Option) (*Server, error)
 		EmbedderID:           e.embedder.ModelID(),
 		Metrics:              e.metrics,
 		MetricsHandler:       e.metricsHandler,
+		Tracer:               e.tracer,
 	})
 
 	return &Server{

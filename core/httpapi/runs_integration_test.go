@@ -16,6 +16,8 @@ import (
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 
 	"github.com/lore-gpt/lore/core/httpapi"
+	tracenoop "go.opentelemetry.io/otel/trace/noop"
+
 	"github.com/lore-gpt/lore/core/queue"
 	"github.com/lore-gpt/lore/core/store"
 	"github.com/lore-gpt/lore/core/store/db"
@@ -59,7 +61,7 @@ func TestCreateRunTenantScope(t *testing.T) {
 	if err := queue.Migrate(ctx, st.Pool); err != nil {
 		t.Fatalf("river migrate: %v", err)
 	}
-	q, err := queue.New(st.Pool)
+	q, err := queue.New(st.Pool, tracenoop.NewTracerProvider())
 	if err != nil {
 		t.Fatalf("new queue: %v", err)
 	}

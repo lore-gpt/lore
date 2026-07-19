@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/rivertype"
+	tracenoop "go.opentelemetry.io/otel/trace/noop"
 
 	"github.com/lore-gpt/lore/core/ext"
 	"github.com/lore-gpt/lore/core/jobs"
@@ -122,7 +123,7 @@ func TestPersisterEnqueuesIndexBuildOnFirstPin(t *testing.T) {
 func TestBackfillMissingIndexesEnqueuesPinnedWithoutIndex(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(ctx, t)
-	q, err := queue.NewWorker(st, ext.FixtureExtractor{}, ext.LWW{}, ext.FixtureEmbedder{}, workmem.NewDisabled(), metrics.NewNoop())
+	q, err := queue.NewWorker(st, ext.FixtureExtractor{}, ext.LWW{}, ext.FixtureEmbedder{}, workmem.NewDisabled(), metrics.NewNoop(), tracenoop.NewTracerProvider())
 	if err != nil {
 		t.Fatalf("new worker queue: %v", err)
 	}
@@ -196,7 +197,7 @@ func ensureIndexJobProjects(ctx context.Context, t *testing.T, st *store.Store) 
 func TestEnsureIndexEndToEnd(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(ctx, t)
-	w, err := queue.NewWorker(st, ext.FixtureExtractor{}, ext.LWW{}, ext.FixtureEmbedder{}, workmem.NewDisabled(), metrics.NewNoop())
+	w, err := queue.NewWorker(st, ext.FixtureExtractor{}, ext.LWW{}, ext.FixtureEmbedder{}, workmem.NewDisabled(), metrics.NewNoop(), tracenoop.NewTracerProvider())
 	if err != nil {
 		t.Fatalf("new worker: %v", err)
 	}

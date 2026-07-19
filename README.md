@@ -165,6 +165,8 @@ Copy [`.env.example`](.env.example) to `.env` and set:
 | `LORE_WORKMEM_MAX_VALUE_BYTES` | no | `8192` | Max bytes per working-memory fact value (enforced at ingestion) |
 | `LORE_METRICS_ENABLED` | no | `true` | Expose the Prometheus `/metrics` endpoint |
 | `LORE_METRICS_ADDR` | no | `:9090` | Worker's `/metrics` listener (the server serves `/metrics` on its API port) |
+| `LORE_OTEL_ENABLED` | no | `false` | Export OpenTelemetry traces over OTLP (also needs an endpoint below) |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | with tracing | — | OTLP/HTTP collector base URL; the standard OTel variable (`OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` overrides it for traces) |
 | `LORE_EMBEDDING_PROVIDER` | no | fixture | `openai` for a real vector space; unset/`fixture` keeps the offline fixture |
 | `LORE_EMBEDDING_BASE_URL` | no | OpenAI | Any OpenAI-compatible `/v1/embeddings` endpoint (OpenAI, a self-hosted TEI/Ollama/vLLM server) |
 | `LORE_EMBEDDING_MODEL` | with `openai` | — | Embedding model name |
@@ -184,6 +186,15 @@ embedder identity (`model@dim`).
 legs and path, consolidation outcomes, queue depth and oldest-job age). The endpoint is **unauthenticated**,
 like `/healthz` — don't expose the metrics port to the internet; bind it to an internal network and scrape it
 there. `/healthz` reports process and dependency health.
+
+**Tracing.** OpenTelemetry traces are **off by default**. Set `LORE_OTEL_ENABLED=true` and an
+`OTEL_EXPORTER_OTLP_ENDPOINT` (any OTLP/HTTP collector) to export them. Spans cover the HTTP request, the job
+pipeline (extraction → consolidation → embedding), and the pack read path (build → hybrid retrieval); the
+inbound request's trace context is carried into the enqueued job as a span link, so a request and the async
+work it triggers stay connected. Span attributes carry counts and identifiers only — never memory content, a
+query string, or an event payload. Enabling tracing without an endpoint stays a silent no-op, and an exporter
+error never takes the process down. All standard `OTEL_EXPORTER_OTLP_*` variables (endpoint, headers, protocol)
+are honoured.
 
 API keys are not configured through the environment: mint one per project with `lore keys create --project
 <id>` (it prints the token once) and revoke it with `lore keys revoke <id>`.
