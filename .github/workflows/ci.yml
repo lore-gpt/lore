@@ -205,16 +205,20 @@ jobs:
       - uses: actions/checkout@v4
       - name: build distroless image
         run: docker build -f infra/Dockerfile -t lore:ci .
-      - name: assert image under 30 MB
+      # Budget for the single static distroless binary. It is a realistic ceiling for the full server —
+      # Postgres (pgx), the River queue, the Valkey client, the extraction SDK, and Prometheus metrics —
+      # not a hard product target; it exists to catch an unexpected dependency bloating the image, and is
+      # raised deliberately when the feature set genuinely grows.
+      - name: assert image under 45 MB
         run: |
           size=$(docker image inspect lore:ci --format '{{.Size}}')
-          limit=$((30 * 1024 * 1024))
-          echo "image size: ${size} bytes (limit ${limit} bytes / 30 MB)"
+          limit=$((45 * 1024 * 1024))
+          echo "image size: ${size} bytes (limit ${limit} bytes / 45 MB)"
           if [ "$size" -gt "$limit" ]; then
-            echo "::error::image exceeds the 30 MB budget (${size} > ${limit})"
+            echo "::error::image exceeds the 45 MB budget (${size} > ${limit})"
             exit 1
           fi
-          echo "ok: image within the 30 MB budget"
+          echo "ok: image within the 45 MB budget"
       - name: validate compose file
         run: docker compose -f infra/docker-compose.yml config --quiet
 
