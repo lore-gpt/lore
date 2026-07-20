@@ -1,0 +1,55 @@
+name: inspector-image
+
+# Builds the inspector Docker image and gates its size + the no-native-addon invariant. It lives in its OWN
+# workflow with a NATIVE path filter (no third-party filter action — those are a known CI supply-chain surface),
+# so it runs only when a file that can change the image changes. `inspector/**` covers the Dockerfile,
+# next.config, the lockfile, and all sources. Unrelated PRs never trigger it (so it should not be a required
+# check on every PR). The release workflow does the multi-arch build+push — this is the early belt on an
+# inspector change.
+on:
+  pull_request:
+    paths:
+      - "inspector/**"
+  push:
+    branches: [main]
+    paths:
+      - "inspector/**"
+
+permissions:
+  contents: read
+
+jobs:
+  inspector-image:
+    name: inspector image (size · criterion 5)
+    runs-on: ubuntu-latest
+    # Keep in lockstep with INSPECTOR_IMAGE_MB in release.yml (measured ~354 MB; budgeted 500 with margin).
+    env:
+      INSPECTOR_IMAGE_MB: "500"
+    steps:
+      - uses: actions/checkout@v5
+      - name: build inspector image
+        run: docker build -f inspector/Dockerfile -t lore-inspector:ci ./inspector
+      - name: assert image under budget
+        run: |
+          set -euo pipefail
+          size=$(docker image inspect lore-inspector:ci --format '{{.Size}}')
+          limit=$(( INSPECTOR_IMAGE_MB * 1024 * 1024 ))
+          echo "inspector image size: ${size} bytes (limit ${limit} / ${INSPECTOR_IMAGE_MB} MB)"
+          if [ "$size" -gt "$limit" ]; then
+            echo "::error::inspector image exceeds the ${INSPECTOR_IMAGE_MB} MB budget (${size} > ${limit})"
+            exit 1
+          fi
+          echo "ok: inspector image within the ${INSPECTOR_IMAGE_MB} MB budget"
+      - name: assert no native addons shipped
+        run: |
+          set -euo pipefail
+          # The multi-arch image is built once on the native runner and copied to both arches, which is sound
+          # only if the standalone bundle is arch-independent. A native .node addon (e.g. sharp sneaking back in)
+          # would break that — fail early rather than ship a wrong-arch binary.
+          found=$(docker run --rm --entrypoint sh lore-inspector:ci -c "find /app -name '*.node' 2>/dev/null" || true)
+          if [ -n "$found" ]; then
+            echo "::error::native .node addon(s) in the inspector bundle break the single-build multi-arch image:"
+            echo "$found"
+            exit 1
+          fi
+          echo "ok: no native .node addons in the standalone bundle"

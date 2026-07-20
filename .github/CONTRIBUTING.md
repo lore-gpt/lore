@@ -26,7 +26,12 @@ open an issue, comment on an RFC, or send a patch — thank you.
   will guide you on your first PR). This keeps future licensing flexibility open and protects the project
   and its contributors.
 
-## Releasing the SDKs
+## Releasing
+
+Two independent release trains: the **SDKs** (npm + PyPI, on `sdk-v*` tags) and the **images** (server +
+inspector, to GHCR, on `v*` tags).
+
+### SDKs
 
 The TypeScript (`@loregpt/sdk` → npm) and Python (`loregpt` → PyPI) SDKs release together, in lockstep, from a
 `sdk-v*` tag (independent of the server image, which releases on `v*`). Publishing is **OIDC trusted
@@ -59,6 +64,19 @@ publishing** — no registry token is stored in the repo.
 - A **partial** publish (one registry succeeded, the other failed) → that version is now taken on the succeeded
   registry, so bump the patch (`X.Y.Z+1`), re-tag, and release again; both packages move to the new version and
   stay in lockstep.
+
+### Images
+
+The server image (`ghcr.io/lore-gpt/lore`) and the Inspector image (`ghcr.io/lore-gpt/lore-inspector`) publish
+to GHCR on a `v*` tag, both multi-arch (linux/amd64 + linux/arm64), in lockstep — one tag builds both, so
+`lore init` can pin both to a single version. Publishing uses the workflow's `GITHUB_TOKEN`, so no secret is
+stored. Tag and push (`git tag vX.Y.Z && git push origin vX.Y.Z`); each job builds, pushes, and smoke-tests its
+image.
+
+**One-time, after the first publish of any NEW package:** a newly created GHCR package is **private** by
+default, so anonymous `docker pull` — and `lore init` for end users — fails until it is made public. Once, in
+the org's **Settings → Packages**, enable public package creation; then on the package page set its visibility
+to **Public**. Do this per package (currently `lore` and `lore-inspector`); published versions then stay public.
 
 ## The OSS and paid boundary
 
