@@ -1,4 +1,5 @@
 import { LORE_API_URL } from "@/lib/api/config";
+import { isAllowedHost, isSameOrigin } from "@/lib/http-guards";
 import { getActiveKey } from "@/server/session";
 
 // The Inspector's BFF: a thin, 1:1 passthrough to the upstream Lore server.
@@ -14,27 +15,12 @@ function json(status: number, body: Record<string, unknown>): Response {
   });
 }
 
-// CSRF defense-in-depth for state-changing requests: a cross-site request
-// carrying our cookie is rejected. SameSite=Strict already blocks this in modern
-// browsers; the header check is a cheap second belt.
-function isSameOrigin(req: Request): boolean {
-  const site = req.headers.get("sec-fetch-site");
-  if (site) {
-    // "same-origin" = our own page; "none" = user-initiated (address bar).
-    return site === "same-origin" || site === "none";
-  }
-  const origin = req.headers.get("origin");
-  if (!origin) {
-    return true;
-  }
-  try {
-    return new URL(origin).host === req.headers.get("host");
-  } catch {
-    return false;
-  }
-}
-
 async function proxy(req: Request, ctx: { params: Promise<{ path: string[] }> }): Promise<Response> {
+  // DNS-rebinding defense for the BFF (the browser's data path). The page routes are guarded by the same check
+  // in the proxy middleware (src/proxy.ts); see @/lib/http-guards for why a non-loopback Host is refused.
+  if (!isAllowedHost(req.headers.get("host"), process.env.LORE_INSPECTOR_ALLOWED_HOSTS)) {
+    return json(403, { message: "host not allowed", code: "forbidden_host" });
+  }
   const { path } = await ctx.params;
   const segments = path;
   // Reject dot-segments and injected slashes. A decoded `%2f` lands INSIDE a
@@ -48,7 +34,10 @@ async function proxy(req: Request, ctx: { params: Promise<{ path: string[] }> })
   const isV1 = segments[0] === "v1";
   const isMutation = req.method !== "GET" && req.method !== "HEAD";
 
-  if (isMutation && !isSameOrigin(req)) {
+  if (
+    isMutation &&
+    !isSameOrigin(req.headers.get("sec-fetch-site"), req.headers.get("origin"), req.headers.get("host"))
+  ) {
     return json(403, { message: "cross-site request blocked", code: "forbidden" });
   }
 

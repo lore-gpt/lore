@@ -133,6 +133,9 @@ jobs:
       # Type-check and build the standalone Next.js app.
       - name: build
         run: pnpm build
+      # Unit-test the pure security guards (host allowlist + same-origin) with the node:test runner.
+      - name: test
+        run: pnpm test
 
   python:
     name: python (loregpt)

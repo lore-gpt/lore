@@ -24,6 +24,10 @@ var composeTemplate string
 // never drift apart.
 const imageRepo = "ghcr.io/lore-gpt/lore"
 
+// inspectorImageRepo is the published diagnostics-UI image. It releases in lockstep with imageRepo on the same
+// version tag, so `lore init` pins both to this binary's version and the two can never drift apart.
+const inspectorImageRepo = "ghcr.io/lore-gpt/lore-inspector"
+
 func initCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "init",
@@ -60,7 +64,11 @@ func renderCompose(version string) ([]byte, error) {
 		return nil, fmt.Errorf("parse compose template: %w", err)
 	}
 	var buf bytes.Buffer
-	if err := tmpl.Execute(&buf, struct{ Image string }{Image: imageRepo + ":" + version}); err != nil {
+	data := struct{ Image, InspectorImage string }{
+		Image:          imageRepo + ":" + version,
+		InspectorImage: inspectorImageRepo + ":" + version,
+	}
+	if err := tmpl.Execute(&buf, data); err != nil {
 		return nil, fmt.Errorf("render compose template: %w", err)
 	}
 	return buf.Bytes(), nil

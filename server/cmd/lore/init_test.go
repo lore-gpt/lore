@@ -52,6 +52,19 @@ func TestRenderComposePinsImageAndIsDeterministic(t *testing.T) {
 			t.Errorf("service %q should reference the published image, not build from source (got build: %v)", svc, s.Build)
 		}
 	}
+
+	// The inspector is a SEPARATE published image (ghcr.io/lore-gpt/lore-inspector), released in lockstep on
+	// the same tag, so `lore init` pins both to one version.
+	insp, ok := cf.Services["lore-inspector"]
+	if !ok {
+		t.Fatal("service \"lore-inspector\" missing from generated compose")
+	}
+	if wantInsp := "ghcr.io/lore-gpt/lore-inspector:" + version; insp.Image != wantInsp {
+		t.Errorf("lore-inspector image = %q, want %q", insp.Image, wantInsp)
+	}
+	if insp.Build != nil {
+		t.Errorf("lore-inspector should reference the published image, not build from source (got build: %v)", insp.Build)
+	}
 }
 
 // The generated compose pins the dependency images (paradedb/valkey/minio) to the same tags as the
@@ -103,7 +116,7 @@ func TestInitLoreServiceConfigMatchesSource(t *testing.T) {
 
 	initSvc := rawServices(t, rendered)
 	srcSvc := rawServices(t, srcBytes)
-	for _, svc := range []string{"lore-server", "lore-worker", "lore-provision"} {
+	for _, svc := range []string{"lore-server", "lore-worker", "lore-provision", "lore-inspector"} {
 		got := withoutImageOrBuild(initSvc[svc])
 		want := withoutImageOrBuild(srcSvc[svc])
 		if len(got) == 0 || len(want) == 0 {
