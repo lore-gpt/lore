@@ -53,8 +53,6 @@ export const sidebarItems: NavGroup[] = [
         title: "Memories",
         url: "/memories",
         icon: Boxes,
-        badge: "soon",
-        disabled: true,
       },
       {
         id: "runs",

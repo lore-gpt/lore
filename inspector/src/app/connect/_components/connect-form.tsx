@@ -10,7 +10,7 @@ import { connect } from "@/server/session-actions";
 
 // Native elements (styled to match the shadcn primitives) keep this leaf form
 // free of `@/components/ui/*` imports.
-export function ConnectForm() {
+export function ConnectForm({ next }: { next?: string }) {
   const [error, setError] = useState<string | null>(null);
   const [pending, startTransition] = useTransition();
 
@@ -27,6 +27,7 @@ export function ConnectForm() {
 
   return (
     <form action={handleAction} className="grid gap-4">
+      {next ? <input type="hidden" name="next" value={next} /> : null}
       <div className="grid gap-2">
         <label htmlFor="apiKey" className="font-medium text-sm">
           API key

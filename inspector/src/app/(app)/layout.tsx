@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 
+import { headers } from "next/headers";
 import Link from "next/link";
 import { redirect } from "next/navigation";
 
@@ -7,6 +8,7 @@ import { AppSidebar } from "@/app/(app)/_components/sidebar/app-sidebar";
 import { Button } from "@/components/ui/button";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import { APP_CONFIG } from "@/config/app-config";
+import { sanitizeNextPath } from "@/lib/nav";
 import { getConnectionState } from "@/server/session";
 
 import { SearchDialog } from "./_components/sidebar/search-dialog";
@@ -24,7 +26,9 @@ function GithubMark(props: React.ComponentProps<"svg">) {
 export default async function AppLayout({ children }: Readonly<{ children: ReactNode }>) {
   const connection = await getConnectionState();
   if (!connection.connected) {
-    redirect("/connect");
+    // Preserve the deep link so /connect can return here after connecting.
+    const next = sanitizeNextPath((await headers()).get("x-pathname"));
+    redirect(next && next !== "/" ? `/connect?next=${encodeURIComponent(next)}` : "/connect");
   }
 
   return (

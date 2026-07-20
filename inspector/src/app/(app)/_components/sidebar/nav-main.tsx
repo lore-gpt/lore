@@ -89,7 +89,9 @@ export function NavMain({ items }: NavMainProps) {
       return item.subItems.some((sub) => path.startsWith(sub.url));
     }
 
-    return path === item.url;
+    // Exact match for the root; prefix match elsewhere so a detail route like
+    // /memories/<id> still highlights its top-level nav item.
+    return path === item.url || (item.url !== "/" && path.startsWith(`${item.url}/`));
   };
 
   const isSubItemActive = (url: string) => {
