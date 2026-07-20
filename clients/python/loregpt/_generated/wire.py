@@ -59,6 +59,7 @@ class Memory(TypedDict):
     review_status: str
     scope_keys: list[str]
     source_event_id: NotRequired[str]
+    run_id: NotRequired[str]
 
 
 class MemoryListResponse(TypedDict):

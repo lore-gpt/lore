@@ -13,10 +13,11 @@ import (
 
 const getMemory = `-- name: GetMemory :one
 
-SELECT id, kind, content, created_by_agent, created_at, version, trust_tier, review_status, scope_keys, source_event_id
-FROM memories
-WHERE project_id = $1 AND id = $2
-  AND valid_to IS NULL AND superseded_by IS NULL
+SELECT m.id, m.kind, m.content, m.created_by_agent, m.created_at, m.version, m.trust_tier, m.review_status, m.scope_keys, m.source_event_id, e.run_id
+FROM memories m
+LEFT JOIN events e ON e.project_id = m.project_id AND e.id = m.source_event_id
+WHERE m.project_id = $1 AND m.id = $2
+  AND m.valid_to IS NULL AND m.superseded_by IS NULL
 `
 
 type GetMemoryParams struct {
@@ -35,6 +36,7 @@ type GetMemoryRow struct {
 	ReviewStatus   string             `json:"review_status"`
 	ScopeKeys      []string           `json:"scope_keys"`
 	SourceEventID  pgtype.UUID        `json:"source_event_id"`
+	RunID          pgtype.UUID        `json:"run_id"`
 }
 
 // Inspection read/soft-delete surface (GET /v1/memories[/{id}][/versions], DELETE /v1/memories/{id},
@@ -42,8 +44,10 @@ type GetMemoryRow struct {
 // line); the list/get/delete queries all filter to the currently-valid head (valid_to IS NULL AND
 // superseded_by IS NULL) so a soft-deleted or superseded memory is invisible to reads exactly as it is to
 // retrieval and packs.
-// One currently-valid memory by id. A soft-deleted, superseded, unknown, or cross-project id returns no row
-// (the handler maps that to the same 404, so a key cannot probe another project's memory ids).
+// One currently-valid memory by id, with the run it was distilled from — its source event's run_id, via a LEFT
+// JOIN on the (composite-FK) events table so a memory with no live source event still returns, with a null
+// run_id. A soft-deleted, superseded, unknown, or cross-project id returns no row (the handler maps that to the
+// same 404, so a key cannot probe another project's memory ids).
 func (q *Queries) GetMemory(ctx context.Context, arg GetMemoryParams) (GetMemoryRow, error) {
 	row := q.db.QueryRow(ctx, getMemory, arg.ProjectID, arg.ID)
 	var i GetMemoryRow
@@ -58,6 +62,7 @@ func (q *Queries) GetMemory(ctx context.Context, arg GetMemoryParams) (GetMemory
 		&i.ReviewStatus,
 		&i.ScopeKeys,
 		&i.SourceEventID,
+		&i.RunID,
 	)
 	return i, err
 }
@@ -90,15 +95,15 @@ func (q *Queries) InsertAuditLog(ctx context.Context, arg InsertAuditLogParams) 
 }
 
 const listMemoriesBrowse = `-- name: ListMemoriesBrowse :many
-SELECT id, kind, content, created_by_agent, created_at, version, trust_tier, review_status, scope_keys, source_event_id
+SELECT m.id, m.kind, m.content, m.created_by_agent, m.created_at, m.version, m.trust_tier, m.review_status, m.scope_keys, m.source_event_id, e.run_id
 FROM memories m
+LEFT JOIN events e ON e.project_id = m.project_id AND e.id = m.source_event_id
 WHERE m.project_id = $1
   AND m.superseded_by IS NULL AND m.valid_to IS NULL
   AND ($2::text IS NULL OR m.kind = $2)
   AND ($3::text IS NULL OR m.trust_tier = $3)
   AND ($4::text IS NULL OR m.review_status = $4)
-  AND ($5::uuid IS NULL OR m.source_event_id IN (
-        SELECT e.id FROM events e WHERE e.project_id = $1 AND e.run_id = $5))
+  AND ($5::uuid IS NULL OR e.run_id = $5)
   AND ($6::timestamptz IS NULL
        OR (m.created_at, m.id) < ($6::timestamptz, $7::uuid))
 ORDER BY m.created_at DESC, m.id DESC
@@ -127,13 +132,17 @@ type ListMemoriesBrowseRow struct {
 	ReviewStatus   string             `json:"review_status"`
 	ScopeKeys      []string           `json:"scope_keys"`
 	SourceEventID  pgtype.UUID        `json:"source_event_id"`
+	RunID          pgtype.UUID        `json:"run_id"`
 }
 
 // Browse mode: the project's currently-valid memories, newest first, with optional column filters and a
 // keyset cursor. The cursor is the (created_at, id) of the last row of the previous page; the row-value
-// comparison walks the (created_at DESC, id DESC) order without an offset scan. run_id narrows to memories
-// distilled from that run's events (a memory with no source event is excluded when the run filter is set).
-// The handler fetches lim = limit + 1 to learn whether a further page exists.
+// comparison walks the (created_at DESC, id DESC) order without an offset scan. The LEFT JOIN to events
+// projects each memory's run_id (its source event's run; null when there is no live source event) AND serves
+// the run_id filter: it narrows to memories distilled from that run's events — a memory with no live source
+// event is excluded when the run filter is set, since its run_id is null. The join carries project_id (the
+// composite-FK belt) so it stays tenant-local. The handler fetches lim = limit + 1 to learn whether a further
+// page exists.
 func (q *Queries) ListMemoriesBrowse(ctx context.Context, arg ListMemoriesBrowseParams) ([]ListMemoriesBrowseRow, error) {
 	rows, err := q.db.Query(ctx, listMemoriesBrowse,
 		arg.ProjectID,
@@ -163,6 +172,7 @@ func (q *Queries) ListMemoriesBrowse(ctx context.Context, arg ListMemoriesBrowse
 			&i.ReviewStatus,
 			&i.ScopeKeys,
 			&i.SourceEventID,
+			&i.RunID,
 		); err != nil {
 			return nil, err
 		}
@@ -175,16 +185,16 @@ func (q *Queries) ListMemoriesBrowse(ctx context.Context, arg ListMemoriesBrowse
 }
 
 const listMemoriesSearch = `-- name: ListMemoriesSearch :many
-SELECT id, kind, content, created_by_agent, created_at, version, trust_tier, review_status, scope_keys, source_event_id,
+SELECT m.id, m.kind, m.content, m.created_by_agent, m.created_at, m.version, m.trust_tier, m.review_status, m.scope_keys, m.source_event_id, e.run_id,
        ts_rank_cd(to_tsvector('english', m.content), websearch_to_tsquery('english', $1::text))::float8 AS rank
 FROM memories m
+LEFT JOIN events e ON e.project_id = m.project_id AND e.id = m.source_event_id
 WHERE m.project_id = $2
   AND m.superseded_by IS NULL AND m.valid_to IS NULL
   AND ($3::text IS NULL OR m.kind = $3)
   AND ($4::text IS NULL OR m.trust_tier = $4)
   AND ($5::text IS NULL OR m.review_status = $5)
-  AND ($6::uuid IS NULL OR m.source_event_id IN (
-        SELECT e.id FROM events e WHERE e.project_id = $2 AND e.run_id = $6))
+  AND ($6::uuid IS NULL OR e.run_id = $6)
   AND to_tsvector('english', m.content) @@ websearch_to_tsquery('english', $1::text)
 ORDER BY rank DESC, m.id ASC
 LIMIT $7::int
@@ -211,6 +221,7 @@ type ListMemoriesSearchRow struct {
 	ReviewStatus   string             `json:"review_status"`
 	ScopeKeys      []string           `json:"scope_keys"`
 	SourceEventID  pgtype.UUID        `json:"source_event_id"`
+	RunID          pgtype.UUID        `json:"run_id"`
 	Rank           float64            `json:"rank"`
 }
 
@@ -248,6 +259,7 @@ func (q *Queries) ListMemoriesSearch(ctx context.Context, arg ListMemoriesSearch
 			&i.ReviewStatus,
 			&i.ScopeKeys,
 			&i.SourceEventID,
+			&i.RunID,
 			&i.Rank,
 		); err != nil {
 			return nil, err

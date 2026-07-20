@@ -5,28 +5,34 @@
 -- retrieval and packs.
 
 -- name: GetMemory :one
--- One currently-valid memory by id. A soft-deleted, superseded, unknown, or cross-project id returns no row
--- (the handler maps that to the same 404, so a key cannot probe another project's memory ids).
-SELECT id, kind, content, created_by_agent, created_at, version, trust_tier, review_status, scope_keys, source_event_id
-FROM memories
-WHERE project_id = sqlc.arg(project_id) AND id = sqlc.arg(id)
-  AND valid_to IS NULL AND superseded_by IS NULL;
+-- One currently-valid memory by id, with the run it was distilled from — its source event's run_id, via a LEFT
+-- JOIN on the (composite-FK) events table so a memory with no live source event still returns, with a null
+-- run_id. A soft-deleted, superseded, unknown, or cross-project id returns no row (the handler maps that to the
+-- same 404, so a key cannot probe another project's memory ids).
+SELECT m.id, m.kind, m.content, m.created_by_agent, m.created_at, m.version, m.trust_tier, m.review_status, m.scope_keys, m.source_event_id, e.run_id
+FROM memories m
+LEFT JOIN events e ON e.project_id = m.project_id AND e.id = m.source_event_id
+WHERE m.project_id = sqlc.arg(project_id) AND m.id = sqlc.arg(id)
+  AND m.valid_to IS NULL AND m.superseded_by IS NULL;
 
 -- name: ListMemoriesBrowse :many
 -- Browse mode: the project's currently-valid memories, newest first, with optional column filters and a
 -- keyset cursor. The cursor is the (created_at, id) of the last row of the previous page; the row-value
--- comparison walks the (created_at DESC, id DESC) order without an offset scan. run_id narrows to memories
--- distilled from that run's events (a memory with no source event is excluded when the run filter is set).
--- The handler fetches lim = limit + 1 to learn whether a further page exists.
-SELECT id, kind, content, created_by_agent, created_at, version, trust_tier, review_status, scope_keys, source_event_id
+-- comparison walks the (created_at DESC, id DESC) order without an offset scan. The LEFT JOIN to events
+-- projects each memory's run_id (its source event's run; null when there is no live source event) AND serves
+-- the run_id filter: it narrows to memories distilled from that run's events — a memory with no live source
+-- event is excluded when the run filter is set, since its run_id is null. The join carries project_id (the
+-- composite-FK belt) so it stays tenant-local. The handler fetches lim = limit + 1 to learn whether a further
+-- page exists.
+SELECT m.id, m.kind, m.content, m.created_by_agent, m.created_at, m.version, m.trust_tier, m.review_status, m.scope_keys, m.source_event_id, e.run_id
 FROM memories m
+LEFT JOIN events e ON e.project_id = m.project_id AND e.id = m.source_event_id
 WHERE m.project_id = sqlc.arg(project_id)
   AND m.superseded_by IS NULL AND m.valid_to IS NULL
   AND (sqlc.narg(kind)::text IS NULL OR m.kind = sqlc.narg(kind))
   AND (sqlc.narg(trust_tier)::text IS NULL OR m.trust_tier = sqlc.narg(trust_tier))
   AND (sqlc.narg(review_status)::text IS NULL OR m.review_status = sqlc.narg(review_status))
-  AND (sqlc.narg(run_id)::uuid IS NULL OR m.source_event_id IN (
-        SELECT e.id FROM events e WHERE e.project_id = sqlc.arg(project_id) AND e.run_id = sqlc.narg(run_id)))
+  AND (sqlc.narg(run_id)::uuid IS NULL OR e.run_id = sqlc.narg(run_id))
   AND (sqlc.narg(cursor_created_at)::timestamptz IS NULL
        OR (m.created_at, m.id) < (sqlc.narg(cursor_created_at)::timestamptz, sqlc.narg(cursor_id)::uuid))
 ORDER BY m.created_at DESC, m.id DESC
@@ -39,16 +45,16 @@ LIMIT sqlc.arg(lim)::int;
 -- silently falls to a sequential scan). It needs NO embedding model — search works on a deployment that never
 -- pinned one. Ranked by lexical relevance with an id tie-break for a stable order; the handler fetches
 -- lim = limit + 1 for the has_more signal. Search returns the first page only (no keyset cursor in v0).
-SELECT id, kind, content, created_by_agent, created_at, version, trust_tier, review_status, scope_keys, source_event_id,
+SELECT m.id, m.kind, m.content, m.created_by_agent, m.created_at, m.version, m.trust_tier, m.review_status, m.scope_keys, m.source_event_id, e.run_id,
        ts_rank_cd(to_tsvector('english', m.content), websearch_to_tsquery('english', sqlc.arg(query_text)::text))::float8 AS rank
 FROM memories m
+LEFT JOIN events e ON e.project_id = m.project_id AND e.id = m.source_event_id
 WHERE m.project_id = sqlc.arg(project_id)
   AND m.superseded_by IS NULL AND m.valid_to IS NULL
   AND (sqlc.narg(kind)::text IS NULL OR m.kind = sqlc.narg(kind))
   AND (sqlc.narg(trust_tier)::text IS NULL OR m.trust_tier = sqlc.narg(trust_tier))
   AND (sqlc.narg(review_status)::text IS NULL OR m.review_status = sqlc.narg(review_status))
-  AND (sqlc.narg(run_id)::uuid IS NULL OR m.source_event_id IN (
-        SELECT e.id FROM events e WHERE e.project_id = sqlc.arg(project_id) AND e.run_id = sqlc.narg(run_id)))
+  AND (sqlc.narg(run_id)::uuid IS NULL OR e.run_id = sqlc.narg(run_id))
   AND to_tsvector('english', m.content) @@ websearch_to_tsquery('english', sqlc.arg(query_text)::text)
 ORDER BY rank DESC, m.id ASC
 LIMIT sqlc.arg(lim)::int;

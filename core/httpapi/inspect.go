@@ -36,6 +36,7 @@ type Memory struct {
 	ReviewStatus   string    `json:"review_status"`
 	ScopeKeys      []string  `json:"scope_keys"`
 	SourceEventID  *string   `json:"source_event_id"`
+	RunID          *string   `json:"run_id"`
 }
 
 // MemoryListResponse is the GET /v1/memories page. next_cursor is present only in browse mode when a further
@@ -167,7 +168,7 @@ func (a *API) handleGetMemory(w http.ResponseWriter, r *http.Request) {
 			return e
 		}
 		mem = toMemory(row.ID, row.Kind, row.Content, row.CreatedByAgent, row.CreatedAt,
-			row.Version, row.TrustTier, row.ReviewStatus, row.ScopeKeys, row.SourceEventID)
+			row.Version, row.TrustTier, row.ReviewStatus, row.ScopeKeys, row.SourceEventID, row.RunID)
 		found = true
 		return nil
 	})
@@ -408,7 +409,7 @@ func decodeCursor(s string) (pgtype.Timestamptz, pgtype.UUID, error) {
 // toMemory maps the shared memory columns (returned identically by the browse, search, and get queries) to the
 // JSON view. scope_keys is normalized to an empty array so it never serializes as null.
 func toMemory(id pgtype.UUID, kind, content string, agent *string, createdAt pgtype.Timestamptz,
-	version int32, trustTier, reviewStatus string, scopeKeys []string, sourceEventID pgtype.UUID) Memory {
+	version int32, trustTier, reviewStatus string, scopeKeys []string, sourceEventID, runID pgtype.UUID) Memory {
 	m := Memory{
 		ID:             uuid.UUID(id.Bytes).String(),
 		Kind:           kind,
@@ -427,6 +428,10 @@ func toMemory(id pgtype.UUID, kind, content string, agent *string, createdAt pgt
 		s := uuid.UUID(sourceEventID.Bytes).String()
 		m.SourceEventID = &s
 	}
+	if runID.Valid {
+		s := uuid.UUID(runID.Bytes).String()
+		m.RunID = &s
+	}
 	return m
 }
 
@@ -439,7 +444,7 @@ func browseListResponse(rows []db.ListMemoriesBrowseRow, limit int) MemoryListRe
 	mems := make([]Memory, len(rows))
 	for i, row := range rows {
 		mems[i] = toMemory(row.ID, row.Kind, row.Content, row.CreatedByAgent, row.CreatedAt,
-			row.Version, row.TrustTier, row.ReviewStatus, row.ScopeKeys, row.SourceEventID)
+			row.Version, row.TrustTier, row.ReviewStatus, row.ScopeKeys, row.SourceEventID, row.RunID)
 	}
 	resp := MemoryListResponse{Memories: mems, HasMore: hasMore}
 	if hasMore && len(rows) > 0 {
@@ -460,7 +465,7 @@ func searchListResponse(rows []db.ListMemoriesSearchRow, limit int) MemoryListRe
 	mems := make([]Memory, len(rows))
 	for i, row := range rows {
 		mems[i] = toMemory(row.ID, row.Kind, row.Content, row.CreatedByAgent, row.CreatedAt,
-			row.Version, row.TrustTier, row.ReviewStatus, row.ScopeKeys, row.SourceEventID)
+			row.Version, row.TrustTier, row.ReviewStatus, row.ScopeKeys, row.SourceEventID, row.RunID)
 	}
 	return MemoryListResponse{Memories: mems, HasMore: hasMore}
 }
