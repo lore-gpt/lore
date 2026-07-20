@@ -23,7 +23,7 @@ function GithubMark(props: React.ComponentProps<"svg">) {
   );
 }
 
-export default async function AppLayout({ children }: Readonly<{ children: ReactNode }>) {
+export default async function AppLayout({ children, modal }: Readonly<{ children: ReactNode; modal: ReactNode }>) {
   const connection = await getConnectionState();
   if (!connection.connected) {
     // Preserve the deep link so /connect can return here after connecting.
@@ -50,6 +50,8 @@ export default async function AppLayout({ children }: Readonly<{ children: React
         </header>
         <div className="min-h-0 min-w-0 flex-1 overflow-x-hidden p-4 md:p-6">{children}</div>
       </SidebarInset>
+      {/* Parallel-route slot for the intercepted memory detail slide-over. */}
+      {modal}
     </SidebarProvider>
   );
 }

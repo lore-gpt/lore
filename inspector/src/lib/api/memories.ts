@@ -2,7 +2,7 @@ import { getActiveKey } from "@/server/session";
 
 import { LORE_API_URL } from "./config";
 import { LoreApiError } from "./errors";
-import type { MemoryListResponse } from "./types";
+import type { Memory, MemoryListResponse, MemoryVersionListResponse } from "./types";
 
 // Server-side data access for the memory-inspection endpoints. These run only in
 // server components / actions: they attach the active API key (server-configured
@@ -80,4 +80,25 @@ export async function fetchMemories(params: MemoryListParams): Promise<MemoryLis
   }
   const query = qs.toString();
   return parse<MemoryListResponse>(await authedFetch(`/v1/memories${query ? `?${query}` : ""}`));
+}
+
+export async function fetchMemory(id: string): Promise<Memory> {
+  return parse<Memory>(await authedFetch(`/v1/memories/${encodeURIComponent(id)}`));
+}
+
+// Version history, oldest-first per the API (the UI renders it newest-first). A
+// soft-deleted memory keeps its history, so this can still 200 when fetchMemory
+// 404s — that is exactly how the detail page tells a tombstone apart from an
+// unknown id.
+export async function fetchMemoryVersions(id: string): Promise<MemoryVersionListResponse> {
+  return parse<MemoryVersionListResponse>(await authedFetch(`/v1/memories/${encodeURIComponent(id)}/versions`));
+}
+
+// Soft-delete a memory, returning the upstream status. The delete is idempotent
+// per live row, so 204 (just deleted) and 404 (already gone / superseded) both
+// mean "no longer live"; the caller branches on 401 for the connect flow. Throws
+// only on a network failure.
+export async function deleteMemory(id: string): Promise<number> {
+  const res = await authedFetch(`/v1/memories/${encodeURIComponent(id)}`, { method: "DELETE" });
+  return res.status;
 }
