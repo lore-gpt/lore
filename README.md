@@ -162,6 +162,13 @@ server). Run `lore --help` for the full list.
 > image: `docker compose -f infra/docker-compose.yml up -d --build --wait` (or `task compose:up`, the dev
 > entry point for lint/test/build too).
 
+> **Diagnostics UI.** The build-from-source compose also starts a read-only web Inspector at
+> [localhost:3000](http://localhost:3000) — browse memories, view run traces, and soft-delete — that
+> auto-connects to the local stack. It is one extra container, bound to localhost only. It is unauthenticated,
+> so never expose it to a network or put an auth-less reverse proxy in front of it. Delete the `lore-inspector`
+> block from the compose file to run headless. (The published-image `lore init` scaffold does not include it
+> yet — that lands when the Inspector image is published.)
+
 <details>
 <summary><b>Configuration</b> — run the binary outside Compose</summary>
 
