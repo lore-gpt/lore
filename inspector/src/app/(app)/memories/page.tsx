@@ -11,9 +11,12 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { LoreApiError } from "@/lib/api/errors";
 import { fetchMemories, type MemoryListParams } from "@/lib/api/memories";
 import type { Memory, MemoryListResponse } from "@/lib/api/types";
+import { formatUtc } from "@/lib/format";
 import { sanitizeNextPath } from "@/lib/nav";
 
 import { RefreshButton } from "../_components/refresh-button";
+import { DeleteToast } from "./_components/delete-toast";
+import { ListUrlMemory } from "./_components/list-url-memory";
 import { MemoriesFilters } from "./_components/memories-filters";
 import { PaginationNav } from "./_components/pagination-nav";
 
@@ -23,12 +26,6 @@ type SearchParams = { [key: string]: string | string[] | undefined };
 
 function first(value: string | string[] | undefined): string | undefined {
   return Array.isArray(value) ? value[0] : value;
-}
-
-// UTC, deterministic (no locale drift) — this is a diagnostic surface.
-function formatDate(iso: string): string {
-  const date = new Date(iso);
-  return Number.isNaN(date.getTime()) ? iso : `${date.toISOString().slice(0, 16).replace("T", " ")}Z`;
 }
 
 export default async function MemoriesPage({ searchParams }: { searchParams: Promise<SearchParams> }) {
@@ -154,6 +151,8 @@ export default async function MemoriesPage({ searchParams }: { searchParams: Pro
 
   return (
     <div className="flex flex-col gap-6">
+      <DeleteToast />
+      <ListUrlMemory />
       <div className="flex items-start justify-between gap-4">
         <div>
           <h1 className="font-heading font-semibold text-2xl tracking-tight">Memories</h1>
@@ -180,13 +179,14 @@ function MemoryRow({ memory }: { memory: Memory }) {
         </Badge>
       </TableCell>
       <TableCell className="max-w-0">
-        {/* Drill-in to a detail + versions view lands in the next slice. */}
-        <span className="block truncate font-medium">{memory.content}</span>
+        <Link href={`/memories/${memory.id}`} className="block truncate font-medium hover:underline">
+          {memory.content}
+        </Link>
       </TableCell>
       <TableCell className="text-muted-foreground text-sm">{memory.trust_tier}</TableCell>
       <TableCell className="text-muted-foreground text-sm">{memory.review_status}</TableCell>
       <TableCell className="text-right font-mono text-sm tabular-nums">{memory.version}</TableCell>
-      <TableCell className="font-mono text-muted-foreground text-xs">{formatDate(memory.created_at)}</TableCell>
+      <TableCell className="font-mono text-muted-foreground text-xs">{formatUtc(memory.created_at)}</TableCell>
     </TableRow>
   );
 }

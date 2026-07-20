@@ -1,3 +1,5 @@
+import Link from "next/link";
+
 import { Boxes, Cpu, Database, Layers, type LucideIcon, Route, Server, Tag } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
@@ -184,10 +186,9 @@ export default async function OverviewPage() {
           <CardDescription>Read-only views of what this server has stored.</CardDescription>
         </CardHeader>
         <CardContent className="flex flex-col gap-3 text-muted-foreground text-sm sm:flex-row sm:items-center sm:gap-6">
-          <span className="inline-flex items-center gap-2">
+          <Link href="/memories" className="inline-flex items-center gap-2 hover:text-foreground">
             <Boxes className="size-4" /> Memories browser
-            <Badge variant="secondary">soon</Badge>
-          </span>
+          </Link>
           <span className="inline-flex items-center gap-2">
             <Route className="size-4" /> Run traces
             <Badge variant="secondary">soon</Badge>
