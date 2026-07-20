@@ -59,8 +59,6 @@ export const sidebarItems: NavGroup[] = [
         title: "Runs",
         url: "/runs",
         icon: Route,
-        badge: "soon",
-        disabled: true,
       },
     ],
   },

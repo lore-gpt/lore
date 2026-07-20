@@ -4,13 +4,12 @@ import { ChevronRight, ChevronsLeft } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 
-// Keyset pagination (browse mode). Next is a real link — middle-click, open in a
-// new tab, and copy all work, and every page is a shareable URL. Because keyset
-// paging has no cheap "previous" (and a client-side cursor stack was deliberately
-// rejected), the back control is an honest "First page" link that carries the
-// active filters — it never promises a previous page it cannot reach, and never
-// silently drops the filters the operator is browsing. The browser's own Back
-// button still steps through visited pages naturally.
+// Shared keyset pagination. Next is a real link — middle-click, open in a new tab,
+// and copy all work, and every page is a shareable URL. Because keyset paging has
+// no cheap "previous" (and a client-side cursor stack was deliberately rejected),
+// the back control is an honest "First page" link that carries the current query
+// (filters, run id) — it never promises a previous page it cannot reach. The
+// browser's own Back button still steps through visited pages naturally.
 export function PaginationNav({
   hasCursor,
   hasMore,
@@ -35,8 +34,6 @@ export function PaginationNav({
               First page
             </Link>
           </Button>
-          {/* Honest label: this never claims to be "Previous". A faint hint keeps
-              the browser-Back affordance discoverable. */}
           <span className="hidden text-muted-foreground text-xs sm:inline">
             Browser Back goes to the previous page.
           </span>

@@ -189,10 +189,9 @@ export default async function OverviewPage() {
           <Link href="/memories" className="inline-flex items-center gap-2 hover:text-foreground">
             <Boxes className="size-4" /> Memories browser
           </Link>
-          <span className="inline-flex items-center gap-2">
+          <Link href="/runs" className="inline-flex items-center gap-2 hover:text-foreground">
             <Route className="size-4" /> Run traces
-            <Badge variant="secondary">soon</Badge>
-          </span>
+          </Link>
         </CardContent>
       </Card>
     </div>

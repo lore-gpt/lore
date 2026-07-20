@@ -14,11 +14,11 @@ import type { Memory, MemoryListResponse } from "@/lib/api/types";
 import { formatUtc } from "@/lib/format";
 import { sanitizeNextPath } from "@/lib/nav";
 
+import { PaginationNav } from "../_components/pagination-nav";
 import { RefreshButton } from "../_components/refresh-button";
 import { DeleteToast } from "./_components/delete-toast";
 import { ListUrlMemory } from "./_components/list-url-memory";
 import { MemoriesFilters } from "./_components/memories-filters";
-import { PaginationNav } from "./_components/pagination-nav";
 
 export const dynamic = "force-dynamic";
 

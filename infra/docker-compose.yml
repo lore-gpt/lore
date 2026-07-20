@@ -151,6 +151,42 @@ services:
       # `-f infra/docker-compose.yml` the file lands at infra/.lore/credentials.
       - ./.lore:/creds
 
+  # Optional diagnostics UI — remove or comment this block to run headless. It is a
+  # read-only inspector for the local stack: browse memories, view run traces, and
+  # soft-delete. Bound to localhost only — do not expose it to a network, and never
+  # put an auth-less reverse proxy in front of it.
+  lore-inspector:
+    restart: unless-stopped
+    build:
+      context: ../inspector
+    environment:
+      # Reach the server over the compose network; read the provisioned project key
+      # from the read-only credentials mount so it auto-connects with no browser step.
+      LORE_API_URL: http://lore-server:8080
+      LORE_CREDENTIALS_FILE: /creds/credentials
+    ports:
+      # Localhost bind only (not 0.0.0.0) — the diagnostics UI is unauthenticated.
+      - "127.0.0.1:3000:3000"
+    depends_on:
+      lore-server:
+        condition: service_healthy
+      # Wait for the credentials file to exist before starting.
+      lore-provision:
+        condition: service_completed_successfully
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "require('http').get('http://127.0.0.1:3000/api/health',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))",
+        ]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    volumes:
+      - ./.lore:/creds:ro
+
 volumes:
   paradedb-data:
   minio-data:
