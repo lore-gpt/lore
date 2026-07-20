@@ -341,9 +341,14 @@ export interface components {
             scope_keys: string[];
             /**
              * Format: uuid
-             * @description The event this memory was distilled from; null for a non-extracted write.
+             * @description The source event this memory was distilled from; null when there is no live source event — either it was not extracted from an event, or that event has since expired.
              */
             source_event_id?: string | null;
+            /**
+             * Format: uuid
+             * @description The run whose event this memory was distilled from (via its source event); null under the same condition as source_event_id (no live source event).
+             */
+            run_id?: string | null;
         };
         MemoryListResponse: {
             memories: components["schemas"]["Memory"][];

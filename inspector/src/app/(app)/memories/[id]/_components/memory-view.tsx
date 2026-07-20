@@ -1,5 +1,7 @@
 "use client";
 
+import Link from "next/link";
+
 import { BadgeCheck, Clock, FileClock, Ghost, Hash, type LucideIcon, ShieldCheck } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
@@ -75,8 +77,17 @@ export function MemoryView({
             <KeyVal label="Memory id" mono copy={memory.id}>
               {memory.id}
             </KeyVal>
-            <KeyVal label="Source event" mono>
-              {memory.source_event_id ?? "— (non-extracted write)"}
+            <KeyVal label="Source event" mono copy={memory.source_event_id ?? undefined}>
+              {memory.source_event_id ?? <NoSource />}
+            </KeyVal>
+            <KeyVal label="Run" mono copy={memory.run_id ?? undefined}>
+              {memory.run_id ? (
+                <Link href={`/runs/${memory.run_id}`} className="text-primary hover:underline">
+                  {memory.run_id}
+                </Link>
+              ) : (
+                <NoSource />
+              )}
             </KeyVal>
           </Panel>
         </TabsContent>
@@ -132,6 +143,18 @@ function KeyVal({
         {copy ? <CopyButton value={copy} label="" /> : null}
       </span>
     </div>
+  );
+}
+
+// NoSource is the shared muted placeholder for a memory with no live source event. source_event_id and run_id
+// are null together — the foreign key nulls source_event_id when its event is deleted, so run_id resolves to
+// null too — so they tell one story, not two. The tooltip states the unknowability honestly rather than
+// claiming a specific cause (never linked vs event expired are indistinguishable once the id is gone).
+function NoSource() {
+  return (
+    <span className="text-muted-foreground" title="no live source event — never linked, or the event has since expired">
+      —
+    </span>
   );
 }
 

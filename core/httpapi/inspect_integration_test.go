@@ -4,6 +4,7 @@ package httpapi_test
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -76,6 +77,22 @@ func TestInspectEndpoints(t *testing.T) {
 		t.Errorf("run_id filter: got %v, want [%s] (only the run-linked memory)", memIDs(byRun.Memories), m1)
 	}
 
+	// run_id is now PROJECTED onto every row (via the events LEFT JOIN), not only used to filter: m1 (distilled
+	// from an event in runA) carries runA; m2/m3 (no source event) carry a null run_id. This is the field the
+	// memory→run cross-link reads.
+	if byRun.Memories[0].RunID == nil || *byRun.Memories[0].RunID != runA {
+		t.Errorf("run_id projection under filter: m1.run_id = %v, want %s", byRun.Memories[0].RunID, runA)
+	}
+	for _, m := range all.Memories {
+		if m.ID == m1 {
+			if m.RunID == nil || *m.RunID != runA {
+				t.Errorf("m1.run_id in browse = %v, want %s", m.RunID, runA)
+			}
+		} else if m.RunID != nil {
+			t.Errorf("memory %s carries run_id %v, want nil (no source event)", m.ID, *m.RunID)
+		}
+	}
+
 	// --- Lexical search: matches by content, ranked, with NO active embedding model pinned. ---
 	srch := decodeList(t, getReq(handler, keyA, "/v1/memories?q=migration"))
 	if len(srch.Memories) != 1 || srch.Memories[0].ID != m2 {
@@ -109,6 +126,9 @@ func TestInspectEndpoints(t *testing.T) {
 	gotM := decodeMemory(t, getReq(handler, keyA, "/v1/memories/"+m1))
 	if gotM.ID != m1 || !strings.Contains(gotM.Content, "authentication") || gotM.CreatedByAgent != "planner" {
 		t.Errorf("get memory = %+v, want m1 with its content/agent", gotM)
+	}
+	if gotM.RunID == nil || *gotM.RunID != runA {
+		t.Errorf("get memory run_id = %v, want %s (the run of its source event)", gotM.RunID, runA)
 	}
 	assertErr(t, getReq(handler, keyA, "/v1/memories/"+uuid.NewString()), http.StatusNotFound, "not_found")
 	assertErr(t, getReq(handler, keyA, "/v1/memories/not-a-uuid"), http.StatusBadRequest, "invalid_id")
@@ -188,6 +208,33 @@ func TestInspectEndpoints(t *testing.T) {
 	paged := []string{t1.Memories[0].ID, t2.Memories[0].ID}
 	if !distinct(paged) || !containsAll(paged, tie) {
 		t.Errorf("tie pagination ids = %v, want the two seeded ids exactly once (id tie-break under equal created_at)", paged)
+	}
+
+	// --- run_id honesty under retention (isolated project): a memory whose source event is deleted drops its
+	// run link via the FK's ON DELETE SET NULL, so it is ABSENT under the run filter but PRESENT in the
+	// unfiltered list with a null run_id (and a null source_event_id) — the LEFT JOIN never yields a broken link. ---
+	projR, runR := seedProjectRun(ctx, t, st.Pool)
+	seedPartitions(ctx, t, st, projR)
+	keyR, _ := provisionKey(ctx, t, st.Pool, projR)
+	evR := seedEvent(ctx, t, st.Pool, runR, "planner")
+	m5 := seedMemory(ctx, t, st.Pool, projR, "semantic", "linked, then orphaned by retention", "planner", evR)
+	if pre := decodeList(t, getReq(handler, keyR, "/v1/memories?run_id="+runR)); len(pre.Memories) != 1 || pre.Memories[0].ID != m5 {
+		t.Fatalf("pre-retention run filter: got %v, want [%s]", memIDs(pre.Memories), m5)
+	}
+	deleteEvent(ctx, t, st.Pool, projR, evR) // retention removes the source event; the FK nulls source_event_id
+	if post := decodeList(t, getReq(handler, keyR, "/v1/memories?run_id="+runR)); len(post.Memories) != 0 {
+		t.Errorf("post-retention run filter: got %v, want [] (source event gone → no run link)", memIDs(post.Memories))
+	}
+	unf := decodeList(t, getReq(handler, keyR, "/v1/memories"))
+	if len(unf.Memories) != 1 || unf.Memories[0].ID != m5 {
+		t.Fatalf("post-retention unfiltered list: got %v, want [%s] (the memory itself is retained)", memIDs(unf.Memories), m5)
+	}
+	if unf.Memories[0].RunID != nil || unf.Memories[0].SourceEventID != nil {
+		t.Errorf("post-retention m5 run_id=%v source_event_id=%v, want both nil (one story, not two)",
+			unf.Memories[0].RunID, unf.Memories[0].SourceEventID)
+	}
+	if g := decodeMemory(t, getReq(handler, keyR, "/v1/memories/"+m5)); g.RunID != nil {
+		t.Errorf("post-retention get m5 run_id = %v, want nil", *g.RunID)
 	}
 
 	// --- Cross-tenant: project B's key sees none of project A's memories or runs — the SAME 404. ---
@@ -275,6 +322,94 @@ func TestInspectSearchUsesFTSIndex(t *testing.T) {
 	}
 }
 
+// TestInspectListJoinsEventsByIndex is the anti-drift guard for the run_id projection added to the list/get
+// queries. It penalizes sequential scans and EXPLAINs the joined browse query (hand-copied from inspect.sql —
+// sqlc consts are unexported cross-package; keep in lockstep), then pins two properties: an events index is
+// AVAILABLE to serve the join (a join-predicate drift that left no usable events index would force — and the
+// negative check would reveal — a Seq Scan of the shared events table), and the memories side stays
+// partition-local (only the tenant's own partition, no cross-tenant Append). It is an index-availability +
+// pruning guard like the sibling TestInspectSearchUsesFTSIndex, not a runtime p95 measurement: at the tiny seed
+// scale the production planner would seq-scan the small events table by choice, so enable_seqscan=off is what
+// reveals whether an index COULD back the join.
+func TestInspectListJoinsEventsByIndex(t *testing.T) {
+	ctx := context.Background()
+	st := inspectStore(ctx, t)
+	projBig, runBig := seedProjectRun(ctx, t, st.Pool)
+	seedPartitions(ctx, t, st, projBig)
+	projSmall, _ := seedProjectRun(ctx, t, st.Pool)
+	seedPartitions(ctx, t, st, projSmall)
+
+	// The big tenant's memories are linked to real events, so the LEFT JOIN has rows to resolve and the events
+	// access stays in the plan; a second populated tenant makes partition pruning observable.
+	for range 24 {
+		ev := seedEvent(ctx, t, st.Pool, runBig, "planner")
+		seedMemory(ctx, t, st.Pool, projBig, "semantic", "big tenant memory", "planner", ev)
+	}
+	for range 12 {
+		seedMemory(ctx, t, st.Pool, projSmall, "semantic", "small tenant memory", "planner", pgtype.UUID{})
+	}
+	if _, err := st.Pool.Exec(ctx, `ANALYZE memories, events`); err != nil {
+		t.Fatalf("analyze: %v", err)
+	}
+
+	bigUUID, smallUUID := mustUUID(t, projBig), mustUUID(t, projSmall)
+	bigSuffix := hex.EncodeToString(bigUUID.Bytes[:])
+	smallSuffix := hex.EncodeToString(smallUUID.Bytes[:])
+
+	tx, err := st.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, "SET LOCAL enable_seqscan = off"); err != nil {
+		t.Fatalf("disable seqscan: %v", err)
+	}
+	rows, err := tx.Query(ctx, `EXPLAIN
+		SELECT m.id, e.run_id
+		FROM memories m
+		LEFT JOIN events e ON e.project_id = m.project_id AND e.id = m.source_event_id
+		WHERE m.project_id = $1 AND m.superseded_by IS NULL AND m.valid_to IS NULL
+		ORDER BY m.created_at DESC, m.id DESC
+		LIMIT 50`, bigUUID)
+	if err != nil {
+		t.Fatalf("explain: %v", err)
+	}
+	defer rows.Close()
+	var plan strings.Builder
+	for rows.Next() {
+		var line string
+		if err := rows.Scan(&line); err != nil {
+			t.Fatalf("scan plan: %v", err)
+		}
+		plan.WriteString(line)
+		plan.WriteByte('\n')
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("plan rows: %v", err)
+	}
+	p := strings.ToLower(plan.String())
+	// Events-side gate: with seq scans penalized, an events index must be able to serve the join. A drift that
+	// left the join with no usable events index would force the planner onto a Seq Scan of the shared events
+	// table (the whole-table read that grows with total events across all runs), which this catches. The access
+	// method itself varies by scale/stats (the id primary key or the (project_id, run_id) index), so we pin the
+	// negative — no seq scan on events — not a specific index name, which would false-red on a planner switch
+	// between equally-valid events indexes. (A bare "index scan" positive check is not asserted: the memories
+	// partition scan below satisfies it on its own, so it would not discriminate the events side.)
+	if strings.Contains(p, "seq scan on events") {
+		t.Errorf("the run_id join fell to a sequential scan of the shared events table:\n%s", plan.String())
+	}
+	// The join did not disturb memories-side pruning: only the tenant's own partition, no cross-tenant Append.
+	if !strings.Contains(p, "memories_p_"+bigSuffix) {
+		t.Errorf("did not scan the tenant partition memories_p_%s:\n%s", bigSuffix, plan.String())
+	}
+	if strings.Contains(p, "memories_p_"+smallSuffix) {
+		t.Errorf("touched the OTHER tenant's partition memories_p_%s (pruning drifted):\n%s", smallSuffix, plan.String())
+	}
+	if strings.Contains(p, "append") {
+		t.Errorf("scanned more than one partition (Append present, pruning drifted):\n%s", plan.String())
+	}
+}
+
 // --- helpers ---
 
 func inspectStore(ctx context.Context, t *testing.T) *store.Store {
@@ -331,6 +466,15 @@ func seedEvent(ctx context.Context, t *testing.T, pool *pgxpool.Pool, runID, age
 		t.Fatalf("insert event: %v", err)
 	}
 	return ev.ID
+}
+
+// deleteEvent hard-deletes one event, standing in for retention. The memories.source_event_id FK is ON DELETE
+// SET NULL, so a referencing memory keeps existing with a nulled source link (and therefore a null run_id).
+func deleteEvent(ctx context.Context, t *testing.T, pool *pgxpool.Pool, projectID string, eventID pgtype.UUID) {
+	t.Helper()
+	if _, err := pool.Exec(ctx, `DELETE FROM events WHERE project_id = $1 AND id = $2`, mustUUID(t, projectID), eventID); err != nil {
+		t.Fatalf("delete event: %v", err)
+	}
 }
 
 func seedMemory(ctx context.Context, t *testing.T, pool *pgxpool.Pool, projectID, kind, content, agent string, src pgtype.UUID) string {
