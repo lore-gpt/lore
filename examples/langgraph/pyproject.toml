@@ -1,0 +1,25 @@
+[project]
+name = "lore-example-langgraph"
+version = "0"
+description = "Two LangGraph agents coordinating through Lore's shared memory (read-your-writes)."
+requires-python = ">=3.10"
+# The SDK is installed from PyPI, exactly as a user would — not a path dependency — so an SDK
+# regression surfaces in this example's CI. langgraph is resolved to a concrete version in uv.lock,
+# so a breaking upstream release turns the example's CI red instead of silently drifting.
+dependencies = [
+    "loregpt>=0.1.0,<0.2.0",
+    "langgraph>=0.2",
+]
+
+[dependency-groups]
+dev = ["ruff"]
+
+[tool.uv]
+# This is a runnable example, not a distributable package — don't try to build it.
+package = false
+
+[tool.ruff]
+line-length = 110
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]

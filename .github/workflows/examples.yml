@@ -1,0 +1,60 @@
+name: examples
+
+# Compiles and lints each example on any change under examples/. Path-filtered natively (no third-party
+# filter action — a known CI supply-chain surface), so unrelated PRs never trigger it: keep it OUT of
+# required checks. Each example installs the SDK from its published package via its own uv.lock, so an SDK
+# regression — or a breaking framework release the lock would surface — shows up here first. A live smoke
+# run against a real Lore is a separate, dormant job (below), off unless a repo variable turns it on.
+on:
+  pull_request:
+    paths:
+      - "examples/**"
+  push:
+    branches: [main]
+    paths:
+      - "examples/**"
+
+permissions:
+  contents: read
+
+jobs:
+  langgraph:
+    name: langgraph (compile · lint)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: examples/langgraph
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v5
+      - name: install (frozen lockfile)
+        run: uv sync --frozen
+      - name: compile the graph (no live server)
+        # Builds the LangGraph app with a throwaway client — validates the graph wiring and that the SDK
+        # surface the example uses still exists, without needing a running Lore.
+        run: uv run python -c "from coordinate import build_team; from loregpt import LoreClient; build_team(LoreClient(api_key='ci-check'))"
+      - name: lint
+        run: uv run ruff check .
+
+  langgraph-live:
+    name: langgraph (live smoke — dormant)
+    runs-on: ubuntu-latest
+    # Dormant: runs only when the repo variable EXAMPLES_LIVE_SMOKE is "true". It stands Lore up from the
+    # published image and runs the example end to end (the offline fixture extractor needs no model key).
+    # Off by default so a fork or an ordinary PR never spins up services.
+    if: vars.EXAMPLES_LIVE_SMOKE == 'true'
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v5
+      - name: start Lore
+        run: |
+          docker run --rm ghcr.io/lore-gpt/lore:v0.0.2 init > docker-compose.yml
+          docker compose up -d --wait
+      - name: run the example against live Lore
+        working-directory: examples/langgraph
+        run: |
+          set -a; source ../../.lore/credentials; set +a
+          uv run coordinate.py
+      - name: tear down
+        if: always()
+        run: docker compose down -v
