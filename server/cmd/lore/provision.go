@@ -4,11 +4,15 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/spf13/cobra"
 
 	"github.com/lore-gpt/lore/core/provision"
 	"github.com/lore-gpt/lore/core/store"
+	"github.com/lore-gpt/lore/core/store/db"
 	"github.com/lore-gpt/lore/server/internal/config"
 )
 
@@ -25,13 +29,23 @@ func provisionCmd() *cobra.Command {
 		Short: "Create a project (organization, project, partitions) and mint an API key",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			// File-guard: existing credentials mean this project was already provisioned. Leave it — and the
-			// key it holds — untouched, so the compose one-shot is safe to re-run on every `up`.
+			// File-guard: an existing credentials file normally means this project was already provisioned, so
+			// the compose one-shot is safe to re-run on every `up`. But a guard on the file alone wrongly
+			// no-ops after `docker compose down -v` wipes the database while the host file lingers — every
+			// request then fails with a dead key. So when the file names a project, we verify below that the
+			// project still exists before trusting it. A file we cannot read a project id from is left
+			// untouched (it may be hand-edited); we never provision over something we do not understand.
+			var verifyID pgtype.UUID
+			verify := false
 			if out != "" {
 				if info, statErr := os.Stat(out); statErr == nil && info.Size() > 0 {
-					_, err := fmt.Fprintf(cmd.ErrOrStderr(),
-						"already provisioned; credentials at %s (delete it to provision a fresh project)\n", out)
-					return err
+					id, ok := readProjectID(out)
+					if !ok {
+						_, err := fmt.Fprintf(cmd.ErrOrStderr(),
+							"already provisioned; credentials at %s (could not read a project id; leaving it untouched)\n", out)
+						return err
+					}
+					verifyID, verify = id, true
 				}
 			}
 
@@ -44,9 +58,43 @@ func provisionCmd() *cobra.Command {
 
 			st, err := store.New(ctx, cfg.DatabaseURL)
 			if err != nil {
+				// The database is unreachable, so we cannot tell a live project from a wiped one. Fail loudly
+				// without touching the credentials file — a transient outage must never heal over good keys.
 				return err
 			}
 			defer st.Close()
+
+			if verify {
+				exists, err := db.New(st.Pool).ProjectExists(ctx, verifyID)
+				if err != nil {
+					// A query error is a database problem, not proof the project is gone — same rule as a
+					// failed connection: fail loudly and leave the credentials untouched.
+					return err
+				}
+				if exists {
+					_, err := fmt.Fprintf(cmd.ErrOrStderr(),
+						"already provisioned; credentials at %s (delete it to provision a fresh project)\n", out)
+					return err
+				}
+				// The database answered and the project is gone (most likely a reset). Move the stale
+				// credentials aside — never destroy key material — then provision a fresh project below. The
+				// rename happens BEFORE the message that announces it, so a rename failure is a loud non-zero
+				// exit rather than a false "moved to .bak" line. If the provision that follows fails, only the
+				// .bak remains; the next run then provisions cleanly (no credentials file) with the old key
+				// still preserved in .bak.
+				bak := out + ".bak"
+				// Keep a single, latest backup. A prior heal may have left one, and os.Rename does not
+				// replace an existing file on every platform, so remove it first for a deterministic overwrite.
+				_ = os.Remove(bak)
+				if err := os.Rename(out, bak); err != nil {
+					return fmt.Errorf("back up stale credentials to %s: %w", bak, err)
+				}
+				if _, err := fmt.Fprintf(cmd.ErrOrStderr(),
+					"previous project not found — was the database reset? Provisioning a fresh project; your old "+
+						"credentials were moved to %s (still valid if you pointed at a different database).\n", bak); err != nil {
+					return err
+				}
+			}
 
 			res, err := provision.Provision(ctx, st.Pool, orgName, projectName)
 			if err != nil {
@@ -105,4 +153,27 @@ func writeCredentials(path string, res provision.Result) error {
 		return fmt.Errorf("write credentials to %s: %w", path, err)
 	}
 	return nil
+}
+
+// readProjectID extracts LORE_PROJECT_ID from a credentials file written by writeCredentials, so the
+// file-guard can verify the project against the database. It returns ok=false — meaning "leave the file
+// untouched" — if the file cannot be read, has no LORE_PROJECT_ID line, or that line is not a UUID, so a
+// hand-edited or unexpected file is never treated as a wiped project and provisioned over.
+func readProjectID(path string) (pgtype.UUID, bool) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return pgtype.UUID{}, false
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		value, ok := strings.CutPrefix(strings.TrimSpace(line), "LORE_PROJECT_ID=")
+		if !ok {
+			continue
+		}
+		id, err := uuid.Parse(strings.TrimSpace(value))
+		if err != nil {
+			return pgtype.UUID{}, false
+		}
+		return pgtype.UUID{Bytes: id, Valid: true}, true
+	}
+	return pgtype.UUID{}, false
 }
