@@ -13,10 +13,14 @@ from typing import Any
 from ._types import Question, Session, Turn
 
 # The dataset is fetched at runtime, never vendored into the repo. Pin the revision so a score is reproducible;
-# the report records exactly this repo+revision. NOTE: revision is "main" as a placeholder — pin it to a commit
-# SHA before the first real run (a slice gap, surfaced, not silently shipped).
+# the report records exactly this repo+revision. The revision is the placeholder below until pinned — a real
+# run is blocked (guards.dataset_pin_blocker) until this is a commit SHA, so a slice gap surfaces loudly rather
+# than shipping a moving-target score. IMPORTANT: changing this revision invalidates any locked baseline
+# reference — the baseline is measured under one universe (dataset revision + judge + answerer + n + protocol);
+# re-measure it under the new universe, never compare across universes.
 DATASET_REPO = "xiaowu0162/longmemeval-cleaned"
-DATASET_REVISION = "main"
+PLACEHOLDER_REVISION = "main"
+DATASET_REVISION = PLACEHOLDER_REVISION
 SPLIT_FILES = {
     "s": "longmemeval_s_cleaned.json",
     "m": "longmemeval_m_cleaned.json",

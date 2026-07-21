@@ -33,6 +33,7 @@ from .batch import (
     run_batch,
 )
 from .cache import CacheKey, JudgeCache, JudgeDecision, hash_answer
+from .guards import dataset_pin_blocker, lore_embedder_blocker
 from .judge import (
     DEFAULT_JUDGE_MODEL,
     PROMPT_HASH,
@@ -44,6 +45,7 @@ from .judge import (
 from .loader import (
     DATASET_REPO,
     DATASET_REVISION,
+    PLACEHOLDER_REVISION,
     deterministic_subset,
     download_split,
     load_questions,
@@ -75,6 +77,7 @@ __all__ = [
     "DATASET_REVISION",
     "DEFAULT_ANSWERER_MODEL",
     "DEFAULT_JUDGE_MODEL",
+    "PLACEHOLDER_REVISION",
     "PROMPT_HASH",
     "RUBRIC_VERSION",
     "VARIANCE_ANSWER",
@@ -112,11 +115,13 @@ __all__ = [
     "anthropic_answerer",
     "build_answer_prompt",
     "build_grading_prompt",
+    "dataset_pin_blocker",
     "deterministic_subset",
     "download_split",
     "estimate_tokens",
     "hash_answer",
     "load_questions",
+    "lore_embedder_blocker",
     "openai_judge",
     "parse_question",
     "run_batch",
