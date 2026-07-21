@@ -39,15 +39,10 @@ Lore is the memory layer that keeps a **team** of LLM agents working from one re
 
 ## How it works
 
-```mermaid
-flowchart LR
-    A["🤖 Agent A"] -- "write → seq" --> E["📥 Event log<br/>(append-only)"]
-    B["🤖 Agent B"] -- "write" --> E
-    E --> C["⚖️ Consolidate<br/>versioned claims<br/>conflicts resolved by policy"]
-    C --> P["📦 Context pack<br/>budget-fit · provenance-tagged<br/>deterministic"]
-    P -- "pack(min_seq) → covered_seq ≥ seq" --> A
-    P --> B
-```
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset=".github/assets/dataflow-dark.svg">
+  <img src=".github/assets/dataflow-light.svg" alt="Lore data flow: agents write events with seq tokens to an append-only event log; an async pipeline consolidates them into versioned memories and claims; pack(min_seq) returns a budget-fit, deterministic context pack with covered_seq ≥ seq — read-your-writes." width="920">
+</picture>
 
 1. **Write** — agents stream events; nothing blocks.
 2. **Consolidate** — facts become versioned claims; conflicts resolved by policy, not luck.
