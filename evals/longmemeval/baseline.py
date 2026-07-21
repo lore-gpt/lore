@@ -98,3 +98,53 @@ class Baseline:
             universe=Universe(**raw["universe"]),
             measured_at=str(raw["measured_at"]),
         )
+
+
+@dataclass(frozen=True, slots=True)
+class GateOutcome:
+    """One system's outcome from the baseline decision. kind is one of:
+    mem0 → 'locked' | 'already_locked' | 'not_locked_sanity'; lore → 'gate_pass' | 'gate_fail' | 'no_baseline'."""
+
+    system: str
+    kind: str
+    accuracy: float
+    reference: float | None  # the baseline reference accuracy when one applied, else None
+
+
+def decide_baseline(
+    *,
+    mem0: tuple[float, Universe] | None,
+    lore: tuple[float, Universe] | None,
+    existing: Baseline | None,
+    now: str,
+) -> tuple[Baseline | None, list[GateOutcome]]:
+    """The pure baseline decision (no I/O): given each measured system's (accuracy, universe) and the existing
+    locked baseline, return the baseline to PERSIST (or None to leave the stored one as-is) and the per-system
+    outcomes to report. Mem0 locks a sanity-consistent reference for its universe the first time it is measured
+    there; Lore is gated one-sided against the locked reference for its own universe — including a reference
+    just locked by Mem0 in the same run."""
+    outcomes: list[GateOutcome] = []
+    to_save: Baseline | None = None
+    baseline = existing
+
+    if mem0 is not None:
+        acc, universe = mem0
+        if baseline is not None and baseline.applies_to(universe):
+            # A reference is locked once per universe; a later Mem0 run in the same universe does not move it.
+            outcomes.append(GateOutcome("mem0", "already_locked", acc, baseline.reference_accuracy))
+        elif sanity_ok(acc):
+            baseline = Baseline(reference_accuracy=acc, universe=universe, measured_at=now)
+            to_save = baseline
+            outcomes.append(GateOutcome("mem0", "locked", acc, acc))
+        else:
+            outcomes.append(GateOutcome("mem0", "not_locked_sanity", acc, None))
+
+    if lore is not None:
+        acc, universe = lore
+        if baseline is not None and baseline.applies_to(universe):
+            kind = "gate_pass" if baseline.passes(acc) else "gate_fail"
+            outcomes.append(GateOutcome("lore", kind, acc, baseline.reference_accuracy))
+        else:
+            outcomes.append(GateOutcome("lore", "no_baseline", acc, None))
+
+    return to_save, outcomes

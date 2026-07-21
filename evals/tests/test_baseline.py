@@ -1,7 +1,12 @@
+from collections.abc import Sequence
 from pathlib import Path
 
-from longmemeval import Baseline, Provenance, Universe, sanity_ok
+from longmemeval import Baseline, GateOutcome, Provenance, Universe, decide_baseline, sanity_ok
 from longmemeval.baseline import GATE_MARGIN, PUBLISHED_MEM0_BAND, SANITY_FLOOR
+
+
+def _kinds(outcomes: Sequence[GateOutcome]) -> dict[str, str]:
+    return {o.system: o.kind for o in outcomes}
 
 
 def _universe(**over: object) -> Universe:
@@ -60,3 +65,40 @@ def test_baseline_round_trips_through_disk(tmp_path: Path) -> None:
     assert Baseline.load(path) is None  # absent → None
     base.save(path)
     assert Baseline.load(path) == base
+
+
+def test_decide_locks_mem0_then_gates_lore_in_one_run() -> None:
+    u = _universe()
+    to_save, outcomes = decide_baseline(mem0=(0.82, u), lore=(0.80, u), existing=None, now="t")
+    assert to_save is not None
+    assert to_save.reference_accuracy == 0.82
+    kinds = _kinds(outcomes)
+    assert kinds["mem0"] == "locked"
+    # lore 0.80 >= 0.82 - 0.10 → passes, against the reference locked in this same run
+    assert kinds["lore"] == "gate_pass"
+
+
+def test_decide_does_not_lock_a_below_floor_reference() -> None:
+    to_save, outcomes = decide_baseline(mem0=(0.50, _universe()), lore=None, existing=None, now="t")
+    assert to_save is None
+    assert _kinds(outcomes)["mem0"] == "not_locked_sanity"
+
+
+def test_decide_leaves_an_already_locked_reference_untouched() -> None:
+    u = _universe()
+    existing = Baseline(reference_accuracy=0.88, universe=u, measured_at="old")
+    # Even a below-floor re-measurement never moves an already-locked reference for the same universe.
+    to_save, outcomes = decide_baseline(mem0=(0.60, u), lore=None, existing=existing, now="t")
+    assert to_save is None
+    assert _kinds(outcomes)["mem0"] == "already_locked"
+
+
+def test_decide_fails_lore_below_band_and_flags_a_different_universe() -> None:
+    u = _universe()
+    existing = Baseline(reference_accuracy=0.90, universe=u, measured_at="old")
+    # lore 0.79 < 0.90 - 0.10 → fail.
+    _, out_fail = decide_baseline(mem0=None, lore=(0.79, u), existing=existing, now="t")
+    assert _kinds(out_fail)["lore"] == "gate_fail"
+    # A lore run in a different universe (here, a different n) has no applicable baseline.
+    _, out_none = decide_baseline(mem0=None, lore=(0.95, _universe(n=10)), existing=existing, now="t")
+    assert _kinds(out_none)["lore"] == "no_baseline"

@@ -34,9 +34,12 @@ from longmemeval import (
     DATASET_REVISION,
     DEFAULT_ANSWERER_MODEL,
     DEFAULT_JUDGE_MODEL,
+    GATE_MARGIN,
     PROMPT_HASH,
+    SANITY_FLOOR,
     VARIANCE_ANSWER,
     VARIANCE_PIPELINE,
+    Baseline,
     JudgeCache,
     Leaderboard,
     Provenance,
@@ -44,8 +47,10 @@ from longmemeval import (
     ResumeStore,
     RunStats,
     SystemReport,
+    Universe,
     VarianceResult,
     dataset_pin_blocker,
+    decide_baseline,
     deterministic_subset,
     download_split,
     load_questions,
@@ -113,6 +118,9 @@ def main() -> None:
     parser.add_argument("--report-dir", default="reports")
     parser.add_argument("--cache-dir", default="judge_cache")
     parser.add_argument("--resume-dir", default="batch_resume")
+    parser.add_argument(
+        "--baseline-dir", default="baseline", help="gitignored dir holding the locked Mem0 baseline reference"
+    )
     args = parser.parse_args()
 
     systems = [s.strip() for s in args.systems.split(",") if s.strip()]
@@ -222,9 +230,52 @@ def main() -> None:
             print()
         reports.append(report)
 
+    # Baseline gate: lock Mem0's reference for this universe (once), then gate Lore one-sided against it.
+    _apply_baseline_gate(reports, Path(args.baseline_dir) / "mem0.json", quiet=args.quiet, now=_now())
+
     # The leaderboard shows accuracy, so it is only for a local/private run — never the public --quiet path.
     if len(reports) > 1 and not args.quiet:
         print(Leaderboard(tuple(reports)).markdown())
+
+
+def _apply_baseline_gate(reports: list[SystemReport], baseline_path: Path, *, quiet: bool, now: str) -> None:
+    """Persist Mem0's locked reference (once per universe, sanity-checked) and gate Lore one-sided against it,
+    printing each system's outcome. Accuracy numbers are withheld under --quiet (the public CI path): only the
+    PASS/FAIL and lock status show — the reference stays in the gitignored baseline file, never the logs."""
+
+    def measured(system: str) -> tuple[float, Universe] | None:
+        report = next((r for r in reports if r.system == system), None)
+        if report is None:
+            return None
+        return report.variance_answer.overall().mean, Universe.of(report.provenance, VARIANCE_ANSWER)
+
+    to_save, outcomes = decide_baseline(
+        mem0=measured("mem0"), lore=measured("lore"), existing=Baseline.load(baseline_path), now=now
+    )
+    if to_save is not None:
+        to_save.save(baseline_path)
+
+    for o in outcomes:
+        acc = "" if quiet else f" (accuracy {o.accuracy:.3f})"
+        if o.kind == "locked":
+            print(f"mem0: baseline reference locked for this universe -> {baseline_path}{acc}")
+        elif o.kind == "already_locked":
+            print("mem0: reference already locked for this universe (left unchanged)")
+        elif o.kind == "not_locked_sanity":
+            print(
+                f"mem0: reference below the sanity floor ({SANITY_FLOOR:.2f}) — NOT locked; investigate the "
+                f"harness before trusting a run{acc}"
+            )
+        elif o.kind in ("gate_pass", "gate_fail"):
+            verdict = "PASS" if o.kind == "gate_pass" else "FAIL"
+            ref = o.reference if o.reference is not None else 0.0
+            detail = "" if quiet else f" (lore {o.accuracy:.3f} vs mem0 ref {ref:.3f} - {GATE_MARGIN:.2f})"
+            print(f"lore: +/-10 baseline gate {verdict}{detail}")
+        elif o.kind == "no_baseline":
+            print(
+                "lore: no Mem0 baseline locked for this universe — measure mem0 first "
+                "(same dataset revision, judge, answerer, n)"
+            )
 
 
 def _build_system(name: str, args: argparse.Namespace, poll_timeout: float) -> tuple[object, str, str, str, str]:

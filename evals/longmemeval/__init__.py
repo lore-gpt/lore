@@ -26,7 +26,9 @@ from .baseline import (
     PUBLISHED_MEM0_BAND,
     SANITY_FLOOR,
     Baseline,
+    GateOutcome,
     Universe,
+    decide_baseline,
     sanity_ok,
 )
 from .batch import (
@@ -103,6 +105,7 @@ __all__ = [
     "BatchStatus",
     "CacheKey",
     "DistillationTimeout",
+    "GateOutcome",
     "Judge",
     "JudgeCache",
     "JudgeDecision",
@@ -129,6 +132,7 @@ __all__ = [
     "build_answer_prompt",
     "build_grading_prompt",
     "dataset_pin_blocker",
+    "decide_baseline",
     "deterministic_subset",
     "download_split",
     "estimate_tokens",
