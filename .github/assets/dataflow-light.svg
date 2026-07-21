@@ -1,0 +1,69 @@
+<svg viewBox="0 0 960 352" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="df-title df-desc">
+  <title id="df-title">Lore data flow</title>
+  <desc id="df-desc">Agents write events with sequence tokens to an append-only event log. An asynchronous pipeline consolidates events into versioned memories. A deterministic, budget-fit context pack is returned; calling pack with min_seq guarantees covered_seq is at least seq — read-your-writes.</desc>
+  <defs>
+    <linearGradient id="df-flow" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#22D6FF"/>
+      <stop offset="0.55" stop-color="#5F85FF"/>
+      <stop offset="1" stop-color="#8A62FF"/>
+    </linearGradient>
+    <marker id="df-arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 z" fill="#5A6170"/>
+    </marker>
+    <marker id="df-arrow-accent" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 z" fill="#5F85FF"/>
+    </marker>
+  </defs>
+
+  <g font-family="'Schibsted Grotesk','IBM Plex Sans',system-ui,sans-serif">
+
+  <rect x="30" y="52" width="132" height="56" rx="12" fill="#F4F5F7" stroke="#C9CDD4"/>
+  <text x="96" y="85" text-anchor="middle" font-size="15" font-weight="600" fill="#1F242B">Agent A</text>
+
+  <rect x="30" y="196" width="132" height="56" rx="12" fill="#F4F5F7" stroke="#C9CDD4"/>
+  <text x="96" y="229" text-anchor="middle" font-size="15" font-weight="600" fill="#1F242B">Agent B</text>
+
+  <g fill="none" stroke="#5A6170" stroke-width="1.6">
+    <path d="M162 80 H198 Q206 80 206 88 V147 Q206 155 214 155"/>
+    <path d="M162 224 H198 Q206 224 206 216 V163 Q206 155 214 155"/>
+    <path d="M214 155 H228" marker-end="url(#df-arrow)"/>
+  </g>
+  <circle cx="214" cy="155" r="2.6" fill="#5A6170"/>
+  <g font-family="'Geist Mono',ui-monospace,Menlo,monospace" font-size="11">
+    <text x="168" y="70" fill="#4A4F58">write &#8594; seq</text>
+    <text x="168" y="246" fill="#6A7280">write</text>
+  </g>
+
+  <rect x="236" y="122" width="152" height="66" rx="12" fill="#F4F5F7" stroke="#C9CDD4"/>
+  <text x="312" y="150" text-anchor="middle" font-size="15" font-weight="600" fill="#1F242B">Event log</text>
+  <text x="312" y="170" text-anchor="middle" font-size="11" fill="#6A7280">append-only</text>
+
+  <path d="M388 155 H434" fill="none" stroke="#5A6170" stroke-width="1.6" stroke-dasharray="5 4" marker-end="url(#df-arrow)"/>
+  <text x="411" y="144" text-anchor="middle" font-size="10" font-family="'Geist Mono',ui-monospace,Menlo,monospace" fill="#6A7280">async</text>
+
+  <rect x="444" y="122" width="180" height="66" rx="12" fill="#F4F5F7" stroke="#C9CDD4"/>
+  <text x="534" y="150" text-anchor="middle" font-size="15" font-weight="600" fill="#1F242B">Consolidate</text>
+  <text x="534" y="170" text-anchor="middle" font-size="11" fill="#6A7280">versioned memories &amp; claims</text>
+
+  <path d="M624 155 H668" fill="none" stroke="#5A6170" stroke-width="1.6" marker-end="url(#df-arrow)"/>
+
+  <rect x="678" y="115" width="188" height="80" rx="14" fill="#F7F5FC" stroke="url(#df-flow)" stroke-width="2"/>
+  <text x="772" y="147" text-anchor="middle" font-size="16" font-weight="700" fill="#1F242B">Context pack</text>
+  <text x="772" y="169" text-anchor="middle" font-size="11" fill="#6A7280">budget-fit &#183; deterministic</text>
+
+  <path d="M772 195 V308 Q772 316 764 316 H610" fill="none" stroke="url(#df-flow)" stroke-width="2"/>
+  <path d="M292 316 H104 Q96 316 96 308 V266" fill="none" stroke="url(#df-flow)" stroke-width="2" marker-end="url(#df-arrow-accent)"/>
+  <text x="784" y="242" font-size="10" font-family="'Geist Mono',ui-monospace,Menlo,monospace" fill="#5F85FF">read-your-writes</text>
+
+  <g font-family="'Geist Mono',ui-monospace,Menlo,monospace" font-size="12">
+    <rect x="306" y="302" width="122" height="28" rx="7" fill="#F4F5F7" stroke="#B9BEC7"/>
+    <text x="367" y="321" text-anchor="middle" fill="#1F242B">pack(min_seq)</text>
+
+    <text x="440" y="321" fill="#6A7280">&#8594;</text>
+
+    <rect x="458" y="302" width="140" height="28" rx="7" fill="#FDF6EA" stroke="#D89A3E"/>
+    <text x="528" y="321" text-anchor="middle" font-weight="600" fill="#B87A1E">covered_seq &#8805; seq</text>
+  </g>
+
+  </g>
+</svg>
