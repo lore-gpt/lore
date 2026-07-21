@@ -7,6 +7,7 @@ read-your-writes consistency, per-agent access control, and deterministic contex
 
 [![CI](https://github.com/lore-gpt/lore/actions/workflows/ci.yml/badge.svg)](https://github.com/lore-gpt/lore/actions/workflows/ci.yml)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+[![Docs](https://img.shields.io/badge/docs-docs.loregpt.ai-22D6FF.svg)](https://docs.loregpt.ai)
 [![Discussions](https://img.shields.io/badge/GitHub-Discussions-333.svg?logo=github)](https://github.com/lore-gpt/lore/discussions)
 [![Waitlist](https://img.shields.io/badge/loregpt.ai-join_the_waitlist-6C4CF1.svg)](https://loregpt.ai)
 
@@ -72,15 +73,17 @@ pack.savedTokens; // the number your CFO will ask about
 
 ## Quickstart (self-host)
 
+Prefer full guides? Everything below, with SDK tabs and an API reference, lives at [docs.loregpt.ai](https://docs.loregpt.ai).
+
 All you need is **Docker** (with Compose). `lore init` runs from the published image and prints a
 docker-compose file — nothing to clone or build:
 
 ```bash
-docker run --rm ghcr.io/lore-gpt/lore:v0.0.1 init > docker-compose.yml
+docker run --rm ghcr.io/lore-gpt/lore:v0.0.2 init > docker-compose.yml
 docker compose up -d --wait
 ```
 
-<sub>PowerShell: `docker run --rm ghcr.io/lore-gpt/lore:v0.0.1 init | Set-Content docker-compose.yml`</sub>
+<sub>PowerShell: `docker run --rm ghcr.io/lore-gpt/lore:v0.0.2 init | Set-Content docker-compose.yml`</sub>
 
 `up` starts the stack, applies migrations, and runs a one-shot that **provisions a first project** and writes
 its id and API key to `./.lore/credentials`. The default extractor is an offline, deterministic fixture, so
@@ -99,7 +102,7 @@ If `./.lore` sits inside a git repository, add `.lore/` to your `.gitignore` —
 
 ```bash
 curl localhost:8080/healthz
-# {"status":"ok","version":"v0.0.1","db":"ok","queue":"ok","workmem":"ok","embedder":"fixture-embed-v1@64"}
+# {"status":"ok","version":"v0.0.2","db":"ok","queue":"ok","workmem":"ok","embedder":"fixture-embed-v1@64"}
 ```
 
 **2 · Create a run** — a run groups a stream of events; the project comes from your key, never the body:

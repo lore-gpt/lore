@@ -70,13 +70,28 @@ publishing** — no registry token is stored in the repo.
 The server image (`ghcr.io/lore-gpt/lore`) and the Inspector image (`ghcr.io/lore-gpt/lore-inspector`) publish
 to GHCR on a `v*` tag, both multi-arch (linux/amd64 + linux/arm64), in lockstep — one tag builds both, so
 `lore init` can pin both to a single version. Publishing uses the workflow's `GITHUB_TOKEN`, so no secret is
-stored. Tag and push (`git tag vX.Y.Z && git push origin vX.Y.Z`); each job builds, pushes, and smoke-tests its
-image.
+stored; each job builds, pushes, and smoke-tests its image.
+
+**Cutting a release — order matters:**
+
+1. **Version-bump commit first.** Update the version pins in `README.md` — the `ghcr.io/lore-gpt/lore:vX.Y.Z`
+   `init` lines and the `/healthz` sample output — to the release version; commit and merge to `main`.
+2. **Tag that commit, then push.** With `main` at the version-bump commit, `git tag vX.Y.Z && git push origin
+   vX.Y.Z`. The tag must contain the bump so the published image, the git tag, and the README pins all agree —
+   `init` pins the generated compose to the tag, and the release smoke test asserts the image reports the tag as
+   its `core.Version`, so any drift fails loud instead of shipping.
 
 **One-time, after the first publish of any NEW package:** a newly created GHCR package is **private** by
 default, so anonymous `docker pull` — and `lore init` for end users — fails until it is made public. Once, in
 the org's **Settings → Packages**, enable public package creation; then on the package page set its visibility
 to **Public**. Do this per package (currently `lore` and `lore-inspector`); published versions then stay public.
+
+**Release checklist:**
+
+- [ ] Docs site bumped in the *same* release — `loreVersion` / `loreImage` set to the new version **and** the
+      API spec re-synced to the tag — so the README pins and docs.loregpt.ai never drift.
+- [ ] Any newly created GHCR package is public — a new package publishes **private** by default, so flip it to
+      public (above) or `docker pull` / `lore init` fails for end users.
 
 ## The OSS and paid boundary
 
