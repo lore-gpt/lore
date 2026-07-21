@@ -94,3 +94,20 @@ func (q *Queries) InsertRun(ctx context.Context, projectID pgtype.UUID) (InsertR
 	)
 	return i, err
 }
+
+const projectExists = `-- name: ProjectExists :one
+SELECT EXISTS(SELECT 1 FROM projects WHERE id = $1) AS project_exists
+`
+
+// Does this project still exist? The provision command verifies the project a credentials file points to is
+// actually present before treating the file as proof of provisioning, so a wiped database (for example after
+// `docker compose down -v`, which drops the volume while the host credentials file lingers) is caught loudly
+// instead of serving a dead key. It runs at bootstrap under the owner role, before any tenant GUC is set, so
+// it must not be RLS-scoped.
+// lore:tenant-exempt: projects is the tenant root; scoped by its own id (the RLS subject), not project_id
+func (q *Queries) ProjectExists(ctx context.Context, id pgtype.UUID) (bool, error) {
+	row := q.db.QueryRow(ctx, projectExists, id)
+	var project_exists bool
+	err := row.Scan(&project_exists)
+	return project_exists, err
+}

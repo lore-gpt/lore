@@ -20,3 +20,12 @@ RETURNING id, org_id, name, created_at, active_model_id, retain_events_days, ret
 INSERT INTO runs (project_id)
 VALUES ($1)
 RETURNING id, project_id, status, started_at, last_seq;
+
+-- name: ProjectExists :one
+-- Does this project still exist? The provision command verifies the project a credentials file points to is
+-- actually present before treating the file as proof of provisioning, so a wiped database (for example after
+-- `docker compose down -v`, which drops the volume while the host credentials file lingers) is caught loudly
+-- instead of serving a dead key. It runs at bootstrap under the owner role, before any tenant GUC is set, so
+-- it must not be RLS-scoped.
+-- lore:tenant-exempt: projects is the tenant root; scoped by its own id (the RLS subject), not project_id
+SELECT EXISTS(SELECT 1 FROM projects WHERE id = $1) AS project_exists;

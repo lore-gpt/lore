@@ -151,6 +151,10 @@ curl -s "localhost:8080/v1/runs/$RUN_ID/trace" -H "Authorization: Bearer $LORE_A
 docker compose down -v
 ```
 
+`-v` drops the database volume, so the next `up` provisions a fresh project. The host `./.lore/` directory
+survives that, so provisioning detects the reset, moves the old file to `./.lore/credentials.bak`, and writes
+new credentials — reload them with the command in step 2. (Keeping the old credentials? Skip `-v`.)
+
 Every step above is also a `lore` subcommand for running outside Docker: `lore provision` (create a project
 and mint a key), `lore pack` (fetch a context pack), and `lore doctor` (check the database, schema, and
 server). Run `lore --help` for the full list.
