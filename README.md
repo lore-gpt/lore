@@ -102,7 +102,7 @@ If `./.lore` sits inside a git repository, add `.lore/` to your `.gitignore` —
 
 ```bash
 curl localhost:8080/healthz
-# {"status":"ok","version":"v0.0.1","db":"ok","queue":"ok","workmem":"ok"}
+# {"status":"ok","version":"v0.0.1","db":"ok","queue":"ok","workmem":"ok","embedder":"fixture-embed-v1@64"}
 ```
 
 **2 · Create a run** — a run groups a stream of events; the project comes from your key, never the body:
@@ -184,12 +184,20 @@ Copy [`.env.example`](.env.example) to `.env` and set:
 | `LORE_METRICS_ADDR` | no | `:9090` | Worker's `/metrics` listener (the server serves `/metrics` on its API port) |
 | `LORE_OTEL_ENABLED` | no | `false` | Export OpenTelemetry traces over OTLP (also needs an endpoint below) |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | with tracing | — | OTLP/HTTP collector base URL; the standard OTel variable (`OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` overrides it for traces) |
+| `LORE_EXTRACTION_PROVIDER` | no | fixture | `anthropic` for real LLM extraction; unset/`fixture` keeps the offline fixture |
+| `LORE_EXTRACTION_MODEL` | no | — | Model override for the provider; unset uses its built-in default |
+| `ANTHROPIC_API_KEY` | with `anthropic` | — | Provider-native key (not `LORE_`-prefixed); the worker fails at startup without it |
 | `LORE_EMBEDDING_PROVIDER` | no | fixture | `openai` for a real vector space; unset/`fixture` keeps the offline fixture |
 | `LORE_EMBEDDING_BASE_URL` | no | OpenAI | Any OpenAI-compatible `/v1/embeddings` endpoint (OpenAI, a self-hosted TEI/Ollama/vLLM server) |
 | `LORE_EMBEDDING_MODEL` | with `openai` | — | Embedding model name |
 | `LORE_EMBEDDING_DIM` | with `openai` | — | Vector dimension (asserted against every response) |
 | `LORE_EMBEDDING_SEND_DIMENSIONS` | no | `false` | Send the `dimensions` request field (OpenAI-family truncation); leave off for a self-hosted server that rejects an unknown field |
 | `LORE_EMBEDDING_API_KEY` | no | — | Bearer token for the endpoint; omit for a self-hosted server that needs none |
+
+**Extraction.** The worker distills events into memories. By default that runs on an offline, deterministic
+**fixture** extractor — no external API. For real LLM extraction, set `LORE_EXTRACTION_PROVIDER=anthropic` and
+provide your own `ANTHROPIC_API_KEY` (provider-native, not `LORE_`-prefixed); the worker fails loudly at startup
+if the key is missing rather than silently falling back to the fixture.
 
 **Embeddings.** Retrieval embeds each memory and each query. By default that runs on an offline, deterministic
 **fixture** embedder — reproducible, but not a semantic vector space. For real semantic recall, set
