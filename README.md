@@ -98,6 +98,8 @@ set -a; source ./.lore/credentials; set +a   # sets LORE_PROJECT_ID and LORE_API
 <sub>The generated compose is pinned to the image's version, so `init` and the stack it scaffolds never drift.
 If `./.lore` sits inside a git repository, add `.lore/` to your `.gitignore` — the credentials file holds a key.</sub>
 
+> **On Windows?** The steps below use bash and `curl`. Jump to the [PowerShell variant ↓](#windows-powershell).
+
 **1 · Check health** — unauthenticated, so orchestrators can probe it:
 
 ```bash
@@ -143,6 +145,37 @@ index, so it needs no embedding model:
 curl -s "localhost:8080/v1/memories?limit=10"  -H "Authorization: Bearer $LORE_API_KEY"   # browse (keyset-paginated)
 curl -s "localhost:8080/v1/memories?q=auth"    -H "Authorization: Bearer $LORE_API_KEY"   # lexical search
 curl -s "localhost:8080/v1/runs/$RUN_ID/trace" -H "Authorization: Bearer $LORE_API_KEY"   # this run's pack history
+```
+
+### Windows PowerShell
+
+`curl.exe` mangles the embedded quotes in the JSON bodies above on Windows PowerShell 5.1 — use
+`Invoke-RestMethod`, which serializes a PowerShell object for you. These snippets run unchanged on both
+Windows PowerShell 5.1 and PowerShell 7, and mirror steps 1–4 above:
+
+```powershell
+# Load credentials into the environment (the PowerShell equivalent of `source ./.lore/credentials`)
+Get-Content ./.lore/credentials | Where-Object { $_ -match '^\s*LORE_' } | ForEach-Object {
+  $name, $value = $_ -split '=', 2
+  Set-Item "env:$($name.Trim())" $value.Trim()
+}
+
+# Request options shared by the calls below: the auth header and a JSON content type, splatted in with @lore
+$lore = @{ Headers = @{ Authorization = "Bearer $env:LORE_API_KEY" }; ContentType = "application/json" }
+
+# 1 · Check health (unauthenticated)
+Invoke-RestMethod http://localhost:8080/healthz
+
+# 2 · Create a run
+$runId = (Invoke-RestMethod -Method Post -Uri http://localhost:8080/v1/runs @lore).run_id
+
+# 3 · Append an event -> { event_id, seq }
+$body = @{ run_id = $runId; agent_id = "researcher"; payload = @{ note = "auth flow moved to v2" } } | ConvertTo-Json -Compress
+Invoke-RestMethod -Method Post -Uri http://localhost:8080/v1/events @lore -Body $body
+
+# 4 · Pack context — min_seq asserts read-your-writes
+$body = @{ run_id = $runId; query = "auth work"; min_seq = 1 } | ConvertTo-Json -Compress
+Invoke-RestMethod -Method Post -Uri http://localhost:8080/v1/pack @lore -Body $body
 ```
 
 **5 · Tear it down:**
