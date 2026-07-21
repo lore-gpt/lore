@@ -3,6 +3,7 @@
 judge_cache/
 reports/
 batch_resume/
+baseline/
 .hf_cache/
 
 # Python / tooling
