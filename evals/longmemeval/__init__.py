@@ -21,6 +21,14 @@ from .answerer import (
     anthropic_answerer,
     build_answer_prompt,
 )
+from .baseline import (
+    GATE_MARGIN,
+    PUBLISHED_MEM0_BAND,
+    SANITY_FLOOR,
+    Baseline,
+    Universe,
+    sanity_ok,
+)
 from .batch import (
     AnthropicBatchProvider,
     BatchError,
@@ -77,13 +85,17 @@ __all__ = [
     "DATASET_REVISION",
     "DEFAULT_ANSWERER_MODEL",
     "DEFAULT_JUDGE_MODEL",
+    "GATE_MARGIN",
     "PLACEHOLDER_REVISION",
     "PROMPT_HASH",
+    "PUBLISHED_MEM0_BAND",
     "RUBRIC_VERSION",
+    "SANITY_FLOOR",
     "VARIANCE_ANSWER",
     "VARIANCE_PIPELINE",
     "Answerer",
     "AnthropicBatchProvider",
+    "Baseline",
     "BatchError",
     "BatchOutcome",
     "BatchProvider",
@@ -109,6 +121,7 @@ __all__ = [
     "Session",
     "SystemReport",
     "Turn",
+    "Universe",
     "VarianceResult",
     "Verdict",
     "__version__",
@@ -131,4 +144,5 @@ __all__ = [
     "run_variance_pipeline_batched",
     "run_variance_reuse_ingest",
     "run_variance_reuse_ingest_batched",
+    "sanity_ok",
 ]
