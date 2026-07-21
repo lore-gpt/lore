@@ -45,9 +45,11 @@ from longmemeval import (
     RunStats,
     SystemReport,
     VarianceResult,
+    dataset_pin_blocker,
     deterministic_subset,
     download_split,
     load_questions,
+    lore_embedder_blocker,
     run_variance_pipeline,
     run_variance_pipeline_batched,
     run_variance_reuse_ingest,
@@ -114,6 +116,14 @@ def main() -> None:
     args = parser.parse_args()
 
     systems = [s.strip() for s in args.systems.split(",") if s.strip()]
+
+    if not args.dry_run:
+        # Block a real run before it spends anything (download or API) if the dataset revision is unpinned.
+        pin_blocker = dataset_pin_blocker(args.split, DATASET_REVISION)
+        if pin_blocker:
+            print(f"error: {pin_blocker}", file=sys.stderr)
+            raise SystemExit(2)
+
     all_questions = _load(args.split, Path(args.cache_dir))
     answer_questions = deterministic_subset(all_questions, args.n)
     pipeline_questions = deterministic_subset(all_questions, args.pipeline_n) if args.pipeline else []
@@ -234,6 +244,12 @@ def _build_system(name: str, args: argparse.Namespace, poll_timeout: float) -> t
         # (a cross-system delta could otherwise reflect a budget asymmetry rather than memory quality).
         extraction_model = os.environ.get("LORE_EXTRACTION_MODEL", "unknown")
         embedding_model = _lore_embedding_model(base_url)
+        # Fail closed: a real run must know its embedder (read from /healthz) and must not measure the offline
+        # fixture — a score against a vector space no deployment uses would misreport the embedding model.
+        embed_blocker = lore_embedder_blocker(embedding_model)
+        if embed_blocker:
+            print(f"error: {embed_blocker}", file=sys.stderr)
+            raise SystemExit(2)
         config = f"retrieval token_budget={lore.token_budget}"
         return lore, extraction_model, args.extraction_mode, config, embedding_model
 
