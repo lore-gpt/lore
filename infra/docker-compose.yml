@@ -108,6 +108,17 @@ services:
     command: ["worker"]
     environment:
       LORE_DATABASE_URL: postgres://lore:lore@paradedb:5432/lore?sslmode=disable
+      # Same working-memory stripe as lore-server: the worker routes kind:"state" events to it
+      # when healthy and to a durable claim otherwise. Omitting it here would leave the worker
+      # silently cacheless while /healthz — which reports the SERVER's view — still reads "ok".
+      LORE_VALKEY_URL: redis://valkey:6379
+      # Extraction runs HERE, not in serve, so these belong to the worker. Distillation defaults to
+      # the offline fixture; export LORE_EXTRACTION_PROVIDER=anthropic with ANTHROPIC_API_KEY before
+      # `up` for real LLM extraction. The key is provider-native (not LORE_-prefixed) so an operator
+      # who already exports it needs no extra configuration.
+      LORE_EXTRACTION_PROVIDER: "${LORE_EXTRACTION_PROVIDER:-}"
+      LORE_EXTRACTION_MODEL: "${LORE_EXTRACTION_MODEL:-}"
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
       # Must match lore-server's embedding config: the worker embeds stored memories,
       # serve embeds the query, and the two share one vector space only if identical.
       LORE_EMBEDDING_PROVIDER: "${LORE_EMBEDDING_PROVIDER:-}"
