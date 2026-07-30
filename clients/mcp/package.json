@@ -1,6 +1,6 @@
 {
   "name": "@loregpt/mcp",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Model Context Protocol server for Lore — coordination memory for multi-agent AI systems. Exposes create_run, memory_write, and memory_pack as MCP tools over stdio.",
   "license": "Apache-2.0",
   "author": "The LoreGPT Authors",

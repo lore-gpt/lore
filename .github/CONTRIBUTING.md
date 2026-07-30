@@ -28,19 +28,26 @@ open an issue, comment on an RFC, or send a patch — thank you.
 
 ## Releasing
 
-Two independent release trains: the **SDKs** (npm + PyPI, on `sdk-v*` tags) and the **images** (server +
-inspector, to GHCR, on `v*` tags).
+Two independent release trains: the **client packages** (npm + PyPI, on `sdk-v*` tags) and the **images**
+(server + inspector, to GHCR, on `v*` tags).
 
-### SDKs
+### Client packages
 
-The TypeScript (`@loregpt/sdk` → npm) and Python (`loregpt` → PyPI) SDKs release together, in lockstep, from a
-`sdk-v*` tag (independent of the server image, which releases on `v*`). Publishing is **OIDC trusted
-publishing** — no registry token is stored in the repo.
+The TypeScript SDK (`@loregpt/sdk` → npm), the Python SDK (`loregpt` → PyPI), and the MCP server
+(`@loregpt/mcp` → npm) release together, in lockstep, from a `sdk-v*` tag (independent of the server image,
+which releases on `v*`). They are generated from one spec commit, so one version identifies the wire contract
+across all three; a release with changes in only one package still moves the others. Publishing is **OIDC
+trusted publishing** — no registry token is stored in the repo.
 
 **One-time maintainer setup** (before the first release):
 
-- **npm** — create the `@loregpt` org, then add a Trusted Publisher on `@loregpt/sdk`:
+- **npm** — create the `@loregpt` org, then add a Trusted Publisher on **each** package (`@loregpt/sdk` and
+  `@loregpt/mcp`; trusted publishers are configured per package, not per org):
   - Repository: `lore-gpt/lore` · Workflow: `release-sdk.yml` · Environment: `release`
+  - ⚠️ **npm OIDC cannot perform a package's first publish.** The trusted-publisher settings only exist on a
+    package that npm already knows about, so a brand-new package needs one bootstrap publish from a temporary
+    granular token (publish a placeholder below the first real version, e.g. `0.0.0`), *then* add the trusted
+    publisher, *then* revoke the token. Every release after that is tokenless.
 - **PyPI** — add a Trusted Publisher (a *pending* publisher works before the project's first release) on
   project `loregpt`:
   - Owner/Repo: `lore-gpt/lore` · Workflow: `release-sdk.yml` · Environment: `release`
@@ -49,13 +56,15 @@ publishing** — no registry token is stored in the repo.
 
 **Cutting a release:**
 
-1. Bump the version in **both** `clients/typescript/package.json` and `clients/python/pyproject.toml` to the
+1. Bump the version in **all three** — `clients/typescript/package.json`, `clients/python/pyproject.toml`, and
+   `clients/mcp/package.json` (plus `clients/mcp/src/version.ts`, which a test pins to package.json) — to the
    same `X.Y.Z`; commit and merge to `main`.
 2. Tag and push: `git tag sdk-vX.Y.Z && git push origin sdk-vX.Y.Z`.
-3. The `build` job re-runs every SDK check, verifies the tag matches both versions, and writes a plan (package
-   names, version, spec commit, file lists) to the run summary. The `publish` job then waits in the `release`
-   environment — review the plan and approve. A post-publish job installs both packages from the registries and
-   constructs the client as a smoke check.
+3. The `build` job re-runs every client check, verifies the tag matches all three versions, and writes a plan
+   (package names, version, spec commit, file lists) to the run summary. The `publish` job then waits in the
+   `release` environment — review the plan and approve. A post-publish job installs each package from its
+   registry: it constructs both SDK clients, and spawns `npx -y @loregpt/mcp` to complete an MCP `initialize`
+   handshake — the published server must speak the protocol, not merely install.
 
 **If something goes wrong:**
 
