@@ -56,11 +56,19 @@ trusted publishing** — no registry token is stored in the repo.
 
 **Cutting a release:**
 
-1. Bump the version in **all three** — `clients/typescript/package.json`, `clients/python/pyproject.toml`, and
-   `clients/mcp/package.json` (plus `clients/mcp/src/version.ts`, which a test pins to package.json) — to the
-   same `X.Y.Z`; commit and merge to `main`.
+1. Bump the version to the same `X.Y.Z` in **six** places — each package declares it twice, once in its
+   manifest and once as an exported constant, and a per-package test pins the pair together:
+
+   | package | manifest | exported constant |
+   |---|---|---|
+   | `@loregpt/sdk` | `clients/typescript/package.json` | `clients/typescript/src/index.ts` (`version`) |
+   | `loregpt` | `clients/python/pyproject.toml` | `clients/python/loregpt/__init__.py` (`__version__`) |
+   | `@loregpt/mcp` | `clients/mcp/package.json` | `clients/mcp/src/version.ts` (`VERSION`) |
+
+   Commit and merge to `main`. The release gate re-checks all six against the tag, so a missed constant fails
+   the run in seconds instead of deep inside a package's test output.
 2. Tag and push: `git tag sdk-vX.Y.Z && git push origin sdk-vX.Y.Z`.
-3. The `build` job re-runs every client check, verifies the tag matches all three versions, and writes a plan
+3. The `build` job re-runs every client check, verifies the tag matches all six declarations, and writes a plan
    (package names, version, spec commit, file lists) to the run summary. The `publish` job then waits in the
    `release` environment — review the plan and approve. A post-publish job installs each package from its
    registry: it constructs both SDK clients, and spawns `npx -y @loregpt/mcp` to complete an MCP `initialize`
