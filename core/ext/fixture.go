@@ -12,7 +12,7 @@ import (
 // fixed convention from each event payload, so a caller drives extraction purely through the
 // events it writes — no API key, fully offline:
 //
-//   - "memory": "<text>"                                  → one semantic CandidateMemory
+//   - "memory" | "content" | "note": "<text>"              → one semantic CandidateMemory
 //   - "claim": {"entity","predicate","value","event_time"} → one CandidateClaim
 //   - "entities": [{"name","type","aliases":[...]}, ...]    → EntityMentions
 //   - "fixture_error": "unavailable"                        → the whole call fails with
@@ -21,11 +21,18 @@ import (
 //
 // Each reserved key is decoded independently. A payload that is not a JSON object is skipped
 // whole, but within an object a null or malformed key is ignored without discarding the event's
-// other valid keys (so a typo'd "claim" never eats a good "memory"). A null "memory" contributes
-// nothing; an empty-string "memory" is kept as explicitly-empty content. An event with none of the
-// keys yields nothing. A fixture_error fails the whole call with no partial result; the lowest-Seq
+// other valid keys (so a typo'd "claim" never eats a good "memory"). A null memory key contributes
+// nothing; an empty string is kept as explicitly-empty content. An event with none of the keys
+// yields nothing. A fixture_error fails the whole call with no partial result; the lowest-Seq
 // error wins. Output follows event order.
 type FixtureExtractor struct{}
+
+// memoryKeys are the payload keys read as a memory candidate, in priority order. "memory" is the
+// fixture's own convention; "content" and "note" are the shapes the SDKs, the MCP server and the
+// quickstart emit, so the offline default distils the same payloads a real provider would rather
+// than silently yielding nothing. An event contributes at most ONE memory from this set: the first
+// key that decodes to a non-null string wins, so a payload carrying two of them is not duplicated.
+var memoryKeys = [...]string{"memory", "content", "note"}
 
 type fixtureClaim struct {
 	Entity    string          `json:"entity"`
@@ -67,7 +74,13 @@ func (FixtureExtractor) Extract(_ context.Context, in ExtractInput) (ExtractResu
 		}
 
 		// Each reserved key decodes on its own; a null or malformed key is skipped, never the event.
-		if raw, ok := keys["memory"]; ok {
+		// The memory keys share one slot: the first that yields a string wins and the rest are not
+		// consulted, so {"memory":"a","content":"b"} distils "a" once rather than twice.
+		for _, key := range memoryKeys {
+			raw, ok := keys[key]
+			if !ok {
+				continue
+			}
 			var content *string
 			if json.Unmarshal(raw, &content) == nil && content != nil {
 				res.Memories = append(res.Memories, CandidateMemory{
@@ -75,6 +88,7 @@ func (FixtureExtractor) Extract(_ context.Context, in ExtractInput) (ExtractResu
 					Content:   *content,
 					SourceSeq: ev.Seq,
 				})
+				break
 			}
 		}
 		if raw, ok := keys["claim"]; ok {
