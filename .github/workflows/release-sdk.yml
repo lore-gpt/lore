@@ -1,11 +1,13 @@
 name: release-sdk
 
-# Publish the TypeScript SDK (@loregpt/sdk -> npm) and the Python SDK (loregpt -> PyPI) from a `sdk-v*` tag.
+# Publish the client packages from a `sdk-v*` tag: the TypeScript SDK (@loregpt/sdk -> npm), the Python SDK
+# (loregpt -> PyPI), and the MCP server (@loregpt/mcp -> npm).
 #
-# SDK releases are versioned INDEPENDENTLY of the server image (which releases on `v*`). The two tag globs are
-# disjoint — `v*` never matches `sdk-v0.1.0` (it starts with `s`), and `sdk-v*` never matches `v0.0.1` — so
-# tagging one release train never triggers the other. Both SDKs publish together, in lockstep, at the tag's
-# version.
+# Client releases are versioned INDEPENDENTLY of the server image (which releases on `v*`). The two tag globs
+# are disjoint — `v*` never matches `sdk-v0.1.0` (it starts with `s`), and `sdk-v*` never matches `v0.0.1` — so
+# tagging one release train never triggers the other. All three packages publish together, in lockstep, at the
+# tag's version: they are generated from one spec commit, so a version that identifies the wire contract is
+# more useful than three drifting counters.
 #
 # Identity is OIDC TRUSTED PUBLISHING — no long-lived registry token lives in the repo (the same zero-external-
 # secret principle as the GHCR image release). A maintainer configures the trusted publishers once; see
@@ -31,18 +33,19 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      # Version truth = the tag, verified against both committed package versions. A mismatch fails loud, so a
-      # declared-vs-tagged drift can never be published silently (bump both packages to X.Y.Z before tagging
-      # sdk-vX.Y.Z).
-      - name: Verify tag == package.json == pyproject
+      # Version truth = the tag, verified against every committed package version. A mismatch fails loud, so a
+      # declared-vs-tagged drift can never be published silently (bump all three packages to X.Y.Z before
+      # tagging sdk-vX.Y.Z).
+      - name: Verify tag == package.json == pyproject == mcp package.json
         id: ver
         run: |
           version="${GITHUB_REF_NAME#sdk-v}"
           ts=$(jq -r .version clients/typescript/package.json)
           py=$(sed -nE 's/^version = "(.*)"/\1/p' clients/python/pyproject.toml | head -1)
-          echo "tag=$version  package.json=$ts  pyproject=$py"
-          if [ "$ts" != "$version" ] || [ "$py" != "$version" ]; then
-            echo "::error::version mismatch — tag sdk-v$version but package.json=$ts, pyproject=$py. Bump both to $version and re-tag."
+          mcp=$(jq -r .version clients/mcp/package.json)
+          echo "tag=$version  package.json=$ts  pyproject=$py  mcp=$mcp"
+          if [ "$ts" != "$version" ] || [ "$py" != "$version" ] || [ "$mcp" != "$version" ]; then
+            echo "::error::version mismatch — tag sdk-v$version but package.json=$ts, pyproject=$py, mcp=$mcp. Bump all three to $version and re-tag."
             exit 1
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
@@ -64,6 +67,16 @@ jobs:
           pnpm typecheck
           pnpm test
           pnpm example
+          pnpm build
+
+      # --- MCP server: the full CI mirror + build. It has its own lockfile, so install separately. ---
+      - name: MCP check + build
+        working-directory: clients/mcp
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm gen:check   # spec anti-drift: regen the wire types and fail if they drifted
+          pnpm typecheck
+          pnpm test
           pnpm build
 
       # --- Python: the full CI mirror + build ---
@@ -95,12 +108,20 @@ jobs:
             echo "| --- | --- | --- |"
             echo "| \`@loregpt/sdk\` | ${version} | npm |"
             echo "| \`loregpt\` | ${version} | PyPI |"
+            echo "| \`@loregpt/mcp\` | ${version} | npm |"
+            echo ""
+            echo "All three publish in lockstep from one spec commit, so a release with changes in only one"
+            echo "package still moves the others — a same-version set is the guarantee, not a changelog claim."
             echo ""
             echo "Generated wire types are in lockstep with spec commit \`${spec_commit}\`."
             echo ""
-            echo "### npm package contents (\`npm pack --dry-run\`)"
+            echo "### npm package contents — @loregpt/sdk (\`npm pack --dry-run\`)"
             echo '```'
             (cd clients/typescript && npm pack --dry-run 2>&1 || true)
+            echo '```'
+            echo "### npm package contents — @loregpt/mcp (\`npm pack --dry-run\`)"
+            echo '```'
+            (cd clients/mcp && npm pack --dry-run 2>&1 || true)
             echo '```'
             echo "### Python distributions"
             echo '```'
@@ -141,6 +162,15 @@ jobs:
           # No --provenance flag: trusted publishing generates + publishes provenance automatically.
           npm publish --access public
 
+      # The MCP server ships from the same tag and the same OIDC identity; it needs its own trusted-publisher
+      # entry on npm (configured per package, not per org).
+      - name: Publish @loregpt/mcp to npm
+        working-directory: clients/mcp
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm build
+          npm publish --access public
+
       # --- PyPI: OIDC trusted publishing ---
       - uses: astral-sh/setup-uv@v7
         with:
@@ -171,6 +201,53 @@ jobs:
             echo "npm not propagated yet (attempt ${attempt}); waiting…"; sleep 20
           done
           node --input-type=module -e "import { LoreClient } from '@loregpt/sdk'; new LoreClient({ apiKey: 'smoke' }); console.log('npm import + construct ok');"
+
+      # The MCP server's contract is the protocol, not an import: the published bin must actually speak MCP.
+      # This is the exact command the README config block spawns (`npx -y @loregpt/mcp`), so a package that
+      # installs but fails to serve — or that was never published at all — fails the release here rather than
+      # in a user's editor. A dummy key is enough: the server reaches the API only when a tool is called.
+      - name: npx + MCP initialize handshake (retry for propagation)
+        env:
+          LORE_API_KEY: smoke
+        run: |
+          version="${{ needs.build.outputs.version }}"
+          # Poll with `npm view`, not by spawning the bin: the server has no --help and would block on stdio.
+          for attempt in 1 2 3 4 5 6; do
+            if npm view "@loregpt/mcp@${version}" version >/dev/null 2>&1; then break; fi
+            echo "npm not propagated yet (attempt ${attempt}); waiting…"; sleep 20
+          done
+          cat > /tmp/mcp-smoke.mjs <<'JS'
+          import { spawn } from "node:child_process";
+          const version = process.env.SMOKE_VERSION;
+          const child = spawn("npx", ["-y", `@loregpt/mcp@${version}`], { stdio: ["pipe", "pipe", "inherit"] });
+          const timer = setTimeout(() => { console.error("timed out waiting for an initialize response"); child.kill(); process.exit(1); }, 120000);
+          let buf = "";
+          child.stdout.on("data", (d) => {
+            buf += d.toString();
+            let i;
+            while ((i = buf.indexOf("\n")) >= 0) {
+              const line = buf.slice(0, i).trim();
+              buf = buf.slice(i + 1);
+              if (!line) continue;
+              let msg;
+              try { msg = JSON.parse(line); } catch { continue; }
+              if (msg.id !== 1) continue;
+              clearTimeout(timer);
+              const name = msg.result?.serverInfo?.name;
+              if (name !== "lore-mcp") { console.error("unexpected initialize result:", line); child.kill(); process.exit(1); }
+              console.log(`mcp initialize ok — ${name} ${msg.result.serverInfo.version}`);
+              child.kill();
+              process.exit(0);
+            }
+          });
+          child.on("error", (e) => { console.error("spawn failed:", e.message); process.exit(1); });
+          child.stdin.write(JSON.stringify({
+            jsonrpc: "2.0", id: 1, method: "initialize",
+            params: { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "release-smoke", version: "0" } },
+          }) + "\n");
+          JS
+          SMOKE_VERSION="${version}" node /tmp/mcp-smoke.mjs
+
       - uses: actions/setup-python@v6
         with:
           python-version: "3.13"
