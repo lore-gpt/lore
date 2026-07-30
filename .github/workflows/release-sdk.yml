@@ -33,19 +33,38 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      # Version truth = the tag, verified against every committed package version. A mismatch fails loud, so a
-      # declared-vs-tagged drift can never be published silently (bump all three packages to X.Y.Z before
-      # tagging sdk-vX.Y.Z).
-      - name: Verify tag == package.json == pyproject == mcp package.json
+      # Version truth = the tag, verified against every committed declaration. Each package states its version
+      # TWICE — in its manifest and as an exported constant a per-package test pins to it — so all six are
+      # checked here. The per-package tests already catch a manifest/constant drift, but they run minutes later
+      # and report it inside TAP output; the gate's job is to fail in seconds and name every file to fix, on a
+      # tag that otherwise has to be deleted and re-pushed.
+      - name: Verify tag == every declared version
         id: ver
         run: |
           version="${GITHUB_REF_NAME#sdk-v}"
           ts=$(jq -r .version clients/typescript/package.json)
+          ts_const=$(sed -nE 's/^export const version = "(.*)";/\1/p' clients/typescript/src/index.ts | head -1)
           py=$(sed -nE 's/^version = "(.*)"/\1/p' clients/python/pyproject.toml | head -1)
+          py_const=$(sed -nE 's/^__version__ = "(.*)"/\1/p' clients/python/loregpt/__init__.py | head -1)
           mcp=$(jq -r .version clients/mcp/package.json)
-          echo "tag=$version  package.json=$ts  pyproject=$py  mcp=$mcp"
-          if [ "$ts" != "$version" ] || [ "$py" != "$version" ] || [ "$mcp" != "$version" ]; then
-            echo "::error::version mismatch — tag sdk-v$version but package.json=$ts, pyproject=$py, mcp=$mcp. Bump all three to $version and re-tag."
+          mcp_const=$(sed -nE 's/^export const VERSION = "(.*)";/\1/p' clients/mcp/src/version.ts | head -1)
+          fail=0
+          for pair in \
+            "clients/typescript/package.json:$ts" \
+            "clients/typescript/src/index.ts:$ts_const" \
+            "clients/python/pyproject.toml:$py" \
+            "clients/python/loregpt/__init__.py:$py_const" \
+            "clients/mcp/package.json:$mcp" \
+            "clients/mcp/src/version.ts:$mcp_const"; do
+            file="${pair%:*}"; got="${pair##*:}"
+            printf '%-42s %s\n' "$file" "$got"
+            if [ "$got" != "$version" ]; then
+              echo "::error file=$file::declares '$got', but the tag is sdk-v$version — bump it and re-tag"
+              fail=1
+            fi
+          done
+          if [ "$fail" = 1 ]; then
+            echo "::error::version mismatch against tag sdk-v$version — every file listed above must declare $version"
             exit 1
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
