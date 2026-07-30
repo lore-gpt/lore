@@ -303,6 +303,8 @@ export interface components {
             working_source: "live" | "durable" | "skipped";
             /** @description True when the pack omitted content that existed — the raw tail beyond the guaranteed window was capped, or a token budget dropped memories. */
             truncated: boolean;
+            /** @description Retrieval legs that missed the partial-result budget and contributed nothing to this pack — today only `dense`, when the embedding provider answered slower than LORE_RETRIEVAL_PARTIAL_TIMEOUT. Omitted entirely when every leg finished, so its presence is the signal that this answer was assembled from fewer sources than are configured. The response is still 200: the pack is valid, just narrower. */
+            degraded?: "dense"[];
         };
         PackSource: {
             /** Format: uuid */

@@ -96,6 +96,9 @@ export class LoreClient {
       savedTokens: b.saved_tokens,
       workingSource: b.working_source,
       truncated: b.truncated,
+      // Omitted by the server when every leg finished, so only carry it through when present —
+      // an always-present empty array would read as "something degraded" at a glance.
+      ...(b.degraded !== undefined ? { degraded: b.degraded } : {}),
     };
   }
 

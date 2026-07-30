@@ -39,6 +39,11 @@ type PackResponse struct {
 	SavedTokens    int          `json:"saved_tokens"`
 	WorkingSource  string       `json:"working_source"`
 	Truncated      bool         `json:"truncated"`
+	// Degraded names the retrieval legs that missed the partial-result budget and contributed nothing to
+	// this pack (today only "dense", when the embedding provider answered slower than the budget). It is
+	// omitted when every leg finished, so a healthy response is byte-identical to before and a client can
+	// read its presence as "this answer came from fewer sources than are configured".
+	Degraded []string `json:"degraded,omitempty"`
 }
 
 // PackSource is one distilled memory that composed the pack, in pack order.
@@ -140,6 +145,7 @@ func packResponse(res pack.Result) PackResponse {
 		SavedTokens:    res.SavedTokens,
 		WorkingSource:  res.WorkingSource,
 		Truncated:      res.Truncated,
+		Degraded:       res.Degraded,
 	}
 }
 

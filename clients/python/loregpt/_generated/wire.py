@@ -110,3 +110,4 @@ class PackResponse(TypedDict):
     saved_tokens: int
     working_source: Literal['live', 'durable', 'skipped']
     truncated: bool
+    degraded: NotRequired[list[Literal['dense']]]

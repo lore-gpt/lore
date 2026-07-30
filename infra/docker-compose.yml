@@ -79,6 +79,10 @@ services:
       LORE_EMBEDDING_DIM: "${LORE_EMBEDDING_DIM:-}"
       LORE_EMBEDDING_SEND_DIMENSIONS: "${LORE_EMBEDDING_SEND_DIMENSIONS:-}"
       LORE_EMBEDDING_API_KEY: "${LORE_EMBEDDING_API_KEY:-}"
+      # How long the dense retrieval leg may take to embed the query before the read
+      # proceeds without it. Unset uses 2s, which fits a hosted embedding endpoint; a
+      # dropped leg is reported in the pack's `degraded` field.
+      LORE_RETRIEVAL_PARTIAL_TIMEOUT: "${LORE_RETRIEVAL_PARTIAL_TIMEOUT:-}"
       # OpenTelemetry traces are off unless LORE_OTEL_ENABLED=true AND an OTLP endpoint
       # is set; export both before `up` to ship traces to a collector.
       LORE_OTEL_ENABLED: "${LORE_OTEL_ENABLED:-}"

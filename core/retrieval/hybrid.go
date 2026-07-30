@@ -51,11 +51,15 @@ type Hybrid struct {
 // allowed. It is a loud configuration error.
 var ErrModelMismatch = errors.New("retrieval: embedder model does not match the project's active model")
 
-// partialTimeout is the budget the dense leg has to produce a query embedding and run before the fusion
-// proceeds without it. It bounds tail latency from a slow embedding provider: past the budget the read
-// returns on the legs that finished (lexical, entity) rather than waiting. The value tracks the read
-// latency target for the whole pack.
-const partialTimeout = 80 * time.Millisecond
+// DefaultPartialTimeout is the budget the dense leg has to produce a query embedding and run before the
+// fusion proceeds without it. It bounds tail latency from a slow embedding provider: past the budget the
+// read returns on the legs that finished (lexical, entity) rather than waiting.
+//
+// The default is generous on purpose. A hosted embedding endpoint answers in hundreds of milliseconds, so a
+// budget tuned to the offline fixture drops the dense leg on every single request — semantic recall would be
+// configured, billed, and never used, with only a server-side warning to say so. Operators who would rather
+// cap the tail than wait for the vector lower it with LORE_RETRIEVAL_PARTIAL_TIMEOUT.
+const DefaultPartialTimeout = 2 * time.Second
 
 // queryNormVersion is the version of the query-normalisation scheme baked into a cache key. Bumping it when
 // normalisation changes invalidates stale cache entries for free (they key under the old version).
@@ -77,6 +81,21 @@ type LegStat struct {
 	Count   int
 	Latency time.Duration
 	Cached  bool // dense only: the query embedding was served from cache
+}
+
+// DroppedLegs names the legs that missed the partial-result budget and contributed nothing to the fusion,
+// in stat order; it returns nil when every leg finished. A dropped leg means the answer was assembled from
+// fewer sources than configured, which the caller surfaces to the client — a partial result that looks
+// complete is the failure mode this exists to prevent. The status vocabulary stays owned here so callers
+// never match on a string literal.
+func DroppedLegs(stats []LegStat) []string {
+	var dropped []string
+	for _, s := range stats {
+		if s.Status == statusTimeout {
+			dropped = append(dropped, s.Name)
+		}
+	}
+	return dropped
 }
 
 // leg is one retrieval source. Every real and stub leg implements the same interface, so fusion treats them
@@ -160,8 +179,8 @@ func WithReranker(r Reranker) HybridOption {
 	}
 }
 
-// WithPartialTimeout overrides the dense-leg partial-result budget. Mainly for tests; a non-positive value
-// is ignored.
+// WithPartialTimeout overrides the dense-leg partial-result budget (LORE_RETRIEVAL_PARTIAL_TIMEOUT on the
+// server). A non-positive value is ignored, so an unset or unparsable setting keeps DefaultPartialTimeout.
 func WithPartialTimeout(d time.Duration) HybridOption {
 	return func(h *Hybrid) {
 		if d > 0 {
@@ -202,7 +221,7 @@ func NewHybrid(dense *Retriever, embedder ext.Embedder, opts ...HybridOption) *H
 		legs:     []leg{lexicalLeg{}, entityStubLeg{}},
 		k:        rrfK,
 		depth:    legDepth,
-		timeout:  partialTimeout,
+		timeout:  DefaultPartialTimeout,
 		logger:   slog.Default(),
 		metrics:  metrics.NewNoop(),
 	}

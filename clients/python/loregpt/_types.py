@@ -41,3 +41,8 @@ class PackResult:
     saved_tokens: int
     working_source: WorkingSource
     truncated: bool
+    #: Retrieval legs that missed the partial-result budget and contributed nothing to this pack —
+    #: today only "dense", when the embedding provider answered slower than the server's budget.
+    #: Empty when every leg finished, so a non-empty value means this answer was assembled from
+    #: fewer sources than the server has configured (the call still succeeded, the pack is narrower).
+    degraded: tuple[str, ...] = ()

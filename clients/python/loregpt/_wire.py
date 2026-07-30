@@ -106,6 +106,8 @@ def parse_pack(data: Any) -> PackResult:
         saved_tokens=b["saved_tokens"],
         working_source=b["working_source"],
         truncated=b["truncated"],
+        # Optional on the wire: the server omits it when every leg finished.
+        degraded=tuple(b.get("degraded") or ()),
     )
 
 

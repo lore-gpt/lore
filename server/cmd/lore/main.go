@@ -155,9 +155,10 @@ func serveCmd() *cobra.Command {
 			defer flushTracing(tel)
 
 			srv, err := core.NewServer(ctx, core.Config{
-				Addr:                 cfg.Addr,
-				DatabaseURL:          cfg.DatabaseURL,
-				WorkmemMaxValueBytes: cfg.WorkmemMaxValueBytes,
+				Addr:                    cfg.Addr,
+				DatabaseURL:             cfg.DatabaseURL,
+				WorkmemMaxValueBytes:    cfg.WorkmemMaxValueBytes,
+				RetrievalPartialTimeout: cfg.RetrievalPartialTimeout,
 			}, core.WithWorkmem(wm), core.WithEmbedder(embedder),
 				core.WithMeterRegistry(tel.Metrics), core.WithMetricsHandler(tel.MetricsHandler),
 				core.WithTracerProvider(tel.Tracer))

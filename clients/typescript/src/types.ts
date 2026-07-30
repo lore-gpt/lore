@@ -85,4 +85,11 @@ export interface PackResult {
   savedTokens: number;
   workingSource: "live" | "durable" | "skipped";
   truncated: boolean;
+  /**
+   * Retrieval legs that missed the partial-result budget and contributed nothing to this pack —
+   * today only `"dense"`, when the embedding provider answered slower than the server's budget.
+   * Absent when every leg finished, so its presence means this answer was assembled from fewer
+   * sources than the server has configured (the call still succeeded; the pack is just narrower).
+   */
+  degraded?: ("dense" | (string & {}))[];
 }
