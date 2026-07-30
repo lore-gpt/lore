@@ -9,6 +9,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Config is the process configuration read from the environment.
@@ -20,6 +21,14 @@ type Config struct {
 	// WorkmemMaxValueBytes bounds a working-memory (kind:"state") fact's value at ingestion.
 	// LORE_WORKMEM_MAX_VALUE_BYTES; 0 (unset/invalid) uses the package default.
 	WorkmemMaxValueBytes int
+
+	// RetrievalPartialTimeout is the budget the dense retrieval leg has to produce a
+	// query embedding before the read path proceeds without it (used by `lore serve`).
+	// LORE_RETRIEVAL_PARTIAL_TIMEOUT, a Go duration like "2s" or "500ms"; 0
+	// (unset/invalid) uses the retrieval package default. A budget below the embedding
+	// provider's real latency drops the dense leg on every request, so the pack answers
+	// from the lexical leg alone and reports it in the response's `degraded` field.
+	RetrievalPartialTimeout time.Duration
 
 	// Extraction worker settings (used by `lore worker`; ignored by serve/migrate).
 	ExtractionProvider string // LORE_EXTRACTION_PROVIDER: "" (offline fixture) | "fixture" | "anthropic"
@@ -68,6 +77,8 @@ func Load() (Config, error) {
 
 		WorkmemMaxValueBytes: getenvInt("LORE_WORKMEM_MAX_VALUE_BYTES"),
 
+		RetrievalPartialTimeout: getenvDuration("LORE_RETRIEVAL_PARTIAL_TIMEOUT"),
+
 		ExtractionProvider: strings.TrimSpace(os.Getenv("LORE_EXTRACTION_PROVIDER")),
 		ExtractionModel:    strings.TrimSpace(os.Getenv("LORE_EXTRACTION_MODEL")),
 		AnthropicAPIKey:    strings.TrimSpace(os.Getenv("ANTHROPIC_API_KEY")),
@@ -113,6 +124,18 @@ func getenvInt(key string) int {
 		return 0
 	}
 	return n
+}
+
+// getenvDuration returns the value of key parsed as a Go duration, or 0 when it is
+// unset, empty, not parsable, or not positive. Like getenvInt, a consumer treats 0 as
+// "use the default", so a typo degrades to the shipped default rather than to an
+// instant timeout — which would silently disable the leg it bounds.
+func getenvDuration(key string) time.Duration {
+	d, err := time.ParseDuration(strings.TrimSpace(os.Getenv(key)))
+	if err != nil || d <= 0 {
+		return 0
+	}
+	return d
 }
 
 // getenvBool reports whether key is set to a truthy value ("1", "true", "yes",

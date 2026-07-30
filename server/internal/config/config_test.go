@@ -1,6 +1,9 @@
 package config
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func TestLoadRequiredVars(t *testing.T) {
 	cases := []struct {
@@ -87,4 +90,38 @@ func TestLoadDefaultsAndOverrides(t *testing.T) {
 			t.Errorf("extraction config = %+v, want empty when unset", c)
 		}
 	})
+}
+
+// TestRetrievalPartialTimeoutParsing pins the degrade-to-default rule for the retrieval budget. The
+// zero value means "use the package default", so every rejected input must map to 0 — a typo that
+// parsed as an instant timeout would silently disable the dense retrieval leg it bounds, which is
+// worse than ignoring the setting.
+func TestRetrievalPartialTimeoutParsing(t *testing.T) {
+	t.Setenv("LORE_DATABASE_URL", "postgres://db")
+
+	for _, tc := range []struct {
+		name string
+		set  string
+		want time.Duration
+	}{
+		{"unset uses the package default", "", 0},
+		{"a valid duration is honoured", "2s", 2 * time.Second},
+		{"sub-second is honoured", "750ms", 750 * time.Millisecond},
+		{"whitespace is trimmed", "  1500ms  ", 1500 * time.Millisecond},
+		{"a bare number is not a duration", "2", 0},
+		{"gibberish falls back", "soon", 0},
+		{"zero falls back rather than disabling the leg", "0s", 0},
+		{"negative falls back rather than disabling the leg", "-5s", 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("LORE_RETRIEVAL_PARTIAL_TIMEOUT", tc.set)
+			c, err := Load()
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if c.RetrievalPartialTimeout != tc.want {
+				t.Errorf("RetrievalPartialTimeout = %v, want %v", c.RetrievalPartialTimeout, tc.want)
+			}
+		})
+	}
 }

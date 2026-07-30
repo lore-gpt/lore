@@ -129,6 +129,11 @@ type Result struct {
 	SavedTokens int
 	// WorkingSource reports where the working section came from: "live", "durable", or "skipped".
 	WorkingSource string
+	// Degraded names the retrieval legs that missed the partial-result budget and contributed nothing, or
+	// nil when the pack was assembled from every configured leg. It is the client-visible counterpart of the
+	// server-side warning: without it a pack built from the lexical leg alone is indistinguishable from a
+	// complete one, so a slow embedding provider looks like a relevance problem instead of a timeout.
+	Degraded []string
 	// Truncated is true when the pack omitted content that existed: the raw tail beyond the guaranteed window
 	// was capped, or a token budget dropped distilled memories.
 	Truncated bool
@@ -254,7 +259,7 @@ func (p *Pack) Build(ctx context.Context, tx pgx.Tx, projectID, runID pgtype.UUI
 	// event the caller wrote, so read-your-writes holds from the very first event. Distilled retrieval is
 	// left empty. A genuine mismatch between a pinned model and the running embedder (ErrModelMismatch) is a
 	// real anomaly and still propagates.
-	results, _, err := p.hybrid.Retrieve(ctx, tx, projectID, req.Query, req.Filters, req.Limit)
+	results, legStats, err := p.hybrid.Retrieve(ctx, tx, projectID, req.Query, req.Filters, req.Limit)
 	if err != nil && !errors.Is(err, retrieval.ErrNoActiveModel) {
 		if errors.Is(err, retrieval.ErrModelMismatch) {
 			p.metrics.PackModelMismatch.Inc()
@@ -316,6 +321,7 @@ func (p *Pack) Build(ctx context.Context, tx pgx.Tx, projectID, runID pgtype.UUI
 		SavedTokens:    saved,
 		WorkingSource:  workingSource,
 		Truncated:      tailTruncated || budgetDropped,
+		Degraded:       retrieval.DroppedLegs(legStats),
 	}
 
 	// Trace on the SAME transaction: a failed insert fails the pack. latency_ms is the library build time (an
@@ -345,10 +351,12 @@ func (p *Pack) Build(ctx context.Context, tx pgx.Tx, projectID, runID pgtype.UUI
 		attribute.Int("sources", len(sources)),
 		attribute.Int("raw_tail", len(tail)),
 		attribute.Bool("truncated", res.Truncated),
+		attribute.StringSlice("degraded", res.Degraded),
 	)
 	p.logger.DebugContext(ctx, "context pack built",
 		"covered_seq", coveredSeq, "freshness_lag_ms", freshness, "sources", len(sources),
-		"working_source", workingSource, "raw_tail", len(tail), "truncated", res.Truncated)
+		"working_source", workingSource, "raw_tail", len(tail), "truncated", res.Truncated,
+		"degraded", res.Degraded)
 	return res, nil
 }
 

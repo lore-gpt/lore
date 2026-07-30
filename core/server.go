@@ -30,6 +30,10 @@ type Config struct {
 	// WorkmemMaxValueBytes bounds a working-memory (kind:"state") fact's value at ingestion; 0 uses the
 	// package default.
 	WorkmemMaxValueBytes int
+	// RetrievalPartialTimeout is the budget the dense retrieval leg has to produce a query embedding before
+	// the read proceeds without it. Zero (unset) uses retrieval.DefaultPartialTimeout. Lower it to cap tail
+	// latency at the cost of dropping semantic recall when the embedding provider is slow.
+	RetrievalPartialTimeout time.Duration
 }
 
 // extensions holds the swappable extension-point implementations. Phase 0 wires
@@ -221,7 +225,9 @@ func NewServer(ctx context.Context, cfg Config, opts ...Option) (*Server, error)
 	// The read path: the hybrid retriever over the composed embedder, wrapped by the context-pack builder.
 	// A downstream build swaps the embedder (and later the cache/reranker) via the same composition.
 	packer := pack.New(
-		retrieval.NewHybrid(retrieval.New(), e.embedder, retrieval.WithHybridMetrics(e.metrics)),
+		retrieval.NewHybrid(retrieval.New(), e.embedder,
+			retrieval.WithHybridMetrics(e.metrics),
+			retrieval.WithPartialTimeout(cfg.RetrievalPartialTimeout)),
 		e.workmem, pack.WithMetrics(e.metrics),
 	)
 

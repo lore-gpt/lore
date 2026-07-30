@@ -215,6 +215,7 @@ Copy [`.env.example`](.env.example) to `.env` and set:
 | `LORE_ADDR` | no | `:8080` | HTTP listen address |
 | `LORE_VALKEY_URL` | no | — | Working-memory hot lane (Valkey); unset → durable fallback |
 | `LORE_WORKMEM_MAX_VALUE_BYTES` | no | `8192` | Max bytes per working-memory fact value (enforced at ingestion) |
+| `LORE_RETRIEVAL_PARTIAL_TIMEOUT` | no | `2s` | How long the dense retrieval leg may take to embed the query before the read proceeds without it; a dropped leg is reported in the pack's `degraded` field |
 | `LORE_METRICS_ENABLED` | no | `true` | Expose the Prometheus `/metrics` endpoint |
 | `LORE_METRICS_ADDR` | no | `:9090` | Worker's `/metrics` listener (the server serves `/metrics` on its API port) |
 | `LORE_OTEL_ENABLED` | no | `false` | Export OpenTelemetry traces over OTLP (also needs an endpoint below) |

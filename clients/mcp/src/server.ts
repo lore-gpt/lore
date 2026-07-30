@@ -177,6 +177,10 @@ export function buildServer(client: LoreRestClient): McpServer {
         working_source: z.enum(["live", "durable", "skipped"]),
         truncated: z.boolean(),
         sources: z.array(packSourceSchema),
+        degraded: z
+          .array(z.string())
+          .optional()
+          .describe("Retrieval legs that missed the server's partial-result budget and contributed nothing to this pack (today only \"dense\", when the embedding provider was slow). Absent when every leg finished; present means the pack was assembled from fewer sources than are configured."),
       },
       // Not annotated read-only: retrieval is the tool's purpose, but the server records an audit trace
       // (a pack_logs row) on every call — a genuine side effect — so asserting readOnlyHint would mislead a
@@ -204,6 +208,7 @@ export function buildServer(client: LoreRestClient): McpServer {
             working_source: res.working_source,
             truncated: res.truncated,
             sources: res.sources,
+            ...(res.degraded !== undefined ? { degraded: res.degraded } : {}),
           },
         };
       } catch (err) {

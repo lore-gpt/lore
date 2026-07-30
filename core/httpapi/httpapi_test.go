@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -530,5 +531,31 @@ func TestNotImplemented(t *testing.T) {
 	_ = json.Unmarshal(rr.Body.Bytes(), &e)
 	if e.Code != "not_implemented" {
 		t.Errorf("code = %q, want not_implemented", e.Code)
+	}
+}
+
+// TestPackResponseOmitsDegradedWhenHealthy pins the wire contract for the degrade signal: it is
+// absent from a healthy response and present only when a leg was actually dropped. The distinction
+// matters to a client — a field that is always there (as `null` or `[]`) cannot be read as "this
+// answer is narrower than configured", which is the only reason it exists.
+func TestPackResponseOmitsDegradedWhenHealthy(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		degraded []string
+		want     bool // want the key present
+	}{
+		{"nil is omitted", nil, false},
+		{"empty is omitted", []string{}, false},
+		{"a dropped leg is present", []string{"dense"}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			b, err := json.Marshal(PackResponse{Text: "t", Degraded: tc.degraded})
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			if got := bytes.Contains(b, []byte(`"degraded"`)); got != tc.want {
+				t.Errorf("degraded key present = %v, want %v; body = %s", got, tc.want, b)
+			}
+		})
 	}
 }
