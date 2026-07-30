@@ -30,6 +30,114 @@ func TestFixtureExtractorMemory(t *testing.T) {
 	}
 }
 
+// TestFixtureExtractorMemoryKeyAliases pins the payload shapes the SDKs, the MCP server and the
+// quickstart emit. Before these aliases the offline default distilled nothing from any of them, so
+// every documented write path produced an empty memory store; the aliases and this test keep the
+// convention and the shipped clients from drifting apart again.
+func TestFixtureExtractorMemoryKeyAliases(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("content and note each distil one memory", func(t *testing.T) {
+		res, err := FixtureExtractor{}.Extract(ctx, ExtractInput{
+			Events: []InputEvent{
+				evt(1, "a", `{"content":"auth flow moved to v2"}`),
+				evt(2, "b", `{"note":"deploy freeze starts Friday"}`),
+			},
+		})
+		if err != nil {
+			t.Fatalf("Extract: %v", err)
+		}
+		if len(res.Memories) != 2 {
+			t.Fatalf("memories = %d, want 2", len(res.Memories))
+		}
+		if m := res.Memories[0]; m.Kind != "semantic" || m.Content != "auth flow moved to v2" || m.SourceSeq != 1 {
+			t.Errorf("memory[0] = %+v, want {semantic, auth flow moved to v2, 1}", m)
+		}
+		if m := res.Memories[1]; m.Kind != "semantic" || m.Content != "deploy freeze starts Friday" || m.SourceSeq != 2 {
+			t.Errorf("memory[1] = %+v, want {semantic, deploy freeze starts Friday, 2}", m)
+		}
+	})
+
+	// The keys share one slot: a payload carrying several must not multiply into several memories.
+	t.Run("one memory per event, highest-priority key wins", func(t *testing.T) {
+		for _, tc := range []struct{ name, payload, want string }{
+			{"all three", `{"memory":"m","content":"c","note":"n"}`, "m"},
+			{"memory over note", `{"memory":"m","note":"n"}`, "m"},
+			{"content over note", `{"content":"c","note":"n"}`, "c"},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				res, err := FixtureExtractor{}.Extract(ctx, ExtractInput{
+					Events: []InputEvent{evt(1, "a", tc.payload)},
+				})
+				if err != nil {
+					t.Fatalf("Extract: %v", err)
+				}
+				if len(res.Memories) != 1 {
+					t.Fatalf("memories = %d, want exactly 1 (the keys share one slot)", len(res.Memories))
+				}
+				if got := res.Memories[0].Content; got != tc.want {
+					t.Errorf("content = %q, want %q", got, tc.want)
+				}
+			})
+		}
+	})
+
+	// A higher-priority key that yields nothing must not swallow the event: it contributes no
+	// memory of its own, so the next key is still consulted.
+	t.Run("a null or malformed higher-priority key falls through", func(t *testing.T) {
+		res, err := FixtureExtractor{}.Extract(ctx, ExtractInput{
+			Events: []InputEvent{
+				evt(1, "a", `{"memory":null,"content":"from content"}`),
+				evt(2, "a", `{"memory":42,"note":"from note"}`),
+				evt(3, "a", `{"content":null,"note":"note wins"}`),
+			},
+		})
+		if err != nil {
+			t.Fatalf("Extract: %v", err)
+		}
+		want := []string{"from content", "from note", "note wins"}
+		if len(res.Memories) != len(want) {
+			t.Fatalf("memories = %d, want %d", len(res.Memories), len(want))
+		}
+		for i, w := range want {
+			if got := res.Memories[i].Content; got != w {
+				t.Errorf("memory[%d] = %q, want %q", i, got, w)
+			}
+		}
+	})
+
+	// Per-key tolerance still holds for the aliases: a malformed sibling never eats the memory.
+	t.Run("an alias coexists with claim and entities", func(t *testing.T) {
+		res, err := FixtureExtractor{}.Extract(ctx, ExtractInput{
+			Events: []InputEvent{evt(7, "a",
+				`{"content":"payments moved to gRPC","claim":{"entity":"payments","predicate":"protocol","value":"grpc"},"entities":[{"name":"payments","type":"service"}]}`)},
+		})
+		if err != nil {
+			t.Fatalf("Extract: %v", err)
+		}
+		if len(res.Memories) != 1 || len(res.Claims) != 1 || len(res.Entities) != 1 {
+			t.Fatalf("result = %+v, want one memory, one claim, one entity", res)
+		}
+		if res.Memories[0].Content != "payments moved to gRPC" || res.Memories[0].SourceSeq != 7 {
+			t.Errorf("memory = %+v, want {payments moved to gRPC, 7}", res.Memories[0])
+		}
+	})
+
+	// An event with no memory key at all still yields nothing — the aliases widen the convention,
+	// they do not make the fixture guess at arbitrary payloads.
+	t.Run("an unrelated key still distils nothing", func(t *testing.T) {
+		res, err := FixtureExtractor{}.Extract(ctx, ExtractInput{
+			Events: []InputEvent{evt(1, "a", `{"observation":"not a recognised key"}`)},
+		})
+		if err != nil {
+			t.Fatalf("Extract: %v", err)
+		}
+		if len(res.Memories) != 0 {
+			t.Errorf("memories = %d, want 0", len(res.Memories))
+		}
+	})
+}
+
 func TestFixtureExtractorClaim(t *testing.T) {
 	const when = "2026-01-02T03:04:05Z"
 	payload := `{"claim":{"entity":"invoice-7","predicate":"status","value":{"paid":true},"event_time":"` + when + `"}}`

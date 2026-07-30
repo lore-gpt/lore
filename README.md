@@ -232,7 +232,9 @@ Copy [`.env.example`](.env.example) to `.env` and set:
 **Extraction.** The worker distills events into memories. By default that runs on an offline, deterministic
 **fixture** extractor — no external API. For real LLM extraction, set `LORE_EXTRACTION_PROVIDER=anthropic` and
 provide your own `ANTHROPIC_API_KEY` (provider-native, not `LORE_`-prefixed); the worker fails loudly at startup
-if the key is missing rather than silently falling back to the fixture.
+if the key is missing rather than silently falling back to the fixture. The offline fixture distils the payload
+keys `memory`, `content`, `note`, `claim`, and `entities` — the shapes the SDKs, the MCP server, and the
+quickstart send — while a real provider reads free-form payloads.
 
 **Embeddings.** Retrieval embeds each memory and each query. By default that runs on an offline, deterministic
 **fixture** embedder — reproducible, but not a semantic vector space. For real semantic recall, set
