@@ -92,17 +92,18 @@ func build(cfg Config) (ext.Embedder, error) {
 	}
 }
 
-// Describe reports the configured embedder's model identity and whether it is the
-// offline fixture, applying the same selection and validation as Build but without
-// logging or network access. `lore doctor` uses it to show the active vector space
-// and warn when a real install is still on the fixture.
-func Describe(cfg Config) (modelID string, isFixture bool, err error) {
+// Describe reports the configured embedder's identity — model id, vector dimension, and whether it is the
+// offline fixture — applying the same selection and validation as Build but without logging or network
+// access. Every diagnostic that names the running vector space goes through here (`lore doctor`,
+// `lore models show`), so a deployment's embedder cannot be reported one way by one command and another way
+// by the next.
+func Describe(cfg Config) (modelID string, dim int, isFixture bool, err error) {
 	e, err := build(cfg)
 	if err != nil {
-		return "", false, err
+		return "", 0, false, err
 	}
 	_, isFixture = e.(ext.FixtureEmbedder)
-	return e.ModelID(), isFixture, nil
+	return e.ModelID(), e.Dim(), isFixture, nil
 }
 
 // baseURLForLog reports the base URL for logging, naming the default when unset.

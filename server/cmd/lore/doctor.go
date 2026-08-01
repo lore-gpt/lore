@@ -62,7 +62,7 @@ func doctorCmd() *cobra.Command {
 			// (not fail) when it's the offline fixture, so a real install doesn't
 			// silently ship deterministic fixture vectors instead of semantic ones.
 			dim, _ := strconv.Atoi(strings.TrimSpace(os.Getenv("LORE_EMBEDDING_DIM")))
-			modelID, isFixture, embErr := embedding.Describe(embedding.Config{
+			modelID, _, isFixture, embErr := embedding.Describe(embedding.Config{
 				Provider: strings.TrimSpace(os.Getenv("LORE_EMBEDDING_PROVIDER")),
 				BaseURL:  strings.TrimSpace(os.Getenv("LORE_EMBEDDING_BASE_URL")),
 				Model:    strings.TrimSpace(os.Getenv("LORE_EMBEDDING_MODEL")),
