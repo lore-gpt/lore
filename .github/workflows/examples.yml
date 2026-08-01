@@ -48,7 +48,7 @@ jobs:
       - uses: astral-sh/setup-uv@v5
       - name: start Lore
         run: |
-          docker run --rm ghcr.io/lore-gpt/lore:v0.0.2 init > docker-compose.yml
+          docker run --rm ghcr.io/lore-gpt/lore:v0.0.3 init > docker-compose.yml
           docker compose up -d --wait
       - name: run the example against live Lore
         working-directory: examples/langgraph
