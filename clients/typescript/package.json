@@ -1,6 +1,6 @@
 {
   "name": "@loregpt/sdk",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "TypeScript SDK for Lore — coordination memory for multi-agent AI systems: create runs, write events, and fetch read-your-writes context packs.",
   "license": "Apache-2.0",
   "author": "The LoreGPT Authors",
