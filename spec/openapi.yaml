@@ -634,10 +634,16 @@ components:
             not a metered figure.
         working_source:
           type: string
-          enum: [live, durable, skipped]
+          enum: [live, durable, unavailable]
           description: >
-            Where the working section came from: the live stripe, a durable
-            fallback, or skipped (a healthy stripe that failed this read).
+            Where the working section actually came from. `live`: the run's live
+            working stripe served it. `unavailable`: the stripe was not
+            authoritative (off, degraded, or this read failed) and no durable
+            snapshot existed, so **this pack has no working section** — the state
+            facts are still persisted on the write path and still reach you
+            through the raw tail until extraction distils them. `durable`: a
+            durable working snapshot served it; no producer writes those yet, so
+            it is not currently returned.
         truncated:
           type: boolean
           description: >

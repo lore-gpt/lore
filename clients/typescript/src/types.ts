@@ -83,7 +83,13 @@ export interface PackResult {
   coveredSeq: number;
   freshnessLagMs: number;
   savedTokens: number;
-  workingSource: "live" | "durable" | "skipped";
+  /**
+   * Where the working section came from. `"live"`: the run's live working stripe. `"unavailable"`: the
+   * stripe was not authoritative and no durable snapshot existed, so this pack has NO working section —
+   * the state facts are still durable and still arrive through the raw tail. `"durable"`: a durable
+   * snapshot served it (no producer writes those yet).
+   */
+  workingSource: "live" | "durable" | "unavailable";
   truncated: boolean;
   /**
    * Retrieval legs that missed the partial-result budget and contributed nothing to this pack —

@@ -125,7 +125,7 @@ test("pack forwards a string[] scopes verbatim and flattens an object to k:v", a
     covered_seq: 0,
     freshness_lag_ms: 0,
     saved_tokens: 0,
-    working_source: "skipped",
+    working_source: "unavailable",
     truncated: false,
   };
   const a = recorder(200, packResponse);

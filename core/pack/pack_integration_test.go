@@ -349,11 +349,13 @@ func TestPackModeAwareWorking(t *testing.T) {
 		t.Errorf("disabled: durable working memory must be a source: %+v", dis.Sources)
 	}
 
-	// (c) Healthy store whose GetAll fails: falls back to durable, counted as skipped.
+	// (c) Healthy store whose GetAll fails: falls back to durable. The caller sees the OUTCOME ("durable" — a
+	// snapshot did serve the section); "skipped" is the CAUSE and lives on the metric, so it never reaches the
+	// wire. TestPackWorkingSourceReportsOutcomeNotIntent pins that split from both ends.
 	skip := runBuild(ctx, t, st, New(newTestHybrid(), fakeWorkmem{mode: workmem.Healthy, err: errors.New("cache boom")}),
 		proj, run, Request{Query: "status", Limit: 10})
-	if skip.WorkingSource != workingSkipped {
-		t.Errorf("skipped: WorkingSource = %q, want skipped", skip.WorkingSource)
+	if skip.WorkingSource != workingDurable {
+		t.Errorf("skipped-cause: WorkingSource = %q, want durable (a snapshot served it)", skip.WorkingSource)
 	}
 	if !strings.Contains(skip.Text, "durable snapshot") {
 		t.Errorf("skipped mode must fall back to the durable snapshot:\n%s", skip.Text)

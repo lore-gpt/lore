@@ -9,7 +9,11 @@ from typing import Literal
 # A pack's scope filter: either a list of scope strings, or a dict flattened to "key:value" strings.
 Scopes = list[str] | dict[str, str]
 
-WorkingSource = Literal["live", "durable", "skipped"]
+#: Where the working section came from. "live": the run's live working stripe. "unavailable": the stripe
+#: was not authoritative and no durable snapshot existed, so this pack has NO working section (the state
+#: facts are still durable and still arrive through the raw tail). "durable": a durable snapshot served it
+#: (no producer writes those yet).
+WorkingSource = Literal["live", "durable", "unavailable"]
 
 
 @dataclass(frozen=True, slots=True)

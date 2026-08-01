@@ -174,7 +174,9 @@ export function buildServer(client: LoreRestClient): McpServer {
         covered_seq: z.number(),
         freshness_lag_ms: z.number(),
         saved_tokens: z.number(),
-        working_source: z.enum(["live", "durable", "skipped"]),
+        working_source: z
+          .enum(["live", "durable", "unavailable"])
+          .describe("Where the working section came from. live: the run's live working stripe served it. unavailable: the stripe was not authoritative and no durable snapshot existed, so this pack has NO working section — the state facts are still durable and still arrive in the raw tail. durable: a durable snapshot served it (no producer writes those yet)."),
         truncated: z.boolean(),
         sources: z.array(packSourceSchema),
         degraded: z

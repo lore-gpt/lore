@@ -213,7 +213,7 @@ Copy [`.env.example`](.env.example) to `.env` and set:
 |---|---|---|---|
 | `LORE_DATABASE_URL` | yes | — | Postgres (ParadeDB) connection string |
 | `LORE_ADDR` | no | `:8080` | HTTP listen address |
-| `LORE_VALKEY_URL` | no | — | Working-memory hot lane (Valkey); unset → durable fallback |
+| `LORE_VALKEY_URL` | no | — | Working memory requires the Valkey stripe today — set it for **both** `serve` and `worker`. Without it the pack marks the section `working_source: "unavailable"`; the state facts are still stored and still reach a reader through the raw tail, but durable persistence of the working section itself is not implemented yet |
 | `LORE_WORKMEM_MAX_VALUE_BYTES` | no | `8192` | Max bytes per working-memory fact value (enforced at ingestion) |
 | `LORE_RETRIEVAL_PARTIAL_TIMEOUT` | no | `2s` | How long the dense retrieval leg may take to embed the query before the read proceeds without it; a dropped leg is reported in the pack's `degraded` field |
 | `LORE_METRICS_ENABLED` | no | `true` | Expose the Prometheus `/metrics` endpoint |
