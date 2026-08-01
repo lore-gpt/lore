@@ -26,4 +26,4 @@ export type {
 } from "./types.ts";
 
 /** The SDK version. Kept in lockstep with package.json (a test asserts they match). */
-export const version = "0.1.1";
+export const version = "0.1.2";
