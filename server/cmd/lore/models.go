@@ -7,10 +7,10 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/spf13/cobra"
 
-	"github.com/lore-gpt/lore/core/ext"
 	"github.com/lore-gpt/lore/core/store"
 	"github.com/lore-gpt/lore/core/store/db"
 	"github.com/lore-gpt/lore/server/internal/config"
+	"github.com/lore-gpt/lore/server/internal/embedding"
 )
 
 // modelsCmd groups embedding-model inspection. A project's active embedding model is pinned automatically to
@@ -47,6 +47,28 @@ func modelsShowCmd() *cobra.Command {
 			ctx, stop := signalContext()
 			defer stop()
 
+			// Describe the embedder this deployment's configuration selects — the same call, from the same
+			// configuration, that `lore doctor` and the server's boot both resolve. Composing a fixed
+			// embedder here instead would make the command answer for a deployment other than the one it is
+			// pointed at: it would report MATCH against the OSS default while the running server rejected
+			// every recall with a 409, which is precisely the failure this command exists to explain.
+			//
+			// The remaining limit is honest and narrow: a build that injects an embedder programmatically
+			// rather than through LORE_EMBEDDING_* is invisible to a separate CLI process. /healthz reports
+			// what the server actually composed and stays the final authority.
+			embedderModel, embedderDim, _, err := embedding.Describe(embedding.Config{
+				Provider:       cfg.EmbeddingProvider,
+				BaseURL:        cfg.EmbeddingBaseURL,
+				Model:          cfg.EmbeddingModel,
+				Dim:            cfg.EmbeddingDim,
+				SendDimensions: cfg.EmbeddingSendDimensions,
+			})
+			if err != nil {
+				// The same misconfiguration would refuse to start the server; say so here rather than
+				// falling back to a default and reporting a comparison against an embedder nothing runs.
+				return err
+			}
+
 			st, err := store.New(ctx, cfg.DatabaseURL)
 			if err != nil {
 				return err
@@ -58,21 +80,15 @@ func modelsShowCmd() *cobra.Command {
 				return fmt.Errorf("read active model: %w", err)
 			}
 
-			// The running embedder is the source of truth a project pins to. This composes the OSS default
-			// (fixture) embedder directly — accurate for the OSS binary, which passes no embedder override to
-			// the server or worker. A downstream build that swaps the embedder must compose the same one here
-			// for this diagnostic to stay truthful (there is no shared config the CLI could read it from yet).
-			var embedder ext.Embedder = ext.FixtureEmbedder{}
-
 			out := cmd.OutOrStdout()
 			_, _ = fmt.Fprintf(out, "project:        %s\n", args[0])
-			_, _ = fmt.Fprintf(out, "embedder model: %s\n", embedder.ModelID())
-			_, _ = fmt.Fprintf(out, "embedder dim:   %d\n", embedder.Dim())
+			_, _ = fmt.Fprintf(out, "embedder model: %s\n", embedderModel)
+			_, _ = fmt.Fprintf(out, "embedder dim:   %d\n", embedderDim)
 			switch {
 			case active == nil:
 				_, _ = fmt.Fprintln(out, "active model:   (none — pinned on the first consolidated memory)")
 				_, _ = fmt.Fprintln(out, "status:         UNSET")
-			case *active == embedder.ModelID():
+			case *active == embedderModel:
 				_, _ = fmt.Fprintf(out, "active model:   %s\n", *active)
 				_, _ = fmt.Fprintln(out, "status:         MATCH")
 			default:
