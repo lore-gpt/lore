@@ -28,6 +28,6 @@ pack = lore.pack(
     token_budget=2000,
 )
 
-covered_seq = pack.covered_seq  # >= result.seq -> read-your-writes, guaranteed
-saved_tokens = pack.saved_tokens  # estimated tokens saved by packing
+covered_seq = pack.covered_seq  # >= result.seq once distilled; until then the write is in the raw tail
+saved_tokens = pack.saved_tokens  # a coarse estimate vs raw history; small packs may round to 0
 # <<< readme-hero

@@ -67,8 +67,8 @@ const pack = await lore.pack({
   tokenBudget: 2000,
 });
 
-pack.coveredSeq; // ≥ seq → read-your-writes, guaranteed
-pack.savedTokens; // the number your CFO will ask about
+pack.coveredSeq; // ≥ seq once distilled; until then the write is in the raw tail — either way, reflected
+pack.savedTokens; // token savings vs raw history — a coarse estimate; small packs may round to 0
 ```
 
 ## Quickstart (self-host)
@@ -184,7 +184,8 @@ docker compose down -v
 
 `-v` drops the database volume, so the next `up` provisions a fresh project. The host `./.lore/` directory
 survives that, so provisioning detects the reset, moves the old file to `./.lore/credentials.bak`, and writes
-new credentials — reload them with the command in step 2. (Keeping the old credentials? Skip `-v`.)
+new credentials — reload them with the `source ./.lore/credentials` command above. (Keeping the old
+credentials? Skip `-v`.)
 
 Every step above is also a `lore` subcommand for running outside Docker: `lore provision` (create a project
 and mint a key), `lore pack` (fetch a context pack), and `lore doctor` (check the database, schema, and
@@ -267,9 +268,13 @@ API keys are not configured through the environment: mint one per project with `
 ## Works with
 
 SDKs for **TypeScript** and **Python**, plus an **MCP server** for everything else — Claude Code,
-Cursor, and any MCP client (`v0.1`). Framework-neutral by design: **LangGraph, CrewAI, AutoGen,
-Claude Agent SDK, OpenAI Agents SDK, Pydantic AI** — no framework shares memory with a competitor's
-agent; Lore does. Integration guides: [loregpt.ai/integrations](https://loregpt.ai/integrations).
+Cursor, and any MCP client. Framework-neutral by design: no framework shares memory with a
+competitor's agent; Lore does.
+
+A runnable **LangGraph** example ships in [`examples/`](examples) — two agents handing off through one
+run, with the read-your-writes contract doing the coordination. **CrewAI** and **Claude Agent SDK**
+examples are next; until then the MCP server covers every MCP client, and the SDKs are framework-
+agnostic. Integration guides: [loregpt.ai/integrations](https://loregpt.ai/integrations).
 
 ## How Lore compares
 
