@@ -35,7 +35,7 @@ func initCmd() *cobra.Command {
 		Long: "Print a docker-compose file for a local, self-hosted Lore stack to stdout. Redirect it to a " +
 			"file and bring the stack up:\n\n" +
 			"  docker run --rm ghcr.io/lore-gpt/lore:<version> init > docker-compose.yml\n" +
-			"  docker compose up --wait\n" +
+			"  docker compose up -d --wait\n" +
 			"  cat ./.lore/credentials\n\n" +
 			"The generated compose is pinned to this image's version. stdout is pure YAML; all human-readable " +
 			"output (next steps, warnings) goes to stderr, so the redirect stays clean.",
@@ -77,7 +77,7 @@ func renderCompose(version string) ([]byte, error) {
 const initEpilogue = `
 Wrote a docker-compose file pinned to this image version. Next:
 
-  docker compose up --wait     # start the stack and provision a first project
+  docker compose up -d --wait  # start the stack and provision a first project
   cat ./.lore/credentials      # your project id and API key
 
 The stack writes credentials to ./.lore/credentials. If this directory is inside a

@@ -35,8 +35,8 @@ const { seq } = await lore.write({
 
 // Pack read-your-writes context. `minSeq` guarantees the pack reflects the event you just wrote.
 const pack = await lore.pack({ runId, query: "current state of auth work", minSeq: seq });
-pack.coveredSeq; // ≥ seq → read-your-writes, guaranteed
-pack.savedTokens; // estimated tokens saved by packing
+pack.coveredSeq; // ≥ seq once distilled; until then the write is in the raw tail — either way, reflected
+pack.savedTokens; // a coarse estimate vs raw history; small packs may round to 0
 ```
 
 `writeState` writes one working-memory fact (a `kind:"state"` event) that a same-run reader sees immediately:

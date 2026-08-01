@@ -23,6 +23,6 @@ const pack = await lore.pack({
   tokenBudget: 2000,
 });
 
-pack.coveredSeq; // ≥ seq → read-your-writes, guaranteed
-pack.savedTokens; // the number your CFO will ask about
+pack.coveredSeq; // ≥ seq once distilled; until then the write is in the raw tail — either way, reflected
+pack.savedTokens; // token savings vs raw history — a coarse estimate; small packs may round to 0
 // <<< readme-hero
