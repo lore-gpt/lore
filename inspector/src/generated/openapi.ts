@@ -297,10 +297,10 @@ export interface components {
             /** @description Estimated tokens saved by packing — a coarse v0 char-based estimate, not a metered figure. */
             saved_tokens: number;
             /**
-             * @description Where the working section came from: the live stripe, a durable fallback, or skipped (a healthy stripe that failed this read).
+             * @description Where the working section actually came from. `live`: the run's live working stripe served it. `unavailable`: the stripe was not authoritative (off, degraded, or this read failed) and no durable snapshot existed, so **this pack has no working section** — the state facts are still persisted on the write path and still reach you through the raw tail until extraction distils them. `durable`: a durable working snapshot served it; no producer writes those yet, so it is not currently returned.
              * @enum {string}
              */
-            working_source: "live" | "durable" | "skipped";
+            working_source: "live" | "durable" | "unavailable";
             /** @description True when the pack omitted content that existed — the raw tail beyond the guaranteed window was capped, or a token budget dropped memories. */
             truncated: boolean;
             /** @description Retrieval legs that missed the partial-result budget and contributed nothing to this pack — today only `dense`, when the embedding provider answered slower than LORE_RETRIEVAL_PARTIAL_TIMEOUT. Omitted entirely when every leg finished, so its presence is the signal that this answer was assembled from fewer sources than are configured. The response is still 200: the pack is valid, just narrower. */

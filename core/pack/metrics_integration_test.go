@@ -79,12 +79,22 @@ func TestPackMetricsFreshnessAndDegrade(t *testing.T) {
 		t.Errorf("freshness histogram sum = %v s, want %v s (the ms->seconds conversion)", got, want)
 	}
 
-	if bd := findPackMetric(t, reg, "lore_pack_build_duration_seconds", map[string]string{"working_source": res.WorkingSource}); bd == nil || bd.GetHistogram().GetSampleCount() != 1 {
-		t.Errorf("build-duration histogram for working_source=%q: want 1 sample, got %v", res.WorkingSource, bd)
+	// The metric labels on the CAUSE, which is deliberately not the caller-facing outcome: the stripe here is
+	// disabled (cause "durable" — it fell back) and nothing writes durable working memories, so the pack
+	// reports the outcome "unavailable". An operator debugging a degrade needs to know WHICH fallback fired,
+	// so the label set stays the bounded {live,durable,skipped} it has always been. Asserting both here keeps
+	// the two from silently collapsing back into one.
+	const wantCause = workingDurable
+	if res.WorkingSource != workingUnavailable {
+		t.Errorf("WorkingSource = %q, want %q (disabled stripe, no durable snapshot)", res.WorkingSource, workingUnavailable)
 	}
-	if res.WorkingSource != "live" {
-		if dg := findPackMetric(t, reg, "lore_pack_degrade_total", map[string]string{"working_source": res.WorkingSource}); dg == nil || dg.GetCounter().GetValue() < 1 {
-			t.Errorf("degrade counter for working_source=%q not recorded", res.WorkingSource)
-		}
+	if bd := findPackMetric(t, reg, "lore_pack_build_duration_seconds", map[string]string{"working_source": wantCause}); bd == nil || bd.GetHistogram().GetSampleCount() != 1 {
+		t.Errorf("build-duration histogram for cause %q: want 1 sample, got %v", wantCause, bd)
+	}
+	if dg := findPackMetric(t, reg, "lore_pack_degrade_total", map[string]string{"working_source": wantCause}); dg == nil || dg.GetCounter().GetValue() < 1 {
+		t.Errorf("degrade counter for cause %q not recorded", wantCause)
+	}
+	if dg := findPackMetric(t, reg, "lore_pack_degrade_total", map[string]string{"working_source": workingUnavailable}); dg != nil {
+		t.Errorf("the caller-facing outcome %q must not appear as a metric label: %v", workingUnavailable, dg)
 	}
 }

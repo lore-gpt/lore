@@ -78,8 +78,11 @@ func TestPackEndpoint(t *testing.T) {
 	if resp.CoveredSeq != 0 {
 		t.Errorf("covered_seq = %d, want 0 (extraction has not run)", resp.CoveredSeq)
 	}
-	if resp.WorkingSource != "durable" {
-		t.Errorf("working_source = %q, want durable (workmem disabled)", resp.WorkingSource)
+	// The stripe is disabled and nothing writes durable working memories, so no working section was served.
+	// "durable" here would name a fallback that produced nothing — the field reports the outcome, not the
+	// intent, and the state fact still reaches the caller through the raw tail asserted below.
+	if resp.WorkingSource != "unavailable" {
+		t.Errorf("working_source = %q, want unavailable (stripe disabled, no durable snapshot)", resp.WorkingSource)
 	}
 	if !strings.Contains(resp.Text, "uncovered_write") {
 		t.Errorf("pack text missing the not-yet-distilled write (raw tail):\n%s", resp.Text)

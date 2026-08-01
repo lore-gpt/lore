@@ -108,6 +108,6 @@ class PackResponse(TypedDict):
     covered_seq: int
     freshness_lag_ms: int
     saved_tokens: int
-    working_source: Literal['live', 'durable', 'skipped']
+    working_source: Literal['live', 'durable', 'unavailable']
     truncated: bool
     degraded: NotRequired[list[Literal['dense']]]

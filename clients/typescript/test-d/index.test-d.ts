@@ -35,7 +35,7 @@ const _seq: number = wr.seq;
 declare const pack: PackResult;
 const _coveredSeq: number = pack.coveredSeq;
 const _savedTokens: number = pack.savedTokens;
-const _workingSource: "live" | "durable" | "skipped" = pack.workingSource;
+const _workingSource: "live" | "durable" | "unavailable" = pack.workingSource;
 
 // Reference the bindings so noUnusedLocals-style checks (if ever enabled) and readers see intent.
 void [_runId, _createdAt, _eventId, _seq, _coveredSeq, _savedTokens, _workingSource];
