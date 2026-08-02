@@ -88,9 +88,11 @@ func NewEnsureIndexWorker(index VectorIndexer, embedder ext.Embedder) *EnsureInd
 // build never starves extraction.
 func (w *EnsureIndexWorker) Timeout(*river.Job[EnsureIndexArgs]) time.Duration { return -1 }
 
-// Work builds (or re-heals) the project's vector index. On failure it returns an error so River retries;
-// the index is a performance optimisation — recall works on the exact-scan path without it — so a build that
-// exhausts its attempts is logged loudly at the final attempt but does not otherwise affect correctness.
+// Work builds (or re-heals) the project's vector index. On failure it returns an error so River retries.
+// The queue reports the failure itself — its kind, how far into the retry budget it got, and the error
+// text — so the only thing worth adding here is what that report cannot know: what giving up means for
+// this project. The index is a performance optimisation, so exhausting the attempts costs latency, not
+// correctness; recall keeps working on the exact-scan path.
 func (w *EnsureIndexWorker) Work(ctx context.Context, job *river.Job[EnsureIndexArgs]) error {
 	projectID, err := parseUUID(job.Args.ProjectID)
 	if err != nil {
@@ -98,8 +100,8 @@ func (w *EnsureIndexWorker) Work(ctx context.Context, job *river.Job[EnsureIndex
 	}
 	if err := w.index.EnsureIndex(ctx, projectID, w.embedder.Dim()); err != nil {
 		if job.Attempt >= job.MaxAttempts {
-			slog.ErrorContext(ctx, "ensure_index: vector index build failed after the final attempt; recall stays on the exact-scan path for this project",
-				slog.String("project_id", job.Args.ProjectID), slog.Int("attempt", job.Attempt), slog.Any("err", err))
+			slog.WarnContext(ctx, "ensure_index: giving up on the vector index; recall stays on the exact-scan path for this project",
+				slog.String("project_id", job.Args.ProjectID))
 		}
 		return fmt.Errorf("ensure index for project %s: %w", job.Args.ProjectID, err)
 	}
