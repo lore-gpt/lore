@@ -90,9 +90,13 @@ func New(pool *pgxpool.Pool, tp trace.TracerProvider) (*Queue, error) {
 // and embeds stored memories with the given Embedder. The working-memory store
 // routes kind:"state" events (hot lane when healthy, a durable claim otherwise).
 // `lore worker` uses this and calls Start.
-func NewWorker(st *store.Store, extractor ext.Extractor, adjudicator ext.Adjudicator, embedder ext.Embedder, wm workmem.Store, m *metrics.Registry, tp trace.TracerProvider) (*Queue, error) {
+func NewWorker(st *store.Store, extractor ext.Extractor, adjudicator ext.Adjudicator, embedder ext.Embedder, wm workmem.Store, m *metrics.Registry, tp trace.TracerProvider, opts ...WorkerOption) (*Queue, error) {
 	if m == nil {
 		m = metrics.NewNoop()
+	}
+	var o workerOptions
+	for _, opt := range opts {
+		opt(&o)
 	}
 	pool := st.Pool
 	workers := river.NewWorkers()
@@ -119,6 +123,10 @@ func NewWorker(st *store.Store, extractor ext.Extractor, adjudicator ext.Adjudic
 		},
 		Workers:    workers,
 		Middleware: []rivertype.Middleware{&jobMetricsMiddleware{m: m}, otelMiddleware(tp)},
+		// Without this a failed job is invisible on the worker's log: the queue reports failures at
+		// info level through a logger it builds at warn, so a job that keeps erroring reads as a
+		// silent stall. The handler only observes — the retry schedule is unchanged.
+		ErrorHandler: &jobErrorReporter{logger: o.logger},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create river worker client: %w", err)
