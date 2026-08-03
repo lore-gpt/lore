@@ -176,6 +176,21 @@ $body = @{ run_id = $runId; query = "auth work"; min_seq = 1 } | ConvertTo-Json 
 Invoke-RestMethod -Method Post -Uri http://localhost:8080/v1/pack @lore -Body $body
 ```
 
+> **Optional hardening (Windows).** `./.lore/credentials` is 0600 on POSIX hosts, but Docker Desktop writes
+> it through a bind mount that carries no POSIX modes, so on Windows the file inherits the ACL of the
+> directory it lands in. Under your user profile that is usually already restrictive; in a shared location
+> such as a drive root or `C:\tmp` it typically is not, and other users on the machine can read the key. To
+> pin it down, create `.lore` and restrict it *before* the first `up`:
+>
+> ```powershell
+> New-Item -ItemType Directory .lore | Out-Null
+> icacls .lore /inheritance:r /grant:r "$($env:USERNAME):(OI)(CI)F"
+> ```
+>
+> New files inherit that restriction, so it also covers `credentials.bak` — the second key-bearing file a
+> `down -v` leaves behind. Provisioning, the Inspector's auto-connect, and the reset-and-heal path were all
+> verified to still work with the directory locked down.
+
 **5 · Tear it down:**
 
 ```bash
