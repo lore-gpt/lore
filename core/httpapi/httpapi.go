@@ -76,9 +76,6 @@ type Config struct {
 	// Metrics is the Prometheus instrument set the HTTP middleware observes into. A nil value coerces to a
 	// no-op registry so the middleware runs unconditionally.
 	Metrics *metrics.Registry
-	// MetricsHandler serves GET /metrics (the promhttp handler over the process registry). Nil leaves the
-	// route unregistered; when set it is exposed unauthenticated, beside /healthz.
-	MetricsHandler http.Handler
 	// Tracer is the OTel TracerProvider the HTTP server root span is recorded against. A nil value coerces to
 	// a no-op provider, so the server runs unchanged with tracing off (the default).
 	Tracer trace.TracerProvider
@@ -97,7 +94,6 @@ type API struct {
 	workmemMaxValueBytes int
 	embedderID           string
 	metrics              *metrics.Registry
-	metricsHandler       http.Handler
 	tracer               trace.TracerProvider
 }
 
@@ -128,7 +124,6 @@ func New(cfg Config) *API {
 		workmemMaxValueBytes: cfg.WorkmemMaxValueBytes,
 		embedderID:           cfg.EmbedderID,
 		metrics:              m,
-		metricsHandler:       cfg.MetricsHandler,
 		tracer:               tp,
 	}
 }
@@ -154,11 +149,9 @@ func (a *API) Handler() http.Handler {
 
 	r.Get("/healthz", a.handleHealthz)
 
-	// /metrics is unauthenticated (like /healthz) so a Prometheus scraper needs no credentials; operators
-	// bind it to an internal network and must not expose it publicly. Unregistered when no handler is wired.
-	if a.metricsHandler != nil {
-		r.Handle("/metrics", a.metricsHandler)
-	}
+	// /metrics is deliberately NOT here. It is unauthenticated, so serving it on this router would tie it to
+	// the API's listener and make it impossible to publish the API without publishing it too. The binary
+	// serves it on a listener of its own instead, which can stay unpublished.
 
 	r.Group(func(r chi.Router) {
 		r.Use(a.requireAuth)

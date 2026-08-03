@@ -98,15 +98,14 @@ func (a *API) logRequests(next http.Handler) http.Handler {
 // recordMetrics observes HTTP request count, duration, and in-flight into the
 // Prometheus registry. The route label is chi's matched route TEMPLATE (e.g.
 // /v1/memories/{id}), read after ServeHTTP, never the raw path — a raw path would
-// make the {id} segment an unbounded label and explode the series count. The
-// scrape endpoint itself is excluded so a Prometheus poll doesn't inflate the
-// counters.
+// make the {id} segment an unbounded label and explode the series count.
+//
+// The scrape endpoint used to be excluded here so a Prometheus poll could not inflate its own counters. It no
+// longer needs to be: /metrics is served on a listener of its own, which does not run this middleware. A
+// request for /metrics that still reaches this router is a collector pointed at the old address, and it is
+// counted like any other miss — the 404 bucket is exactly where an operator wants that to surface.
 func (a *API) recordMetrics(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/metrics" {
-			next.ServeHTTP(w, r)
-			return
-		}
 		a.metrics.HTTPInFlight.Inc()
 		defer a.metrics.HTTPInFlight.Dec()
 

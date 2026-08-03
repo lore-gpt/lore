@@ -52,9 +52,6 @@ type extensions struct {
 	// (backed by a throwaway registerer), so instrumentation sites call it unconditionally and a composition
 	// without telemetry exports nothing.
 	metrics *metrics.Registry
-	// metricsHandler serves /metrics when set (the promhttp handler over the process registry). The OSS binary
-	// injects it; nil leaves /metrics unregistered. Only the server consumes it — the worker exposes its own.
-	metricsHandler http.Handler
 	// tracer is optional infrastructure: the OTel TracerProvider spans are recorded against. It defaults to a
 	// no-op provider, so a composition with tracing off (the default) creates spans that record nothing and
 	// export nowhere — instrumentation sites start spans unconditionally.
@@ -106,7 +103,6 @@ func (e extensions) logComposed(ctx context.Context, role string) {
 		slog.String("metering", fmt.Sprintf("%T", e.metering)),
 		slog.String("extractor", fmt.Sprintf("%T", e.extractor)),
 		slog.String("embedder", fmt.Sprintf("%T", e.embedder)),
-		slog.Bool("metrics", e.metricsHandler != nil),
 	)
 }
 
@@ -164,13 +160,6 @@ func WithMeterRegistry(m *metrics.Registry) Option {
 			e.metrics = m
 		}
 	}
-}
-
-// WithMetricsHandler injects the /metrics HTTP handler (the promhttp handler over
-// the process registry). The server registers it unauthenticated beside /healthz;
-// nil leaves /metrics unregistered.
-func WithMetricsHandler(h http.Handler) Option {
-	return func(e *extensions) { e.metricsHandler = h }
 }
 
 // WithTracerProvider injects the OTel TracerProvider spans are recorded against.
@@ -244,7 +233,6 @@ func NewServer(ctx context.Context, cfg Config, opts ...Option) (*Server, error)
 		WorkmemMaxValueBytes: cfg.WorkmemMaxValueBytes,
 		EmbedderID:           e.embedder.ModelID(),
 		Metrics:              e.metrics,
-		MetricsHandler:       e.metricsHandler,
 		Tracer:               e.tracer,
 	})
 

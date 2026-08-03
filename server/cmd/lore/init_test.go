@@ -286,3 +286,61 @@ func serviceEnv(t *testing.T, data []byte, service string) map[string]string {
 	}
 	return env
 }
+
+// composePorts parses just the ports of each service, for assertions about what a generated compose
+// publishes to the host.
+type composePorts struct {
+	Services map[string]struct {
+		Ports []string `yaml:"ports"`
+	} `yaml:"services"`
+}
+
+// TestComposeDoesNotPublishTheMetricsPort locks a promise the documentation makes.
+//
+// /metrics is unauthenticated and now listens on its own port. That is only an improvement if the shipped
+// compose leaves that port inside the network — publishing it would put the endpoint exactly where the API
+// is, which is the situation the separate listener exists to avoid. Nothing else would catch a stray
+// mapping: the drift test only compares the two compose files to each other, so adding the same wrong line
+// to both would keep it quiet.
+func TestComposeDoesNotPublishTheMetricsPort(t *testing.T) {
+	rendered, err := renderCompose(core.Version)
+	if err != nil {
+		t.Fatalf("renderCompose: %v", err)
+	}
+	source, err := os.ReadFile(filepath.Join("..", "..", "..", "infra", "docker-compose.yml"))
+	if err != nil {
+		t.Fatalf("read infra compose: %v", err)
+	}
+
+	for name, raw := range map[string][]byte{"generated": rendered, "infra": source} {
+		var cf composePorts
+		if err := yaml.Unmarshal(raw, &cf); err != nil {
+			t.Fatalf("%s compose is not valid YAML: %v", name, err)
+		}
+		// The API port IS published, so a compose that published nothing at all would pass this test
+		// vacuously. Assert it is there before asserting what is not.
+		srv, ok := cf.Services["lore-server"]
+		if !ok {
+			t.Fatalf("%s: lore-server missing", name)
+		}
+		publishesAPI := false
+		for _, p := range srv.Ports {
+			if strings.HasSuffix(p, ":8080") {
+				publishesAPI = true
+			}
+		}
+		if !publishesAPI {
+			t.Fatalf("%s: lore-server publishes no API port; the check below would prove nothing", name)
+		}
+
+		for _, svc := range []string{"lore-server", "lore-worker"} {
+			s := cf.Services[svc]
+			for _, p := range s.Ports {
+				if strings.Contains(p, "9090") {
+					t.Errorf("%s: %s publishes %q — the metrics port must stay inside the network, since the endpoint is unauthenticated",
+						name, svc, p)
+				}
+			}
+		}
+	}
+}

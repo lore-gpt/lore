@@ -14,7 +14,6 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/lore-gpt/lore/core/metrics"
 	"github.com/lore-gpt/lore/core/pack"
@@ -155,15 +154,13 @@ func TestHealthzReportsEmbedderID(t *testing.T) {
 	}
 }
 
-// TestMetricsEndpointAndRoutePatternLabel checks that /metrics serves the process
-// registry and that the HTTP middleware labels requests by the chi route TEMPLATE
+// TestRoutePatternLabelIsBounded checks that the HTTP middleware labels requests by the chi route TEMPLATE
 // (bounded) — never the raw path, which would make an id an unbounded label.
-func TestMetricsEndpointAndRoutePatternLabel(t *testing.T) {
+func TestRoutePatternLabelIsBounded(t *testing.T) {
 	reg := prometheus.NewRegistry()
 	m := metrics.New(reg)
-	h := promhttp.HandlerFor(reg, promhttp.HandlerOpts{})
 	ok := fakePinger{}
-	handler := New(Config{DB: ok, Queue: ok, Version: "v-test", Metrics: m, MetricsHandler: h}).Handler()
+	handler := New(Config{DB: ok, Queue: ok, Version: "v-test", Metrics: m}).Handler()
 
 	do := func(method, path string) int {
 		rr := httptest.NewRecorder()
@@ -209,34 +206,65 @@ func TestMetricsEndpointAndRoutePatternLabel(t *testing.T) {
 		t.Error("the raw path leaked into the route label — series-explosion risk")
 	}
 
-	// /metrics itself serves the registry and is excluded from the HTTP counters.
+}
+
+// TestAPIRouterDoesNotServeMetrics is the regression lock on where /metrics lives.
+//
+// It used to be registered on this router, beside /healthz. Because it is unauthenticated, that made it
+// impossible to publish the API without publishing it too — the deployment advice the project gives ("keep
+// the metrics endpoint off the public network") could not be followed on the one port the API needs open.
+// It moved to a listener of its own, which the shipped compose deliberately does not map to the host.
+//
+// So this asserts the absence, not a redirect: the route is gone, and what answers is the ordinary
+// unknown-route response, in the same error envelope as any other miss. A collector still pointed at the
+// old address gets a readable answer rather than silence.
+func TestAPIRouterDoesNotServeMetrics(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	m := metrics.New(reg)
+	ok := fakePinger{}
+	handler := New(Config{DB: ok, Queue: ok, Version: "v-test", Metrics: m}).Handler()
+
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/metrics", nil))
-	if rr.Code != http.StatusOK {
-		t.Fatalf("GET /metrics = %d, want 200", rr.Code)
+
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("GET /metrics on the API router = %d, want 404 — it must not be served here (body %q)",
+			rr.Code, rr.Body.String())
 	}
-	if !strings.Contains(rr.Body.String(), "lore_http_requests_total") {
-		t.Error("/metrics body should expose lore_http_requests_total")
+	var body Error
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatalf("the 404 is not the error envelope: %v (raw %q)", err, rr.Body.String())
 	}
-	// Re-gather AFTER the scrape: the counter Inc happens after ServeHTTP writes the body, so asserting the
-	// scrape's own body is a false-green (it can't observe its own series yet). Gathering the registry after
-	// the request is what actually proves the /metrics route was never counted — it kills the mutant that
-	// deletes the exclusion guard.
-	families, err = reg.Gather()
+	if body.Code != "unknown_route" {
+		t.Errorf("code = %q, want unknown_route", body.Code)
+	}
+	// The scrape-exclusion guard is gone with the route: a collector still hitting this address should show
+	// up in the counters, because that miss is the signal an operator needs to notice the move.
+	if !strings.Contains(rr.Body.String(), "no endpoint") {
+		t.Errorf("message = %q, want the unknown-route message", rr.Body.String())
+	}
+	families, err := reg.Gather()
 	if err != nil {
-		t.Fatalf("gather after scrape: %v", err)
+		t.Fatalf("gather: %v", err)
 	}
+	counted := false
 	for _, mf := range families {
 		if mf.GetName() != "lore_http_requests_total" {
 			continue
 		}
 		for _, metric := range mf.GetMetric() {
 			for _, lp := range metric.GetLabel() {
+				if lp.GetName() == "route" && lp.GetValue() == "unmatched" {
+					counted = true
+				}
 				if lp.GetName() == "route" && lp.GetValue() == "/metrics" {
-					t.Error("the /metrics scrape was counted in the HTTP metrics — the exclusion guard is not working")
+					t.Error("the raw /metrics path became a route label")
 				}
 			}
 		}
+	}
+	if !counted {
+		t.Error("a request for /metrics was not counted at all; a stale collector would be invisible")
 	}
 }
 
@@ -244,17 +272,11 @@ func TestMetricsEndpointAndRoutePatternLabel(t *testing.T) {
 // built without a Metrics registry must still serve requests (nil coerces to noop).
 func TestMetricsDefaultsToNoop(t *testing.T) {
 	ok := fakePinger{}
-	handler := New(Config{DB: ok, Queue: ok, Version: "v-test"}).Handler() // no Metrics, no MetricsHandler
+	handler := New(Config{DB: ok, Queue: ok, Version: "v-test"}).Handler() // no Metrics registry
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 	if rr.Code != http.StatusOK {
 		t.Fatalf("healthz with noop metrics = %d, want 200", rr.Code)
-	}
-	// No handler wired → /metrics is unregistered (404).
-	rr = httptest.NewRecorder()
-	handler.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/metrics", nil))
-	if rr.Code != http.StatusNotFound {
-		t.Errorf("GET /metrics with no handler = %d, want 404 (unregistered)", rr.Code)
 	}
 }
 

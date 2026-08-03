@@ -218,7 +218,7 @@ Copy [`.env.example`](.env.example) to `.env` and set:
 | `LORE_WORKMEM_MAX_VALUE_BYTES` | no | `8192` | Max bytes per working-memory fact value (enforced at ingestion) |
 | `LORE_RETRIEVAL_PARTIAL_TIMEOUT` | no | `2s` | How long the dense retrieval leg may take to embed the query before the read proceeds without it; a dropped leg is reported in the pack's `degraded` field |
 | `LORE_METRICS_ENABLED` | no | `true` | Expose the Prometheus `/metrics` endpoint |
-| `LORE_METRICS_ADDR` | no | `:9090` | Worker's `/metrics` listener (the server serves `/metrics` on its API port) |
+| `LORE_METRICS_ADDR` | no | `:9090` | The `/metrics` listener, for **both** `serve` and `worker`. It is separate from the API port on purpose. Running both commands on one host means giving one of them a different address; under compose they are separate containers, so the default is fine |
 | `LORE_OTEL_ENABLED` | no | `false` | Export OpenTelemetry traces over OTLP (also needs an endpoint below) |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | with tracing | — | OTLP/HTTP collector base URL; the standard OTel variable (`OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` overrides it for traces) |
 | `LORE_EXTRACTION_PROVIDER` | no | fixture | `anthropic` for real LLM extraction; unset/`fixture` keeps the offline fixture |
@@ -247,9 +247,22 @@ an existing project would need a re-embedding migration. `lore doctor` and `/hea
 embedder identity (`model@dim`).
 
 **Metrics.** Prometheus metrics are exposed at `/metrics` (HTTP latency, the pack freshness-lag SLO, retrieval
-legs and path, consolidation outcomes, queue depth and oldest-job age). The endpoint is **unauthenticated**,
-like `/healthz` — don't expose the metrics port to the internet; bind it to an internal network and scrape it
-there. `/healthz` reports process and dependency health.
+legs and path, consolidation outcomes, queue depth and oldest-job age). Both `serve` and `worker` expose it on
+`LORE_METRICS_ADDR` (`:9090`), on a listener of its own — **not** on the API port.
+
+That separation is what makes the next sentence actionable: the endpoint is **unauthenticated**, so keep the
+metrics port off the public network. It binds every interface by default, so on bare metal that means a
+firewall rule, a bind address of your own (`LORE_METRICS_ADDR=127.0.0.1:9090`), or an internal interface —
+the same care `/metrics` has always needed, except that now you can take it without also closing the API.
+Under the shipped compose there is nothing to do: neither lore service publishes its metrics port to the
+host, so a collector on that network scrapes `lore-server:9090` and `lore-worker:9090` and nobody outside
+can. `/healthz` reports process and dependency health, and stays on the API port where an orchestrator can
+probe it.
+
+> **Moved in this release.** The server used to serve `/metrics` on its API port (`:8080`), which meant you
+> could not publish the API without publishing the metrics too. If you were scraping `:8080/metrics`, point
+> the collector at `:9090` instead. The old path now answers 404 like any other unknown route, so a
+> collector left behind fails visibly rather than silently returning nothing.
 
 **Tracing.** OpenTelemetry traces are **off by default**. Set `LORE_OTEL_ENABLED=true` and an
 `OTEL_EXPORTER_OTLP_ENDPOINT` (any OTLP/HTTP collector) to export them. Spans cover the HTTP request, the job
