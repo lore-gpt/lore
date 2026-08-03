@@ -406,8 +406,11 @@ export interface components {
             /** @description Opaque cursor for the next page; absent when there are no more results. */
             next_cursor?: string | null;
         };
+        /** @description The shape of every error this API returns, including the ones the router produces before a handler runs: a path that matches no endpoint answers 404 with code `unknown_route`, and an endpoint addressed with a method it does not serve answers 405 with code `method_not_allowed`. A client can therefore decode this body for any non-2xx response without special-casing those two. */
         Error: {
+            /** @description Human-readable explanation. Always present; not intended for matching on. */
             message: string;
+            /** @description Stable machine-readable tag for the failure, for callers that branch on the kind of error rather than the status. Note `not_found` means the resource you named does not exist or is not yours, while `unknown_route` means the path is not an endpoint at all. */
             code?: string;
         };
     };
