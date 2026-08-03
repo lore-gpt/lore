@@ -64,8 +64,9 @@ export class LoreClient {
   }
 
   /**
-   * Write one working-memory fact (the `kind:"state"` convention): it is written through to the low-latency
-   * stripe so a same-run reader sees it immediately. The server validates the fact and rejects a malformed one
+   * Write one working-memory fact (the `kind:"state"` convention): it is stored in the same transaction as
+   * the event carrying it, so once this resolves a pack for the run already reflects it — and keeps doing so
+   * after extraction has moved past the event. The server validates the fact and rejects a malformed one
    * with a typed {@link InvalidBodyError}-family error.
    */
   async writeState(args: WriteStateArgs): Promise<WriteResult> {

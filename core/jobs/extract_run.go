@@ -368,19 +368,26 @@ func (w *ExtractRunWorker) persistAndDrain(ctx context.Context, job *river.Job[E
 	return nil
 }
 
-// routeStateFacts sends each kind:"state" event to the run's working memory and returns the durable-claim
-// fallbacks for the ones the hot lane could not take. Healthy stripe: write the fact and let the hot lane
-// own it. The write is an unguarded overwrite, so it converges a dropped event-time write-through
-// eventually, not immediately: a delayed pass could momentarily re-emit an older value over a newer
-// concurrent write-through for the same subject, but the checkpoint keeps that newer event pending, so the
-// next coalesced pass restores it (the hot lane is a best-effort cache; durability is never at risk).
-// Disabled, degraded, or a failed write: preserve the fact as a durable claim through the same
-// entity-upsert + last-write-wins path the extractor's claims use, so a same-run reader still sees it. The
-// event log is the durability floor,
-// so this fallback covers only writes made DURING an outage; hot state written before an outage cools when
-// the stripe expires it (a run-close snapshot to persist end-of-run state is future work). A malformed
-// state event is dropped rather than sent to the model — the server validates state facts at ingestion, so
-// this is only a non-standard or pre-validation event.
+// routeStateFacts re-emits each kind:"state" event into the cache and returns claim writes for the ones the
+// cache could not take.
+//
+// TRANSITIONAL, and neither lane is load-bearing any more. A state fact is now stored durably in the
+// transaction that appends its event, and the context pack serves the working section from there, so what
+// happens here no longer decides what a same-run reader sees. Both lanes are left running for one release
+// while that path settles; whether either should survive — and if the claim copy does, under what key — is a
+// separate open question. Read the rest of this comment as description, not as justification.
+//
+// Cache lane: an unguarded overwrite, so a delayed pass can momentarily re-emit an older value over a newer
+// one for the same subject. That was tolerable when the cache was a best-effort accelerator and self-healed
+// on the next coalesced pass; it is the reason the pack no longer reads it.
+//
+// Claim lane: when the cache is disabled, degraded, or its write fails, the fact is also written as a claim
+// through the same entity-upsert + last-write-wins path the extractor's claims use. Note the claim key is
+// PROJECT-scoped while working memory is run-scoped, so this is not an equivalent copy — it is a different
+// representation, which is exactly what the open question is about.
+//
+// A malformed state event is dropped rather than sent to the model — the server validates state facts at
+// ingestion, so this is only a non-standard or pre-validation event.
 func (w *ExtractRunWorker) routeStateFacts(ctx context.Context, projectID, runID pgtype.UUID, stateEvents []db.Event) []ClaimWrite {
 	if len(stateEvents) == 0 {
 		return nil

@@ -22,9 +22,15 @@ func sortMems(items []memItem) {
 	})
 }
 
-// sortEntries orders live working-memory facts deterministically: freshest first (highest run seq), ties
-// broken by subject (entity, then predicate), so the working section is stable regardless of the cache's
-// hash-iteration order.
+// sortEntries orders working facts deterministically: freshest first (highest run seq), ties broken by
+// subject (entity, then predicate).
+//
+// Today this is a no-op in production: the query that feeds it returns rows in exactly this order, so it
+// re-sorts an already-sorted slice. It is kept because it is what makes the rendered order a property of
+// this package rather than of whichever query happens to supply the rows — and because the tie-break here
+// compares bytes, while a SQL ORDER BY compares under the database's collation, so two deployments with
+// different locales render the same bytes. Its own test drives it with shuffled input for that reason: no
+// end-to-end test can distinguish this sort from the query's.
 func sortEntries(entries []workmem.Entry) {
 	sort.Slice(entries, func(i, j int) bool {
 		if entries[i].Value.Seq != entries[j].Value.Seq {

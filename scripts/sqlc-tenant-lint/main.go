@@ -40,6 +40,7 @@ import (
 var tenantTables = []string{
 	"projects", "api_keys", "runs", "events", "memories", "embeddings",
 	"memory_versions", "memory_scopes", "claims", "entities", "entity_links", "pack_logs",
+	"working_facts",
 }
 
 var (

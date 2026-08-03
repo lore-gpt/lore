@@ -11,7 +11,6 @@ import (
 	dto "github.com/prometheus/client_model/go"
 
 	"github.com/lore-gpt/lore/core/metrics"
-	"github.com/lore-gpt/lore/core/workmem"
 )
 
 func findPackMetric(t *testing.T, reg *prometheus.Registry, name string, want map[string]string) *dto.Metric {
@@ -45,9 +44,14 @@ func findPackMetric(t *testing.T, reg *prometheus.Registry, name string, want ma
 }
 
 // TestPackMetricsFreshnessAndDegrade drives a pack build with a REAL registry and asserts the read-your-writes
-// freshness-lag SLO histogram, the build-duration histogram, and the working-source degrade counter [finding
-// 6]. The freshness assertion pins the load-bearing ms->seconds unit conversion exactly: the histogram sum
-// must equal FreshnessLagMs/1000.
+// freshness-lag SLO histogram and the build-duration histogram. The freshness assertion pins the load-bearing
+// ms->seconds unit conversion exactly: the histogram sum must equal FreshnessLagMs/1000.
+//
+// It also pins that the working-section degrade counter does NOT move. That counter measured a fallback
+// between two ways of serving the working section; there is only one way now, read from the pack's own
+// transaction, so a non-zero value would mean a degrade path had reappeared. Note what this does and does
+// not assert: a counter vector with no children exports no series at all, so the family is simply absent
+// here. The check below therefore proves nothing increments it — not that it still appears anywhere.
 func TestPackMetricsFreshnessAndDegrade(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(ctx, t)
@@ -63,9 +67,7 @@ func TestPackMetricsFreshnessAndDegrade(t *testing.T) {
 
 	reg := prometheus.NewRegistry()
 	m := metrics.New(reg)
-	// A disabled working-memory stripe makes the working source degrade to a non-live source, exercising the
-	// degrade counter as well.
-	p := New(newTestHybrid(), workmem.NewDisabled(), WithMetrics(m))
+	p := New(newTestHybrid(), WithMetrics(m))
 	res := runBuild(ctx, t, st, p, proj, run, Request{Query: "x", MinSeq: s2, Limit: 10})
 	if res.FreshnessLagMs <= 0 {
 		t.Fatalf("precondition: stale freshness = %d, want > 0", res.FreshnessLagMs)
@@ -79,22 +81,17 @@ func TestPackMetricsFreshnessAndDegrade(t *testing.T) {
 		t.Errorf("freshness histogram sum = %v s, want %v s (the ms->seconds conversion)", got, want)
 	}
 
-	// The metric labels on the CAUSE, which is deliberately not the caller-facing outcome: the stripe here is
-	// disabled (cause "durable" — it fell back) and nothing writes durable working memories, so the pack
-	// reports the outcome "unavailable". An operator debugging a degrade needs to know WHICH fallback fired,
-	// so the label set stays the bounded {live,durable,skipped} it has always been. Asserting both here keeps
-	// the two from silently collapsing back into one.
-	const wantCause = workingDurable
-	if res.WorkingSource != workingUnavailable {
-		t.Errorf("WorkingSource = %q, want %q (disabled stripe, no durable snapshot)", res.WorkingSource, workingUnavailable)
+	if res.WorkingSource != workingLive {
+		t.Errorf("WorkingSource = %q, want %q", res.WorkingSource, workingLive)
 	}
-	if bd := findPackMetric(t, reg, "lore_pack_build_duration_seconds", map[string]string{"working_source": wantCause}); bd == nil || bd.GetHistogram().GetSampleCount() != 1 {
-		t.Errorf("build-duration histogram for cause %q: want 1 sample, got %v", wantCause, bd)
+	if bd := findPackMetric(t, reg, "lore_pack_build_duration_seconds", map[string]string{"working_source": workingLive}); bd == nil || bd.GetHistogram().GetSampleCount() != 1 {
+		t.Errorf("build-duration histogram: want 1 sample under %q, got %v", workingLive, bd)
 	}
-	if dg := findPackMetric(t, reg, "lore_pack_degrade_total", map[string]string{"working_source": wantCause}); dg == nil || dg.GetCounter().GetValue() < 1 {
-		t.Errorf("degrade counter for cause %q not recorded", wantCause)
-	}
-	if dg := findPackMetric(t, reg, "lore_pack_degrade_total", map[string]string{"working_source": workingUnavailable}); dg != nil {
-		t.Errorf("the caller-facing outcome %q must not appear as a metric label: %v", workingUnavailable, dg)
+	// No working-section fallback exists any more, so nothing may increment the degrade counter. A value
+	// here would mean the section had gone back to being served from an optional dependency.
+	for _, label := range []string{workingLive, "durable", "skipped", "unavailable"} {
+		if dg := findPackMetric(t, reg, "lore_pack_degrade_total", map[string]string{"working_source": label}); dg != nil && dg.GetCounter().GetValue() > 0 {
+			t.Errorf("degrade counter moved for %q (%v); the working section has no fallback to degrade to", label, dg)
+		}
 	}
 }

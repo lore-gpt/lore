@@ -9,10 +9,11 @@ from typing import Literal
 # A pack's scope filter: either a list of scope strings, or a dict flattened to "key:value" strings.
 Scopes = list[str] | dict[str, str]
 
-#: Where the working section came from. "live": the run's live working stripe. "unavailable": the stripe
-#: was not authoritative and no durable snapshot existed, so this pack has NO working section (the state
-#: facts are still durable and still arrive through the raw tail). "durable": a durable snapshot served it
-#: (no producer writes those yet).
+#: Always "live". The working section is served from the run's durably stored working facts, read in the
+#: same transaction as the rest of the pack, so it is always the run's current state and there is nothing
+#: left to choose between. The literal is unchanged for wire compatibility, but "durable" and "unavailable"
+#: are no longer returned. An empty working section means the run has written no state facts — not that
+#: anything is degraded.
 WorkingSource = Literal["live", "durable", "unavailable"]
 
 

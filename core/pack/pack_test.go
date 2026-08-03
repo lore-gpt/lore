@@ -1,6 +1,8 @@
 package pack
 
 import (
+	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -122,7 +124,7 @@ func TestRenderOrderFramingSourcesAndDeterminism(t *testing.T) {
 	}
 	tail := []rawEvent{{seq: 9, agentID: "a2", payload: []byte(`{"note":"wip"}`)}}
 
-	text, sources := render(5, 250, live, nil, true, distilled, tail)
+	text, sources := render(5, 250, live, distilled, tail)
 
 	if !strings.HasPrefix(text, packHeader) {
 		t.Errorf("pack must open with the data-not-instructions header, got:\n%s", text)
@@ -153,27 +155,67 @@ func TestRenderOrderFramingSourcesAndDeterminism(t *testing.T) {
 		t.Errorf("footnote missing raw-tail count:\n%s", text)
 	}
 
-	if text2, _ := render(5, 250, live, nil, true, distilled, tail); text != text2 {
+	if text2, _ := render(5, 250, live, distilled, tail); text != text2 {
 		t.Errorf("render is not deterministic across calls:\n--- a ---\n%s\n--- b ---\n%s", text, text2)
 	}
 }
 
-// TestRenderDurableWorkingIsASource proves the mode-aware working section's durable branch: when the live store
-// is not authoritative, the durable working memories ARE the working section AND appear first in the source
-// list (they are real memories, with ids), ahead of the distilled sections.
-func TestRenderDurableWorkingIsASource(t *testing.T) {
-	durable := []memItem{{id: mkID(8), content: "task.status = done", kind: sectionWorking, score: 0.04}}
+// TestSortEntriesFreshestFirstThenSubject drives the working-section sort directly, with input the query
+// that feeds it in production would never produce.
+//
+// That is the point. ListRunWorkingFacts already returns rows in exactly this order, so every end-to-end
+// test receives data that is sorted before the sort runs — deleting the call, or reducing the comparator to
+// seq alone, would leave all of them green. The ordering would look covered while only the query was. This
+// drives all three comparison levels from a shuffled slice, so the sort has to do the work.
+func TestSortEntriesFreshestFirstThenSubject(t *testing.T) {
+	entry := func(entity, predicate string, seq int64) workmem.Entry {
+		return workmem.Entry{Entity: entity, Predicate: predicate, Value: workmem.Value{Seq: seq}}
+	}
+	entries := []workmem.Entry{
+		entry("m", "p", 1),
+		entry("z", "a", 5), // same seq as the next two: entity decides, and it sorts last
+		entry("a", "z", 5), // same seq AND same entity as the next: predicate decides
+		entry("a", "a", 5),
+		entry("q", "p", 3),
+	}
+
+	sortEntries(entries)
+
+	var got []string
+	for _, e := range entries {
+		got = append(got, fmt.Sprintf("%s.%s@%d", e.Entity, e.Predicate, e.Value.Seq))
+	}
+	want := []string{"a.a@5", "a.z@5", "z.a@5", "q.p@3", "m.p@1"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("order = %v, want %v (freshest first, then entity, then predicate)", got, want)
+	}
+}
+
+// TestRenderWorkingFactsAreNeverSources proves that a rendered working section contributes nothing to the
+// source list, and therefore nothing to the trace's memory_ids, which is derived from it.
+//
+// The section used to be able to come from durable working-kind memories, which WERE cited as sources; that
+// branch is gone, and this test is what stops it coming back. A working fact is a subject's current value,
+// not a memory: it has no id to cite and no relevance to report, so a citation for it could only be invented.
+func TestRenderWorkingFactsAreNeverSources(t *testing.T) {
+	working := []workmem.Entry{
+		{Entity: "task", Predicate: "status", Value: workmem.Value{Value: []byte(`"done"`), Seq: 4, Agent: "a1"}},
+		{Entity: "auth", Predicate: "owner", Value: workmem.Value{Value: []byte(`"alice"`), Seq: 3, Agent: "a2"}},
+	}
 	distilled := map[string][]memItem{sectionSemantic: {{id: mkID(1), content: "auth", kind: sectionSemantic, score: 0.03}}}
 
-	text, sources := render(3, 0, nil, durable, false, distilled, nil)
+	text, sources := render(3, 0, working, distilled, nil)
 
-	if !strings.Contains(text, "## Working memory (last durable snapshot)") {
-		t.Errorf("durable working header missing:\n%s", text)
+	// The section renders — the assertion below would be vacuous if it did not.
+	if !strings.Contains(text, "## Working memory") || !strings.Contains(text, "task.status = \"done\"") {
+		t.Fatalf("working section missing from the render:\n%s", text)
 	}
-	if len(sources) != 2 || sources[0].ID != mkID(8) || sources[0].Section != sectionWorking {
-		t.Errorf("durable working memory must be the first source; got %+v", sources)
+	if len(sources) != 1 || sources[0].ID != mkID(1) || sources[0].Section != sectionSemantic {
+		t.Errorf("sources = %+v, want only the distilled memory — a working fact is not a source", sources)
 	}
-	if sources[1].ID != mkID(1) {
-		t.Errorf("distilled source must follow the working source; got %+v", sources)
+	for _, s := range sources {
+		if s.Section == sectionWorking {
+			t.Errorf("a working entry reached the source list: %+v", s)
+		}
 	}
 }

@@ -11,8 +11,6 @@ import (
 	"go.opentelemetry.io/otel/codes"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
-
-	"github.com/lore-gpt/lore/core/workmem"
 )
 
 // spanNamed returns the first recorded span with the given name, or nil.
@@ -42,7 +40,7 @@ func TestPackBuildTraceTreeUnderHTTPSpan(t *testing.T) {
 	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
 	spanCtx, root := tp.Tracer("test").Start(ctx, "ingest")
 
-	p := New(newTestHybrid(), workmem.NewDisabled())
+	p := New(newTestHybrid())
 	runBuild(spanCtx, t, st, p, proj, run, Request{Query: "auth", MinSeq: seq, Limit: 10})
 	root.End()
 
@@ -79,7 +77,7 @@ func TestPackBuildSpanUnsetOnMinSeqOutOfRange(t *testing.T) {
 	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
 	spanCtx, root := tp.Tracer("test").Start(ctx, "ingest")
 
-	p := New(newTestHybrid(), workmem.NewDisabled())
+	p := New(newTestHybrid())
 	var buildErr error
 	if err := st.WithProject(spanCtx, proj, func(tx pgx.Tx) error {
 		_, buildErr = p.Build(spanCtx, tx, proj, run, Request{Query: "x", MinSeq: seq + 100, Limit: 10})

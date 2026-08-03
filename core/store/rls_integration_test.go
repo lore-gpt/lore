@@ -189,6 +189,7 @@ func TestMigration0008RolesRLS(t *testing.T) {
 		for _, tbl := range []string{
 			"projects", "api_keys", "runs", "events", "memories", "embeddings",
 			"memory_versions", "memory_scopes", "claims", "entities", "entity_links", "pack_logs",
+			"working_facts",
 		} {
 			if !rlsEnabled(ctx, t, st.Pool, tbl) {
 				t.Errorf("%s should have RLS enabled", tbl)

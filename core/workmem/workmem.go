@@ -1,9 +1,12 @@
-// Package workmem is Lore's run-scoped working-memory store for hot coordination facts: values a run
-// updates too often to version in Postgres (an event whose payload kind is "state"). A hot fact lives in
-// a fast cache (Valkey) keyed by (project, run, entity, predicate), so a same-run reader sees the latest
-// value immediately — the synchronous half of the read-your-writes guarantee — while Postgres stays the
-// durable authority. The stripe is optional: when it is not configured, hot facts fall through to normal
-// (durable, versioned) extraction instead.
+// Package workmem holds the payload contract for a run's working-memory facts (an event whose payload kind
+// is "state") and an optional write-path cache for them, keyed by (project, run, entity, predicate).
+//
+// The cache is no longer part of the read path: a state fact is stored durably in the same transaction as
+// the event that carries it, and the context pack serves its working section from there, so read-your-writes
+// for the working section rests on that transaction rather than on this cache being up. What remains here is
+// the ingestion-boundary validation every writer shares, and a cache that is written but not read — kept for
+// one release while the durable path settles. It is optional in every mode: unconfigured, unreachable, or
+// failing changes nothing a caller can observe.
 package workmem
 
 import (
