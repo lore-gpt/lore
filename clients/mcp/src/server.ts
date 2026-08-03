@@ -63,7 +63,7 @@ export function buildServer(client: LoreRestClient): McpServer {
     {
       title: "Write an event",
       description:
-        "Append one event, authored by an agent, to a run. Provide EXACTLY ONE of: `content` (a plain-text observation), `payload` (an opaque JSON object stored and later distilled), or `state` (a working-memory fact {entity, predicate, value} written through to the low-latency lane so a same-run reader sees it immediately). Returns the event's server-assigned `seq`, a monotonic per-run counter. Keep that seq: passing it as `min_seq` to a later memory_pack guarantees the pack reflects this write (read-your-writes).",
+        "Append one event, authored by an agent, to a run. Provide EXACTLY ONE of: `content` (a plain-text observation), `payload` (an opaque JSON object stored and later distilled), or `state` (a working-memory fact {entity, predicate, value}, stored in the same transaction as the event so a later pack for this run reflects it immediately and keeps doing so). Returns the event's server-assigned `seq`, a monotonic per-run counter. Keep that seq: passing it as `min_seq` to a later memory_pack guarantees the pack reflects this write (read-your-writes).",
       inputSchema: {
         run_id: z.string().describe("The run to append to (from create_run)."),
         agent_id: z.string().describe('Identifier of the agent authoring this event, e.g. "researcher".'),
@@ -176,7 +176,7 @@ export function buildServer(client: LoreRestClient): McpServer {
         saved_tokens: z.number(),
         working_source: z
           .enum(["live", "durable", "unavailable"])
-          .describe("Where the working section came from. live: the run's live working stripe served it. unavailable: the stripe was not authoritative and no durable snapshot existed, so this pack has NO working section — the state facts are still durable and still arrive in the raw tail. durable: a durable snapshot served it (no producer writes those yet)."),
+          .describe("Always live. The working section is served from the run's durably stored working facts, read in the same transaction as the rest of the pack, so it is always the run's current state. The enum is unchanged for wire compatibility, but durable and unavailable are no longer returned. An empty working section means the run has written no state facts, not that anything is degraded."),
         truncated: z.boolean(),
         sources: z.array(packSourceSchema),
         degraded: z

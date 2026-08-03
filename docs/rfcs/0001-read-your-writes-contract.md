@@ -57,10 +57,11 @@ Every pack returns:
 
 The client can assert `coveredSeq >= min_seq` and knows its consistency state — it never has to guess.
 
-### 4. Hot working memory bypasses the wait
+### 4. Working memory bypasses the wait
 
-High-churn keys (e.g. `current_task_status`) live in a synchronous working-memory lane (see the technical
-design), so the most critical coordination state is never behind extraction at all.
+High-churn keys (e.g. `current_task_status`) go through a working-memory lane that is written in the same
+transaction as the event carrying them, so the most critical coordination state is never behind extraction
+at all — and, unlike the raw tail, it stays visible after extraction has caught up.
 
 ## Why this is a feature, not just plumbing
 

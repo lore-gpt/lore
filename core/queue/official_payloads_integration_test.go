@@ -108,7 +108,7 @@ func TestOfflineDefaultDistilsShippedPayloadShapes(t *testing.T) {
 
 	// The pack is the surface an agent actually reads: a distilled memory that never reaches the
 	// Semantic section is invisible in practice, so assert the rendered text, not just the row.
-	p := pack.New(retrieval.NewHybrid(retrieval.New(), ext.FixtureEmbedder{}), workmem.NewDisabled())
+	p := pack.New(retrieval.NewHybrid(retrieval.New(), ext.FixtureEmbedder{}))
 	var res pack.Result
 	if err := st.WithProject(ctx, proj.ID, func(tx pgx.Tx) error {
 		var e error

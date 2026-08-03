@@ -223,12 +223,13 @@ func NewServer(ctx context.Context, cfg Config, opts ...Option) (*Server, error)
 	}
 
 	// The read path: the hybrid retriever over the composed embedder, wrapped by the context-pack builder.
-	// A downstream build swaps the embedder (and later the cache/reranker) via the same composition.
+	// A downstream build swaps the embedder (and later the cache/reranker) via the same composition. The
+	// working section needs no seam here — the pack reads it from the tenant transaction it already holds.
 	packer := pack.New(
 		retrieval.NewHybrid(retrieval.New(), e.embedder,
 			retrieval.WithHybridMetrics(e.metrics),
 			retrieval.WithPartialTimeout(cfg.RetrievalPartialTimeout)),
-		e.workmem, pack.WithMetrics(e.metrics),
+		pack.WithMetrics(e.metrics),
 	)
 
 	api := httpapi.New(httpapi.Config{

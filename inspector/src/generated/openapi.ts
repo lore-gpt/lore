@@ -216,7 +216,7 @@ export interface components {
             /** @example ok */
             queue: string;
             /**
-             * @description Working-memory stripe mode. Reported for visibility only; it never affects status, since the stripe is optional and the durable store stays authoritative.
+             * @description Write-path cache health. Reported for visibility only; it never affects status, and it no longer affects reads at all — context packs serve the working section from the durable store, so a stripe that is off or degraded changes nothing a caller can observe in a pack.
              * @example disabled
              * @enum {string}
              */
@@ -233,7 +233,7 @@ export interface components {
             /** @example researcher */
             agent_id: string;
             /**
-             * @description Opaque event body. As a convention, an event with `kind: "state"` carries one hot coordination fact for working memory and is written through to the low-latency stripe so a same-run reader sees it immediately: `{"kind":"state","entity":"<subject>","predicate":"<attr>","value":<any JSON>}`. entity and predicate are required, non-empty, at most 256 bytes, and free of control characters; value is bounded by the server's configured limit. A malformed state fact is rejected with 400 invalid_state_fact. Any other payload is stored and distilled by the normal extraction path.
+             * @description Opaque event body. As a convention, an event with `kind: "state"` carries one coordination fact for working memory and is stored in the same transaction as the event itself, so a pack for the run reflects it as soon as this call returns: `{"kind":"state","entity":"<subject>","predicate":"<attr>","value":<any JSON>}`. entity and predicate are required, non-empty, at most 256 bytes, and free of control characters; value is bounded by the server's configured limit. A malformed state fact is rejected with 400 invalid_state_fact. Any other payload is stored and distilled by the normal extraction path.
              * @example {
              *       "kind": "state",
              *       "entity": "auth-service",
@@ -297,7 +297,7 @@ export interface components {
             /** @description Estimated tokens saved by packing — a coarse v0 char-based estimate, not a metered figure. */
             saved_tokens: number;
             /**
-             * @description Where the working section actually came from. `live`: the run's live working stripe served it. `unavailable`: the stripe was not authoritative (off, degraded, or this read failed) and no durable snapshot existed, so **this pack has no working section** — the state facts are still persisted on the write path and still reach you through the raw tail until extraction distils them. `durable`: a durable working snapshot served it; no producer writes those yet, so it is not currently returned.
+             * @description Always `live`. Working facts are now stored durably and read from that store, in the same transaction that serves the rest of the pack, so the working section is always the run's current state and there is nothing left to choose between. The field described that choice while the section came from an optional cache that could be absent or stale; it is retained for wire compatibility and the enum is unchanged, but `durable` and `unavailable` are no longer returned. Treat it as constant: an empty working section is not a degradation signal. It means this run has no stored working facts — normally because it has written none, and for a run that predates this storage, until it writes one again.
              * @enum {string}
              */
             working_source: "live" | "durable" | "unavailable";

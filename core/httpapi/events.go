@@ -38,11 +38,11 @@ type CreateEventResponse struct {
 	Seq     int64  `json:"seq"`
 }
 
-// handleCreateEvent appends an event and enqueues its extraction job in a single
-// transaction. The write is atomic: if the enqueue (or the commit) fails, the
-// event row is rolled back and the client gets an error, never a persisted event
-// with no job or a job with no event. The event is stamped with a monotonic
-// per-run seq assigned inside that same transaction, so a rolled-back write
+// handleCreateEvent appends an event, records the working fact it carries (if it carries one), and
+// enqueues its extraction job — all in a single transaction. The write is atomic: if any step or the
+// commit fails, the event row is rolled back and the client gets an error, never a persisted event
+// with no job, a job with no event, or an event whose working fact went missing. The event is
+// stamped with a monotonic per-run seq assigned inside that same transaction, so a rolled-back write
 // consumes no sequence number; the seq is returned to the client.
 func (a *API) handleCreateEvent(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
@@ -116,6 +116,30 @@ func (a *API) handleCreateEvent(w http.ResponseWriter, r *http.Request) {
 	if event.ProjectID != authProject {
 		writeError(w, r, http.StatusNotFound, "not_found", "run_id does not exist")
 		return
+	}
+
+	// Working memory, recorded in THIS transaction: the fact and the event carrying it commit together
+	// or not at all. That is what the working section now rests on — once a caller holds the event's
+	// seq, a pack can already see the fact, and it keeps seeing it long after the event has left the
+	// raw tail. Unlike the hot-lane write further down this is neither best-effort nor conditional on a
+	// cache being healthy; it is the durable record, so a failure here fails the request and the
+	// deferred rollback undoes the event with it. Swallowing is not even an option: a failed statement
+	// aborts the transaction, so the enqueue and the commit would then fail with a far less obvious
+	// error. Zero rows affected is a normal outcome, not a failure — it means a newer value for this
+	// subject already won. The seq is the one the server just assigned, never a value from the payload.
+	if stateFact {
+		if _, err := db.New(tx).UpsertWorkingFact(ctx, db.UpsertWorkingFactParams{
+			ProjectID: event.ProjectID,
+			RunID:     event.RunID,
+			Entity:    fact.Entity,
+			Predicate: fact.Predicate,
+			Value:     fact.Value,
+			Seq:       event.Seq,
+			AgentID:   event.AgentID,
+		}); err != nil {
+			writeError(w, r, http.StatusInternalServerError, "internal", "could not persist working fact")
+			return
+		}
 	}
 
 	eventID := uuid.UUID(event.ID.Bytes).String()

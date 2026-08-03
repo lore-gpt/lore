@@ -10,7 +10,6 @@ import (
 
 	"github.com/lore-gpt/lore/core/ext"
 	"github.com/lore-gpt/lore/core/retrieval"
-	"github.com/lore-gpt/lore/core/workmem"
 )
 
 // slowEmbedder is the fixture embedder with a delay, so a test can push the dense leg past the
@@ -59,7 +58,7 @@ func TestPackReportsDroppedDenseLeg(t *testing.T) {
 			slowEmbedder{delay: 750 * time.Millisecond},
 			retrieval.WithPartialTimeout(20*time.Millisecond),
 		)
-		res := runBuild(ctx, t, st, New(slow, workmem.NewDisabled()), proj, run,
+		res := runBuild(ctx, t, st, New(slow), proj, run,
 			Request{Query: "grpc", MinSeq: s1, Limit: 10})
 
 		if want := []string{"dense"}; !reflect.DeepEqual(res.Degraded, want) {
@@ -73,7 +72,7 @@ func TestPackReportsDroppedDenseLeg(t *testing.T) {
 	})
 
 	t.Run("no leg dropped means no degraded field", func(t *testing.T) {
-		res := runBuild(ctx, t, st, New(newTestHybrid(), workmem.NewDisabled()), proj, run,
+		res := runBuild(ctx, t, st, New(newTestHybrid()), proj, run,
 			Request{Query: "grpc", MinSeq: s1, Limit: 10})
 
 		if res.Degraded != nil {
@@ -92,7 +91,7 @@ func TestPackReportsDroppedDenseLeg(t *testing.T) {
 			slowEmbedder{delay: 50 * time.Millisecond},
 			retrieval.WithPartialTimeout(3*time.Second),
 		)
-		res := runBuild(ctx, t, st, New(patient, workmem.NewDisabled()), proj, run,
+		res := runBuild(ctx, t, st, New(patient), proj, run,
 			Request{Query: "grpc", MinSeq: s1, Limit: 10})
 
 		if res.Degraded != nil {

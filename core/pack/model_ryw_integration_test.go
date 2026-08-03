@@ -8,7 +8,6 @@ import (
 	"testing"
 
 	"github.com/lore-gpt/lore/core/store/db"
-	"github.com/lore-gpt/lore/core/workmem"
 )
 
 // TestBuildServesRawTailWithoutActiveModel proves the read-your-writes guarantee holds before any model is
@@ -33,7 +32,7 @@ func TestBuildServesRawTailWithoutActiveModel(t *testing.T) {
 	run := seedRun(ctx, t, st, proj.ID)
 	seq := insertEvent(ctx, t, st, run, "planner", `{"note":"predistill_write"}`)
 
-	p := New(newTestHybrid(), workmem.NewDisabled())
+	p := New(newTestHybrid())
 	res := runBuild(ctx, t, st, p, proj.ID, run, Request{Query: "anything", MinSeq: seq})
 
 	if len(res.Sources) != 0 {

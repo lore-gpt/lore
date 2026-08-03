@@ -19,14 +19,13 @@ import (
 	"github.com/lore-gpt/lore/core/queue"
 	"github.com/lore-gpt/lore/core/retrieval"
 	"github.com/lore-gpt/lore/core/store"
-	"github.com/lore-gpt/lore/core/workmem"
 )
 
 // packHandler builds the full HTTP handler with a real context-pack read path (hybrid retrieval over the
 // offline fixture embedder), so /v1/pack exercises the actual composition — WithProject scoping, Build, and
 // the pack_logs trace — end to end.
 func packHandler(st *store.Store, q *queue.Queue) http.Handler {
-	packer := pack.New(retrieval.NewHybrid(retrieval.New(), ext.FixtureEmbedder{}), workmem.NewDisabled())
+	packer := pack.New(retrieval.NewHybrid(retrieval.New(), ext.FixtureEmbedder{}))
 	return httpapi.New(httpapi.Config{
 		Pool: st.Pool, Enqueuer: q, DB: st, Queue: q, Packer: packer, Tenant: st, Version: "test",
 	}).Handler()
@@ -78,11 +77,14 @@ func TestPackEndpoint(t *testing.T) {
 	if resp.CoveredSeq != 0 {
 		t.Errorf("covered_seq = %d, want 0 (extraction has not run)", resp.CoveredSeq)
 	}
-	// The stripe is disabled and nothing writes durable working memories, so no working section was served.
-	// "durable" here would name a fallback that produced nothing — the field reports the outcome, not the
-	// intent, and the state fact still reaches the caller through the raw tail asserted below.
-	if resp.WorkingSource != "unavailable" {
-		t.Errorf("working_source = %q, want unavailable (stripe disabled, no durable snapshot)", resp.WorkingSource)
+	// working_source is constant now: the working section is read from the run's durable working facts on
+	// the same transaction as the rest of the pack, so there is no fallback to report. This run has written
+	// none, which is why no working section appears — that is an empty section, not a degraded one.
+	if resp.WorkingSource != "live" {
+		t.Errorf("working_source = %q, want live (it no longer varies)", resp.WorkingSource)
+	}
+	if strings.Contains(resp.Text, "## Working memory") {
+		t.Errorf("a run with no working facts must render no working section:\n%s", resp.Text)
 	}
 	if !strings.Contains(resp.Text, "uncovered_write") {
 		t.Errorf("pack text missing the not-yet-distilled write (raw tail):\n%s", resp.Text)

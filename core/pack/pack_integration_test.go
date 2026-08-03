@@ -20,7 +20,6 @@ import (
 	"github.com/lore-gpt/lore/core/retrieval"
 	"github.com/lore-gpt/lore/core/store"
 	"github.com/lore-gpt/lore/core/store/db"
-	"github.com/lore-gpt/lore/core/workmem"
 )
 
 const (
@@ -121,6 +120,18 @@ func insertEvent(ctx context.Context, t *testing.T, st *store.Store, runID pgtyp
 	return ev.Seq
 }
 
+// insertWorkingFact seeds one working fact for a run. Production writes these through the ingest
+// transaction; a pack test only needs the row, so it writes directly.
+func insertWorkingFact(ctx context.Context, t *testing.T, st *store.Store, projectID, runID pgtype.UUID, entity, predicate, value string, seq int64) {
+	t.Helper()
+	if _, err := db.New(st.Pool).UpsertWorkingFact(ctx, db.UpsertWorkingFactParams{
+		ProjectID: projectID, RunID: runID, Entity: entity, Predicate: predicate,
+		Value: []byte(value), Seq: seq, AgentID: "a2",
+	}); err != nil {
+		t.Fatalf("insert working fact %s.%s: %v", entity, predicate, err)
+	}
+}
+
 // setCovered advances a run's extraction checkpoint directly (the pack reads it; extraction owns it in prod).
 func setCovered(ctx context.Context, t *testing.T, st *store.Store, runID pgtype.UUID, covered int64) {
 	t.Helper()
@@ -148,28 +159,31 @@ func runBuild(ctx context.Context, t *testing.T, st *store.Store, p *Pack, proje
 	return res
 }
 
-// fakeWorkmem is a working store whose GetAll fails while it reports a mode, so the "healthy store, failed read"
-// fallback can be exercised.
-type fakeWorkmem struct {
-	mode workmem.Mode
-	err  error
-}
-
-func (fakeWorkmem) Set(context.Context, workmem.Key, workmem.Value) error { return nil }
-func (fakeWorkmem) Get(context.Context, workmem.Key) (workmem.Value, bool, error) {
-	return workmem.Value{}, false, nil
-}
-func (f fakeWorkmem) GetAll(context.Context, string, string) ([]workmem.Entry, error) {
-	return nil, f.err
-}
-func (f fakeWorkmem) Mode() workmem.Mode { return f.mode }
-func (fakeWorkmem) Close()               {}
-
 // rawTailSeqs extracts the seq numbers of the rendered raw-tail lines in text order, so a test can assert the
 // tail's ORDER (not merely each event's presence) — a reorder, reverse, or duplicate mutant fails an ordering
 // assertion but survives a presence check.
 func rawTailSeqs(text string) []int64 {
 	const marker = "- [seq "
+	var seqs []int64
+	for _, line := range strings.Split(text, "\n") {
+		i := strings.Index(line, marker)
+		if i < 0 {
+			continue
+		}
+		rest := line[i+len(marker):]
+		if j := strings.IndexByte(rest, ' '); j >= 0 {
+			if n, err := strconv.ParseInt(rest[:j], 10, 64); err == nil {
+				seqs = append(seqs, n)
+			}
+		}
+	}
+	return seqs
+}
+
+// workingSeqs extracts the seq of each rendered working-section line in text order, so a test can assert the
+// section's ORDER rather than mere presence — a reversed or missing sort survives a presence check.
+func workingSeqs(text string) []int64 {
+	const marker = "[run seq "
 	var seqs []int64
 	for _, line := range strings.Split(text, "\n") {
 		i := strings.Index(line, marker)
@@ -198,8 +212,8 @@ func equalInt64(a, b []int64) bool {
 	return true
 }
 
-// TestPackAssemblesDistilledWorkingAndRawTail proves the read-your-writes core (AC#1): a pack fuses distilled
-// memories, the live working section, and a raw tail of not-yet-distilled events — so a peer's write at a seq
+// TestPackAssemblesDistilledWorkingAndRawTail proves the read-your-writes core: a pack fuses distilled
+// memories, the working section, and a raw tail of not-yet-distilled events — so a peer's write at a seq
 // past the extraction checkpoint is visible (raw) even though it has not been distilled.
 func TestPackAssemblesDistilledWorkingAndRawTail(t *testing.T) {
 	ctx := context.Background()
@@ -216,12 +230,8 @@ func TestPackAssemblesDistilledWorkingAndRawTail(t *testing.T) {
 	insertEvent(ctx, t, st, run, "a2", `{"note":"seq3 raw write"}`)
 	s4 := insertEvent(ctx, t, st, run, "a2", `{"note":"seq4 raw write"}`)
 
-	wm := workmem.NewMemory()
-	if err := wm.Set(ctx, workmem.Key{ProjectID: uuidStr(proj), RunID: uuidStr(run), Entity: "task", Predicate: "status"},
-		workmem.Value{Value: []byte(`"in_progress"`), Seq: s4, Agent: "a2"}); err != nil {
-		t.Fatalf("workmem set: %v", err)
-	}
-	p := New(newTestHybrid(), wm)
+	insertWorkingFact(ctx, t, st, proj, run, "task", "status", `"in_progress"`, s4)
+	p := New(newTestHybrid())
 
 	res := runBuild(ctx, t, st, p, proj, run, Request{Query: "service", MinSeq: s4, Limit: 10})
 
@@ -231,7 +241,7 @@ func TestPackAssemblesDistilledWorkingAndRawTail(t *testing.T) {
 	if res.CoveredSeq != 2 {
 		t.Errorf("CoveredSeq = %d, want 2", res.CoveredSeq)
 	}
-	// AC#1: the not-yet-distilled writes are visible in the raw tail.
+	// The not-yet-distilled writes are visible in the raw tail.
 	if !strings.Contains(res.Text, "seq3 raw write") || !strings.Contains(res.Text, "seq4 raw write") {
 		t.Errorf("raw tail missing the uncovered writes:\n%s", res.Text)
 	}
@@ -250,12 +260,9 @@ func TestPackAssemblesDistilledWorkingAndRawTail(t *testing.T) {
 	if !strings.Contains(res.Text, `task.status = "in_progress"`) {
 		t.Errorf("live working fact missing:\n%s", res.Text)
 	}
-	if strings.Contains(res.Text, "durable snapshot") {
-		t.Errorf("live mode must not show a durable snapshot:\n%s", res.Text)
-	}
 }
 
-// TestPackRawTailCapExemptWindow proves the guarantee at the heart of D1: the read-your-writes window
+// TestPackRawTailCapExemptWindow proves the guarantee at the heart of the read-your-writes contract: the window
 // (covered_seq, min_seq] is ALWAYS included in full, exempt from the beyond-window cap. With many uncovered
 // events, a small cap, and min_seq at the OLD end, the min_seq event must still be in the pack — an oldest-first
 // cap would have silently dropped it and broken the contract.
@@ -270,7 +277,7 @@ func TestPackRawTailCapExemptWindow(t *testing.T) {
 	}
 	// covered_seq stays 0: all 12 events are uncovered.
 
-	p := New(newTestHybrid(), workmem.NewDisabled(), WithRawTailMax(5))
+	p := New(newTestHybrid(), WithRawTailMax(5))
 	res := runBuild(ctx, t, st, p, proj, run, Request{Query: "none", MinSeq: 3, Limit: 10})
 
 	// The (0,3] window is cap-exempt: seq 1,2,3 must all be present despite the cap of 5 over 12 uncovered.
@@ -298,67 +305,95 @@ func TestPackRawTailCapExemptWindow(t *testing.T) {
 	}
 }
 
-// TestPackModeAwareWorking proves the mode-aware working section: a Healthy live store owns it and the durable
-// working memory is dropped; a Disabled store falls back to the durable working memory (info is not lost); a
-// Healthy store whose read fails falls back to durable too, counted as "skipped".
-func TestPackModeAwareWorking(t *testing.T) {
+// TestPackWorkingSectionOutlivesTheCheckpoint is the reason this whole lane exists.
+//
+// A working fact used to be visible only twice: from a cache, and from the raw tail until extraction
+// distilled past it. Once the checkpoint advanced, a deployment without a cache had no working section at
+// all — the fact was still stored, but not on the surface an agent reads. Here the checkpoint is advanced
+// past every event, so the raw tail is empty, and the section must still be there.
+//
+// The stray working-kind memory is the control: the pack used to build its "durable" working section from
+// those, and nothing has ever written one. It must not be rendered as a working section, and must not become
+// a source, because working facts have their own home now.
+func TestPackWorkingSectionOutlivesTheCheckpoint(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(ctx, t)
 	proj := seedProject(ctx, t, st, testModel)
 	run := seedRun(ctx, t, st, proj)
 
-	durID := insertMemKind(ctx, t, st, proj, sectionWorking, "task status is durable_snapshot_value", nil)
+	strayID := insertMemKind(ctx, t, st, proj, sectionWorking, "task status is stray_working_memory", nil)
 
-	// (a) Healthy live: the live fact wins and the durable working memory is dropped entirely.
-	wm := workmem.NewMemory()
-	if err := wm.Set(ctx, workmem.Key{ProjectID: uuidStr(proj), RunID: uuidStr(run), Entity: "task", Predicate: "status"},
-		workmem.Value{Value: []byte(`"live_value"`), Seq: 1, Agent: "a"}); err != nil {
-		t.Fatalf("set: %v", err)
+	seq := insertEvent(ctx, t, st, run, "a2", `{"kind":"state","entity":"task","predicate":"status","value":"shipped"}`)
+	insertWorkingFact(ctx, t, st, proj, run, "task", "status", `"shipped"`, seq)
+	setCovered(ctx, t, st, run, seq) // distilled: the event has left the raw tail
+
+	res := runBuild(ctx, t, st, New(newTestHybrid()), proj, run, Request{Query: "status", Limit: 10})
+
+	if len(rawTailSeqs(res.Text)) != 0 {
+		t.Fatalf("raw tail should be empty at a caught-up checkpoint, got %v — the assertion below would be vacuous", rawTailSeqs(res.Text))
 	}
-	live := runBuild(ctx, t, st, New(newTestHybrid(), wm), proj, run, Request{Query: "status", Limit: 10})
-	if live.WorkingSource != workingLive {
-		t.Errorf("live: WorkingSource = %q, want live", live.WorkingSource)
+	if !strings.Contains(res.Text, `task.status = "shipped"`) {
+		t.Errorf("working fact missing after the checkpoint passed it:\n%s", res.Text)
 	}
-	if !strings.Contains(live.Text, `"live_value"`) {
-		t.Errorf("live fact missing:\n%s", live.Text)
+	if res.WorkingSource != workingLive {
+		t.Errorf("WorkingSource = %q, want %q", res.WorkingSource, workingLive)
 	}
-	if strings.Contains(live.Text, "durable_snapshot_value") {
-		t.Errorf("Healthy live mode must DROP the durable working memory, but its content appears:\n%s", live.Text)
+
+	// The control: a working-kind memory is not the working section and is not a source.
+	if strings.Contains(res.Text, "stray_working_memory") {
+		t.Errorf("a working-kind memory must not render as the working section:\n%s", res.Text)
 	}
-	for _, s := range live.Sources {
-		if s.ID == durID {
-			t.Errorf("Healthy live mode must not list the durable working memory as a source")
+	for _, s := range res.Sources {
+		if s.ID == strayID || s.Section == sectionWorking {
+			t.Errorf("a working-kind memory reached the source list: %+v", s)
 		}
 	}
+}
 
-	// (b) Disabled: the durable working memory becomes the working section and a source.
-	dis := runBuild(ctx, t, st, New(newTestHybrid(), workmem.NewDisabled()), proj, run, Request{Query: "status", Limit: 10})
-	if dis.WorkingSource != workingDurable {
-		t.Errorf("disabled: WorkingSource = %q, want durable", dis.WorkingSource)
-	}
-	if !strings.Contains(dis.Text, "durable snapshot") || !strings.Contains(dis.Text, "durable_snapshot_value") {
-		t.Errorf("disabled mode must show the durable working memory:\n%s", dis.Text)
-	}
-	foundDur := false
-	for _, s := range dis.Sources {
-		if s.ID == durID {
-			foundDur = true
-		}
-	}
-	if !foundDur {
-		t.Errorf("disabled: durable working memory must be a source: %+v", dis.Sources)
-	}
+// TestPackWorkingSectionIsRunScoped proves the property that decided the design. Two runs in ONE project
+// hold different values for the same subject; each pack must show its own run's value.
+//
+// A project-scoped working store would make one run's write hide the other's, and the loser would have no way
+// to see its own fact once the checkpoint moved past the event. That is exactly why the working section is not
+// built from the project-scoped claims table.
+func TestPackWorkingSectionIsRunScoped(t *testing.T) {
+	ctx := context.Background()
+	st := migratedStore(ctx, t)
+	proj := seedProject(ctx, t, st, testModel)
+	runA, runB := seedRun(ctx, t, st, proj), seedRun(ctx, t, st, proj)
 
-	// (c) Healthy store whose GetAll fails: falls back to durable. The caller sees the OUTCOME ("durable" — a
-	// snapshot did serve the section); "skipped" is the CAUSE and lives on the metric, so it never reaches the
-	// wire. TestPackWorkingSourceReportsOutcomeNotIntent pins that split from both ends.
-	skip := runBuild(ctx, t, st, New(newTestHybrid(), fakeWorkmem{mode: workmem.Healthy, err: errors.New("cache boom")}),
-		proj, run, Request{Query: "status", Limit: 10})
-	if skip.WorkingSource != workingDurable {
-		t.Errorf("skipped-cause: WorkingSource = %q, want durable (a snapshot served it)", skip.WorkingSource)
+	insertWorkingFact(ctx, t, st, proj, runA, "task", "owner", `"alice"`, 1)
+	insertWorkingFact(ctx, t, st, proj, runB, "task", "owner", `"bob"`, 1)
+
+	p := New(newTestHybrid())
+	a := runBuild(ctx, t, st, p, proj, runA, Request{Query: "owner", Limit: 10})
+	b := runBuild(ctx, t, st, p, proj, runB, Request{Query: "owner", Limit: 10})
+
+	if !strings.Contains(a.Text, `"alice"`) || strings.Contains(a.Text, `"bob"`) {
+		t.Errorf("run A must see only its own value:\n%s", a.Text)
 	}
-	if !strings.Contains(skip.Text, "durable snapshot") {
-		t.Errorf("skipped mode must fall back to the durable snapshot:\n%s", skip.Text)
+	if !strings.Contains(b.Text, `"bob"`) || strings.Contains(b.Text, `"alice"`) {
+		t.Errorf("run B must see only its own value:\n%s", b.Text)
+	}
+}
+
+// TestPackWorkingSectionOrderedFreshestFirst pins the render order as an exact sequence. Insertion order and
+// seq order are deliberately different, so a missing or reversed sort cannot pass, and a presence-only check
+// would not have caught either.
+func TestPackWorkingSectionOrderedFreshestFirst(t *testing.T) {
+	ctx := context.Background()
+	st := migratedStore(ctx, t)
+	proj := seedProject(ctx, t, st, testModel)
+	run := seedRun(ctx, t, st, proj)
+
+	insertWorkingFact(ctx, t, st, proj, run, "a", "p", `"first"`, 1)
+	insertWorkingFact(ctx, t, st, proj, run, "b", "p", `"newest"`, 5)
+	insertWorkingFact(ctx, t, st, proj, run, "c", "p", `"middle"`, 3)
+
+	res := runBuild(ctx, t, st, New(newTestHybrid()), proj, run, Request{Query: "p", Limit: 10})
+
+	if got, want := workingSeqs(res.Text), []int64{5, 3, 1}; !equalInt64(got, want) {
+		t.Errorf("working section seqs = %v, want %v (freshest first)", got, want)
 	}
 }
 
@@ -374,7 +409,7 @@ func TestPackFreshnessAndCaughtUp(t *testing.T) {
 	s2 := insertEvent(ctx, t, st, run, "a", `{}`)
 	setCovered(ctx, t, st, run, s2)
 
-	p := New(newTestHybrid(), workmem.NewDisabled())
+	p := New(newTestHybrid())
 	caught := runBuild(ctx, t, st, p, proj, run, Request{Query: "x", MinSeq: s2, Limit: 10})
 	if caught.FreshnessLagMs != 0 {
 		t.Errorf("caught-up freshness = %d, want 0", caught.FreshnessLagMs)
@@ -402,17 +437,27 @@ func TestPackLogWrittenInTransaction(t *testing.T) {
 	st := migratedStore(ctx, t)
 	proj := seedProject(ctx, t, st, testModel)
 	run := seedRun(ctx, t, st, proj)
-	// A durable working memory plus distilled memories: in Disabled mode the working section precedes the
-	// distilled sections, so the first source — and thus memory_ids[0] — must be the working memory.
-	workID := insertMemKind(ctx, t, st, proj, sectionWorking, "service status snapshot", nil)
 	insertMemKind(ctx, t, st, proj, sectionSemantic, "auth service tokens", nil)
 	insertMemKind(ctx, t, st, proj, sectionEpisodic, "service deploy log", nil)
+	// A working fact alongside them: it is rendered but is not a memory, so it must appear in neither the
+	// source list nor the trace. The section check over res.Sources is what enforces the first; the trace
+	// follows because memory_ids is written from that same list, and the count/order assertions below pin
+	// that correspondence.
+	insertWorkingFact(ctx, t, st, proj, run, "service", "status", `"green"`, 1)
 
-	p := New(newTestHybrid(), workmem.NewDisabled())
+	p := New(newTestHybrid())
 	res := runBuild(ctx, t, st, p, proj, run, Request{Query: "service", Limit: 10})
 
-	if len(res.Sources) < 2 || res.Sources[0].ID != workID {
-		t.Fatalf("durable working memory must be the FIRST source (working section precedes distilled); got %+v", res.Sources)
+	if len(res.Sources) < 2 {
+		t.Fatalf("precondition: want the distilled memories as sources, got %+v", res.Sources)
+	}
+	if !strings.Contains(res.Text, `service.status = "green"`) {
+		t.Fatalf("precondition: the working fact must be rendered, else the trace assertion is vacuous:\n%s", res.Text)
+	}
+	for _, s := range res.Sources {
+		if s.Section == sectionWorking {
+			t.Errorf("a working entry reached the source list, and therefore the trace: %+v", s)
+		}
 	}
 
 	var query string
@@ -481,8 +526,13 @@ func TestPackDeterministicBytes(t *testing.T) {
 	insertMemKind(ctx, t, st, proj, sectionSemantic, "auth service beta", nil)
 	insertMemKind(ctx, t, st, proj, sectionEpisodic, "service episode gamma", nil)
 	insertMemKind(ctx, t, st, proj, sectionProcedural, "service procedure delta", nil)
+	// Two working facts, so the working section is part of what is being pinned rather than absent. Note this
+	// test only proves two builds agree; the ORDER within the section is pinned by
+	// TestPackWorkingSectionOrderedFreshestFirst and, for the tie-break, by the unit test on sortEntries.
+	insertWorkingFact(ctx, t, st, proj, run, "service", "owner", `"alice"`, 1)
+	insertWorkingFact(ctx, t, st, proj, run, "auth", "owner", `"bob"`, 1)
 
-	p := New(newTestHybrid(), workmem.NewDisabled())
+	p := New(newTestHybrid())
 	a := runBuild(ctx, t, st, p, proj, run, Request{Query: "service", Limit: 10})
 	b := runBuild(ctx, t, st, p, proj, run, Request{Query: "service", Limit: 10})
 	if a.Text != b.Text {
@@ -490,6 +540,9 @@ func TestPackDeterministicBytes(t *testing.T) {
 	}
 	if a.FreshnessLagMs != 0 {
 		t.Errorf("expected caught-up freshness 0, got %d", a.FreshnessLagMs)
+	}
+	if !strings.Contains(a.Text, "## Working memory") {
+		t.Errorf("precondition: the working section must be part of what is being pinned:\n%s", a.Text)
 	}
 }
 
@@ -506,15 +559,11 @@ func TestPackBudgetExemptsWorkingAndRawTail(t *testing.T) {
 	big := "the auth service " + strings.Repeat("token ", 40)
 	insertMemKind(ctx, t, st, proj, sectionSemantic, big, nil)
 
-	// An uncovered event (raw tail, covered_seq stays 0) and a live working fact.
+	// An uncovered event (raw tail, covered_seq stays 0) and a working fact.
 	insertEvent(ctx, t, st, run, "a", `{"note":"uncovered_raw_event"}`)
-	wm := workmem.NewMemory()
-	if err := wm.Set(ctx, workmem.Key{ProjectID: uuidStr(proj), RunID: uuidStr(run), Entity: "task", Predicate: "status"},
-		workmem.Value{Value: []byte(`"live_kept"`), Seq: 1, Agent: "a"}); err != nil {
-		t.Fatalf("set: %v", err)
-	}
+	insertWorkingFact(ctx, t, st, proj, run, "task", "status", `"live_kept"`, 1)
 
-	p := New(newTestHybrid(), wm)
+	p := New(newTestHybrid())
 	res := runBuild(ctx, t, st, p, proj, run, Request{Query: "service", MinSeq: 1, Limit: 10, TokenBudget: 1})
 
 	// The distilled memory is dropped by the budget (reported truncated, no distilled source, no rendered line).

@@ -172,3 +172,14 @@ type Run struct {
 	ExtractionBatchID         *string            `json:"extraction_batch_id"`
 	ExtractionBatchCoveredSeq *int64             `json:"extraction_batch_covered_seq"`
 }
+
+type WorkingFact struct {
+	ProjectID pgtype.UUID        `json:"project_id"`
+	RunID     pgtype.UUID        `json:"run_id"`
+	Entity    string             `json:"entity"`
+	Predicate string             `json:"predicate"`
+	Value     []byte             `json:"value"`
+	Seq       int64              `json:"seq"`
+	AgentID   string             `json:"agent_id"`
+	UpdatedAt pgtype.Timestamptz `json:"updated_at"`
+}
