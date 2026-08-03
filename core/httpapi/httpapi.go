@@ -144,6 +144,14 @@ func (a *API) Handler() http.Handler {
 	r.Use(a.recordMetrics)
 	r.Use(a.traceRoute)
 
+	// The router's own rejections use the same error envelope as every handled error. Without this the two
+	// ways to miss the API are the only responses on this surface a client cannot parse: the router's default
+	// 404 is text/plain prose, and its default 405 is a bare status with no body and no content type at all.
+	// A client that decodes {code, message} — which is every SDK here — then fails to decode rather than
+	// reporting the mistake, so a path typo or a wrong method surfaces as a parse error instead of an answer.
+	r.NotFound(a.handleUnknownRoute)
+	r.MethodNotAllowed(a.handleMethodNotAllowed)
+
 	r.Get("/healthz", a.handleHealthz)
 
 	// /metrics is unauthenticated (like /healthz) so a Prometheus scraper needs no credentials; operators
@@ -185,4 +193,26 @@ func (a *API) Handler() http.Handler {
 			return req.URL.Path != "/healthz" && req.URL.Path != "/metrics"
 		}),
 	)
+}
+
+// handleUnknownRoute answers a path that matches no endpoint. Its code is deliberately distinct from the
+// not_found a handler returns for a missing resource: those mean "the thing you named does not exist, or is
+// not yours", while this means "that URL is not an endpoint at all". A client hitting the second usually has
+// a typo or is speaking to a version that does not have the route, and telling the two apart is the whole
+// value of a machine-readable code. Route existence is not a secret — the endpoints are published in the
+// API description — so this reveals nothing a caller could not already read.
+func (a *API) handleUnknownRoute(w http.ResponseWriter, r *http.Request) {
+	writeError(w, r, http.StatusNotFound, "unknown_route", "no endpoint at this path")
+}
+
+// handleMethodNotAllowed answers a real endpoint addressed with a method it does not serve.
+//
+// A 405 is supposed to carry an Allow header listing the methods that would work, and this one does not.
+// That is a known gap rather than an oversight: the router computes the allowed set while matching but
+// keeps it private, and it also leaves the matched route pattern empty by the time this runs, so there is
+// nothing here to look the endpoint up by. Producing the header would mean matching the path against the
+// route table a second time, in code that can disagree with the router that just rejected it — and an Allow
+// that names the wrong methods is worse than none. Revisit if the router starts exposing either.
+func (a *API) handleMethodNotAllowed(w http.ResponseWriter, r *http.Request) {
+	writeError(w, r, http.StatusMethodNotAllowed, "method_not_allowed", "this endpoint does not accept that method")
 }

@@ -98,6 +98,10 @@ class RunTraceResponse(TypedDict):
 
 
 class Error(TypedDict):
+    """
+    The shape of every error this API returns, including the ones the router produces before a handler runs: a path that matches no endpoint answers 404 with code `unknown_route`, and an endpoint addressed with a method it does not serve answers 405 with code `method_not_allowed`. A client can therefore decode this body for any non-2xx response without special-casing those two.
+    """
+
     message: str
     code: NotRequired[str]
 

@@ -559,3 +559,55 @@ func TestPackResponseOmitsDegradedWhenHealthy(t *testing.T) {
 		})
 	}
 }
+
+// TestRouterRejectionsUseTheErrorEnvelope covers the two ways a request can miss the API entirely: a path
+// that is not an endpoint, and an endpoint addressed with a method it does not serve.
+//
+// Both used to escape the error envelope every handled error uses. The router answered an unknown path with
+// chi's text/plain "404 page not found", and an unsupported method with a bare 405 carrying no body and no
+// content type at all. Those were the only two responses on this surface a client decoding {code, message}
+// could not read, so the two most likely client mistakes — a typo and a wrong verb — arrived as decode
+// failures instead of answers. The assertions therefore check the envelope itself (parseable JSON, declared
+// content type, non-empty message) rather than just the status code, which was never wrong.
+func TestRouterRejectionsUseTheErrorEnvelope(t *testing.T) {
+	handler := New(Config{}).Handler()
+
+	for _, tc := range []struct {
+		name       string
+		method     string
+		path       string
+		wantStatus int
+		wantCode   string
+	}{
+		{"unknown path under the api prefix", http.MethodGet, "/v1/nope", http.StatusNotFound, "unknown_route"},
+		{"unknown path at the root", http.MethodGet, "/", http.StatusNotFound, "unknown_route"},
+		{"unknown nested path", http.MethodPost, "/v1/memories/x/y/z", http.StatusNotFound, "unknown_route"},
+		{"write endpoint read with GET", http.MethodGet, "/v1/runs", http.StatusMethodNotAllowed, "method_not_allowed"},
+		{"write endpoint read with GET (events)", http.MethodGet, "/v1/events", http.StatusMethodNotAllowed, "method_not_allowed"},
+		{"pack deleted", http.MethodDelete, "/v1/pack", http.StatusMethodNotAllowed, "method_not_allowed"},
+		{"health probed with POST", http.MethodPost, "/healthz", http.StatusMethodNotAllowed, "method_not_allowed"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rr := httptest.NewRecorder()
+			handler.ServeHTTP(rr, httptest.NewRequest(tc.method, tc.path, nil))
+
+			if rr.Code != tc.wantStatus {
+				t.Fatalf("status = %d, want %d (body %q)", rr.Code, tc.wantStatus, rr.Body.String())
+			}
+			if ct := rr.Header().Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
+				t.Errorf("Content-Type = %q, want application/json — a client cannot know how to read this", ct)
+			}
+			// Decoding is the point: the old responses failed here, not on the status.
+			var body Error
+			if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+				t.Fatalf("response body is not the error envelope: %v (raw %q)", err, rr.Body.String())
+			}
+			if body.Code != tc.wantCode {
+				t.Errorf("code = %q, want %q", body.Code, tc.wantCode)
+			}
+			if body.Message == "" {
+				t.Error("message is empty; the envelope requires one")
+			}
+		})
+	}
+}
