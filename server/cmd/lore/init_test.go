@@ -105,6 +105,9 @@ func TestInitComposeDependencyImagesMatchSource(t *testing.T) {
 // healthcheck, depends_on, restart, user, volumes) must stay identical between the generated compose and the
 // build-from-source infra/docker-compose.yml — only the image-vs-build key legitimately differs. Comparing
 // everything else catches a contributor updating one compose (e.g. a new env var) but not the other.
+//
+// The comparison is deliberately scoped to `services`. The other sanctioned divergence is the top-level
+// project name, which MUST differ between the two files; that one has its own test below.
 func TestInitLoreServiceConfigMatchesSource(t *testing.T) {
 	rendered, err := renderCompose("v0.0.0")
 	if err != nil {
@@ -127,6 +130,65 @@ func TestInitLoreServiceConfigMatchesSource(t *testing.T) {
 			t.Errorf("service %q config drifted (ignoring image/build):\n init=%v\n src =%v\nkeep the two compose files in lockstep", svc, got, want)
 		}
 	}
+}
+
+// TestComposeProjectNamesAreDistinctAndPinned locks the one property that keeps the two stacks apart.
+//
+// Compose keys containers, networks and volumes off the project name, and that name is global to the
+// machine rather than scoped to the directory the file sits in. So when both files claimed `lore` they were
+// one stack, not two: invoking the build-from-source file adopted containers the published-image scaffold
+// had created (measured on Compose v2.40 — its `ps` listed the scaffold's container as its own), and a
+// `down -v` from either directory removed the shared database volume of the other.
+//
+// Each name is also pinned, not merely required to differ, and for a different reason on each side:
+//
+//   - Non-empty, both: with no `name:` Compose derives one from the directory name and drops every
+//     non-ASCII character, so a directory named entirely in a non-Latin script derives to nothing and `up`
+//     fails with "project name must not be empty". A fixed name is what keeps that from reaching users.
+//   - Exactly "lore" for the scaffold: every existing installation's volumes are already namespaced under
+//     it, so renaming this side would not migrate a user's database, it would orphan it. The contributor
+//     stack is the side that may move, because its data is rebuilt from source anyway.
+func TestComposeProjectNamesAreDistinctAndPinned(t *testing.T) {
+	rendered, err := renderCompose("v0.0.0")
+	if err != nil {
+		t.Fatalf("renderCompose: %v", err)
+	}
+	srcBytes, err := os.ReadFile(filepath.Join("..", "..", "..", "infra", "docker-compose.yml"))
+	if err != nil {
+		t.Fatalf("read infra/docker-compose.yml: %v", err)
+	}
+
+	initName := projectName(t, rendered)
+	srcName := projectName(t, srcBytes)
+
+	if initName == "" {
+		t.Error("the generated compose declares no top-level `name:`; Compose would then derive one from " +
+			"whichever directory the user ran it in, which fails outright for a non-Latin directory name")
+	}
+	if srcName == "" {
+		t.Error("infra/docker-compose.yml declares no top-level `name:`; its project would then depend on " +
+			"where it was invoked from rather than being a stable, separate stack")
+	}
+	if initName == srcName {
+		t.Errorf("both compose files claim the project name %q — they are different topologies, so sharing "+
+			"a name makes them one stack: `up` recreates the other's containers and `down -v` destroys the "+
+			"other's database", initName)
+	}
+	if initName != "lore" {
+		t.Errorf("the generated compose's project name = %q, want \"lore\"; existing installations' volumes "+
+			"are namespaced under that name, so changing it orphans their database instead of migrating it", initName)
+	}
+}
+
+func projectName(t *testing.T, data []byte) string {
+	t.Helper()
+	var c struct {
+		Name string `yaml:"name"`
+	}
+	if err := yaml.Unmarshal(data, &c); err != nil {
+		t.Fatalf("unmarshal compose: %v", err)
+	}
+	return c.Name
 }
 
 func rawServices(t *testing.T, data []byte) map[string]map[string]any {

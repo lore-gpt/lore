@@ -187,6 +187,12 @@ survives that, so provisioning detects the reset, moves the old file to `./.lore
 new credentials — reload them with the `source ./.lore/credentials` command above. (Keeping the old
 credentials? Skip `-v`.)
 
+> **One stack per machine.** Compose names this stack `lore` whichever directory you start it from, so a
+> second directory attaches to the same containers and the same database — and the `down -v` above drops
+> that one shared database wherever you run it. For a second, isolated stack, give it its own project name
+> and host port: `COMPOSE_PROJECT_NAME=lore-b LORE_HTTP_PORT=18080 docker compose up -d --wait`. The
+> Inspector's port is fixed at 3000, so also edit that mapping in the second file or drop its service block.
+
 Every step above is also a `lore` subcommand for running outside Docker: `lore provision` (create a project
 and mint a key), `lore pack` (fetch a context pack), and `lore doctor` (check the database, schema, and
 server). Run `lore --help` for the full list.
@@ -196,7 +202,9 @@ server). Run `lore --help` for the full list.
 
 > **Building from source?** Clone the repo and use the build-from-source compose instead of the published
 > image: `docker compose -f infra/docker-compose.yml up -d --build --wait` (or `task compose:up`, the dev
-> entry point for lint/test/build too).
+> entry point for lint/test/build too). That one is a separate stack named `lore-dev` with its own
+> database, so it no longer collides with the published-image stack above — but both publish 8080 and 3000,
+> so run one at a time unless you move the other's ports.
 
 > **Diagnostics UI.** The compose stack — both the `lore init` scaffold and build-from-source — also starts a
 > read-only web Inspector at [localhost:3000](http://localhost:3000) — browse memories, view run traces, and

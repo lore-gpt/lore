@@ -16,7 +16,15 @@
 # it never prints the token, so the secret stays out of the logs.
 #
 # The database credentials below are throwaway local-dev values, not secrets.
-name: lore
+#
+# The project name is what Docker Compose namespaces containers, networks and volumes by, and it is
+# global to the machine — not scoped to this directory. This file and the one `lore init` prints are
+# two different topologies (this one builds from source; that one pins a published image), so they must
+# NOT share a name: under one name Compose treats them as the same stack, silently recreates the other's
+# containers, and — because volumes are namespaced the same way — `down -v` here would drop the database
+# of a quickstart running somewhere else on the machine. Hence `lore-dev` for the contributor stack and
+# `lore` for the scaffold. A test asserts the two stay different.
+name: lore-dev
 
 services:
   paradedb:
