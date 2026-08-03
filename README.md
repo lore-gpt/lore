@@ -208,9 +208,17 @@ credentials? Skip `-v`.)
 > and host port: `COMPOSE_PROJECT_NAME=lore-b LORE_HTTP_PORT=18080 docker compose up -d --wait`. The
 > Inspector's port is fixed at 3000, so also edit that mapping in the second file or drop its service block.
 
-Every step above is also a `lore` subcommand for running outside Docker: `lore provision` (create a project
-and mint a key), `lore pack` (fetch a context pack), and `lore doctor` (check the database, schema, and
-server). Run `lore --help` for the full list.
+Every step above is also a `lore` subcommand: `lore provision` (create a project and mint a key), `lore pack`
+(fetch a context pack), and `lore doctor` (check the database, schema, and server). They run wherever the
+binary runs — directly, if you installed it on the host, or inside the stack for a compose install. `doctor`
+is the one that needs the distinction spelled out, because a compose stack publishes the API but not the
+database, so it can only see everything from inside the network:
+
+```bash
+docker compose run --rm --no-deps lore-server doctor --url http://lore-server:8080
+```
+
+Run `lore --help` for the full list.
 
 > **Port 8080 already in use?** Pick a free host port; the container still listens on 8080:
 > `LORE_HTTP_PORT=18080 docker compose up -d --wait`
