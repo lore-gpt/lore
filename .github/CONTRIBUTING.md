@@ -25,6 +25,14 @@ open an issue, comment on an RFC, or send a patch — thank you.
 - **DCO / CLA** — contributions are accepted under the project's Contributor License Agreement (a CLA bot
   will guide you on your first PR). This keeps future licensing flexibility open and protects the project
   and its contributors.
+- **Local stack** — `task compose:up` starts the build-from-source stack (`infra/docker-compose.yml`). It is
+  a Compose project named **`lore-dev`**, deliberately different from the `lore` stack that `lore init`
+  scaffolds from the published image: Compose keys containers and volumes off the project name, and that
+  name is global to the machine, so one shared name means `task compose:down` wipes the database of any
+  quickstart you happen to have running elsewhere.
+  <br>**One-time migration:** if you have a dev stack from before this change it is still under the old
+  `lore` name and is now orphaned. It was throwaway dev data — remove it with
+  `docker compose -p lore down -v`, then `task compose:up` builds a fresh `lore-dev` stack.
 
 ## Releasing
 
