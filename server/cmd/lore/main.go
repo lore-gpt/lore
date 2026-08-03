@@ -81,11 +81,20 @@ func flushTracing(tel telemetry.Telemetry) {
 	}
 }
 
-// serveWorkerMetrics exposes /metrics on addr for the worker, which has no API
-// server of its own. It runs until ctx is done, then shuts down with a short
-// grace. A nil handler (metrics disabled) is a no-op. A bind failure is logged,
-// not fatal: telemetry is optional and must not take the worker down.
-func serveWorkerMetrics(ctx context.Context, addr string, handler http.Handler) {
+// serveMetrics exposes /metrics on addr, on a listener of its own. Both commands use it, so the endpoint
+// lives at the same place whichever one you are scraping, and neither serves it beside anything else.
+//
+// For the server that separation is the point: /metrics is unauthenticated, so if it shared the API's
+// listener you could not publish the API without publishing it too. On its own port it can simply stay
+// unpublished — the shipped compose maps only the API port, and a collector on the same network scrapes it
+// directly.
+//
+// It runs until ctx is done, then shuts down with a short grace. A nil handler (metrics disabled) is a
+// no-op. A bind failure is loud but NOT fatal: losing the observability surface must not take down the
+// process it observes. The usual cause is running both commands on one host, where they default to the
+// same port — give one of them a different LORE_METRICS_ADDR. Under compose they are separate containers,
+// so it does not arise.
+func serveMetrics(ctx context.Context, role, addr string, handler http.Handler) {
 	if handler == nil {
 		return
 	}
@@ -100,10 +109,12 @@ func serveWorkerMetrics(ctx context.Context, addr string, handler http.Handler) 
 	}()
 	go func() {
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			slog.ErrorContext(ctx, "worker metrics listener failed", slog.String("addr", addr), slog.Any("error", err))
+			slog.ErrorContext(ctx, "metrics listener failed; this process keeps running without one",
+				slog.String("role", role), slog.String("addr", addr), slog.Any("error", err),
+				slog.String("hint", "if another process already holds this address, set LORE_METRICS_ADDR to a free one"))
 		}
 	}()
-	slog.InfoContext(ctx, "worker metrics listener", slog.String("addr", addr))
+	slog.InfoContext(ctx, "metrics listener", slog.String("role", role), slog.String("addr", addr))
 }
 
 func serveCmd() *cobra.Command {
@@ -146,13 +157,15 @@ func serveCmd() *cobra.Command {
 				return err
 			}
 
-			// Build the metrics registry + /metrics handler and the OTel tracer. The
-			// server exposes /metrics on its main port, unauthenticated beside /healthz;
-			// tracing is off unless LORE_OTEL_ENABLED + an OTLP endpoint are set.
+			// Build the metrics registry + /metrics handler and the OTel tracer. Metrics are served on
+			// their own listener (LORE_METRICS_ADDR), never on the API port — the endpoint is
+			// unauthenticated, so sharing the API's listener would make it impossible to publish one
+			// without the other. Tracing is off unless LORE_OTEL_ENABLED + an OTLP endpoint are set.
 			tel := telemetry.Build(ctx, telemetry.Config{
 				MetricsEnabled: cfg.MetricsEnabled, OtelEnabled: cfg.OtelEnabled, Version: core.Version, Role: "server",
 			})
 			defer flushTracing(tel)
+			serveMetrics(ctx, "server", cfg.MetricsAddr, tel.MetricsHandler)
 
 			srv, err := core.NewServer(ctx, core.Config{
 				Addr:                    cfg.Addr,
@@ -160,7 +173,7 @@ func serveCmd() *cobra.Command {
 				WorkmemMaxValueBytes:    cfg.WorkmemMaxValueBytes,
 				RetrievalPartialTimeout: cfg.RetrievalPartialTimeout,
 			}, core.WithWorkmem(wm), core.WithEmbedder(embedder),
-				core.WithMeterRegistry(tel.Metrics), core.WithMetricsHandler(tel.MetricsHandler),
+				core.WithMeterRegistry(tel.Metrics),
 				core.WithTracerProvider(tel.Tracer))
 			if err != nil {
 				wm.Close()
@@ -215,14 +228,13 @@ func workerCmd() *cobra.Command {
 			}
 			slog.InfoContext(ctx, "working memory", slog.String("mode", wm.Mode().String()))
 
-			// The worker has no API server, so it exposes /metrics on its own listener
-			// (LORE_METRICS_ADDR). Build the registry + tracer, inject them for the job
-			// instrumentation, and serve the handler.
+			// Build the registry + tracer, inject them for the job instrumentation, and serve the
+			// handler on the same dedicated listener the server uses (LORE_METRICS_ADDR).
 			tel := telemetry.Build(ctx, telemetry.Config{
 				MetricsEnabled: cfg.MetricsEnabled, OtelEnabled: cfg.OtelEnabled, Version: core.Version, Role: "worker",
 			})
 			defer flushTracing(tel)
-			serveWorkerMetrics(ctx, cfg.MetricsAddr, tel.MetricsHandler)
+			serveMetrics(ctx, "worker", cfg.MetricsAddr, tel.MetricsHandler)
 
 			w, err := core.NewWorker(ctx, core.Config{
 				DatabaseURL: cfg.DatabaseURL,

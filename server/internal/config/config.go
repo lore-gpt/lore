@@ -56,12 +56,12 @@ type Config struct {
 	// provider-native name) because one adapter serves many backends.
 	EmbeddingAPIKey string // LORE_EMBEDDING_API_KEY
 
-	// Observability. MetricsEnabled exposes the Prometheus /metrics endpoint (on by
-	// default; the endpoint is unauthenticated like /healthz, so bind it to an
-	// internal network). MetricsAddr is the worker's dedicated /metrics listener
-	// (the server exposes /metrics on its main port; the worker has no HTTP server).
+	// Observability. MetricsEnabled exposes the Prometheus /metrics endpoint (on by default). MetricsAddr is
+	// the address it listens on, for BOTH commands: the endpoint is unauthenticated, so keeping it off the
+	// API's listener is what lets an operator publish the API without publishing this. Running serve and
+	// worker on one host means giving one of them a different address.
 	MetricsEnabled bool   // LORE_METRICS_ENABLED (default true)
-	MetricsAddr    string // LORE_METRICS_ADDR (default ":9090"; worker only)
+	MetricsAddr    string // LORE_METRICS_ADDR (default ":9090")
 	// OtelEnabled turns on OpenTelemetry tracing. Off by default; it also needs an
 	// OTLP endpoint (OTEL_EXPORTER_OTLP_ENDPOINT) or tracing stays a no-op.
 	OtelEnabled bool // LORE_OTEL_ENABLED (default false)

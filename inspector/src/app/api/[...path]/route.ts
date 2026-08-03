@@ -41,7 +41,8 @@ async function proxy(req: Request, ctx: { params: Promise<{ path: string[] }> })
     return json(403, { message: "cross-site request blocked", code: "forbidden" });
   }
 
-  // Only /v1 requires a key (mirrors the upstream; /healthz and /metrics are open).
+  // Only /v1 requires a key (mirrors the upstream, where /healthz is the one open route — metrics moved to
+  // a listener of their own and are not reachable through this proxy at all).
   const active = await getActiveKey();
   if (isV1 && !active) {
     return json(401, { message: "not connected", code: "not_connected" });

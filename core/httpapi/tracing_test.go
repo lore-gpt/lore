@@ -8,8 +8,6 @@ import (
 
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
-
-	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 // newRecordingAPI builds an API whose HTTP spans are captured in-memory, returning the handler and the recorder.
@@ -59,15 +57,18 @@ func TestHTTPSpanNamedByRouteTemplate(t *testing.T) {
 }
 
 // TestHTTPSpanExcludesHealthAndMetrics proves the otelhttp filter keeps infrastructure polling out of the trace
-// backend: neither /healthz nor /metrics opens a span, so a Prometheus scrape or a liveness probe every few
-// seconds never floods traces. A business route in the same handler still records one span (the control).
+// backend: neither /healthz nor /metrics opens a span, so a liveness probe every few seconds never floods
+// traces. A business route in the same handler still records one span (the control).
+//
+// /metrics is no longer served on this router at all — it moved to its own listener — but the filter still
+// names it, and deliberately so: a collector left pointed at the old address would otherwise open a span per
+// poll for a request that only ever 404s. The move already shows up in the HTTP counters, which is the right
+// place for it; traces do not need a copy.
 func TestHTTPSpanExcludesHealthAndMetrics(t *testing.T) {
-	// /metrics only registers when a handler is wired, so give it a real promhttp handler.
 	handler, sr := newRecordingAPI(t, Config{
-		DB:             fakePinger{},
-		Queue:          fakePinger{},
-		Version:        "v-test",
-		MetricsHandler: promhttp.Handler(),
+		DB:      fakePinger{},
+		Queue:   fakePinger{},
+		Version: "v-test",
 	})
 
 	for _, path := range []string{"/healthz", "/metrics"} {
