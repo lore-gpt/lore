@@ -39,5 +39,11 @@ COPY --from=build /app/public ./public
 # Runs as root (no USER) so it can read the root-owned credentials file the compose
 # stack mounts read-only. This is a local-dev diagnostic container bound to
 # localhost — do not expose it to a network.
+#
+# Root is required ONLY to read that mount, not by anything this server does. If the
+# credentials file's ownership model changes — for example if it were written to a group
+# both containers share — this image would drop back to a nonroot user. Recorded here so
+# the current choice reads as deliberate rather than as an oversight; a nonroot pass is
+# tracked separately.
 EXPOSE 3000
 CMD ["node", "server.js"]

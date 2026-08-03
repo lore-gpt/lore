@@ -18,10 +18,12 @@ import (
 
 // provisionCmd bootstraps a tenant — an organization, a project, its partitions, and one API key — so a first
 // project is a single step instead of hand-run seed SQL. Without --out it prints the token once to stdout
-// (like `keys create`). With --out it writes the project id and token to a file (0600) and prints nothing
-// secret, which is how the compose one-shot provision service surfaces credentials without leaking the token
-// into container logs. The --out file doubles as the idempotency guard: if it already exists and is
-// non-empty, the command is a no-op, so a second `docker compose up` never mints a second key.
+// (like `keys create`). With --out it writes the project id and token to a file and prints nothing secret,
+// which is how the compose one-shot provision service surfaces credentials without leaking the token into
+// container logs. The file is 0600 on POSIX hosts; the directory is created by Docker and its mode is not
+// enforced; on Windows the file inherits host ACLs. The --out file doubles as the idempotency guard: if it
+// already exists and is non-empty, the command is a no-op, so a second `docker compose up` never mints a
+// second key.
 func provisionCmd() *cobra.Command {
 	var orgName, projectName, out string
 	cmd := &cobra.Command{
@@ -82,6 +84,10 @@ func provisionCmd() *cobra.Command {
 				// exit rather than a false "moved to .bak" line. If the provision that follows fails, only the
 				// .bak remains; the next run then provisions cleanly (no credentials file) with the old key
 				// still preserved in .bak.
+				//
+				// Note the exposure this creates: the .bak is a SECOND file holding live key material,
+				// and it persists until someone removes it — so whatever protects the credentials file
+				// has to be understood as protecting a directory with two secrets in it, not one.
 				bak := out + ".bak"
 				// Keep a single, latest backup. A prior heal may have left one, and os.Rename does not
 				// replace an existing file on every platform, so remove it first for a deterministic overwrite.
@@ -122,14 +128,23 @@ func provisionCmd() *cobra.Command {
 	cmd.Flags().StringVar(&orgName, "org", "default", "organization name")
 	cmd.Flags().StringVar(&projectName, "project", "default", "project name")
 	cmd.Flags().StringVar(&out, "out", "",
-		"write credentials (project id + token) to this file with 0600 permissions instead of printing the "+
-			"token; skips provisioning if the file already exists")
+		"write credentials (project id + token) to this file instead of printing the token; the file is 0600 "+
+			"on POSIX hosts and inherits host ACLs on Windows; skips provisioning if the file already exists")
 	return cmd
 }
 
-// writeCredentials writes the project id and token to path as a dotenv file with owner-only permissions, so a
-// user can source it and the token never lands in a log. The parent directory is created if missing, and the
-// file is created 0600 up front (not chmod'd after) so the secret is never briefly world-readable.
+// writeCredentials writes the project id and token to path as a dotenv file, so a user can source it and the
+// token never lands in a log.
+//
+// What the permissions actually guarantee, stated precisely because several comments elsewhere echo it: the
+// file is 0600 on POSIX hosts; the directory is created by Docker and its mode is not enforced; on Windows
+// the file inherits host ACLs. The file mode is requested at create time rather than chmod'd after, so on
+// POSIX there is no window where the secret exists world-readable. The directory mode below is best-effort
+// by construction — MkdirAll only applies a mode to directories it creates, and under compose the parent is
+// the bind mount, which already exists — so it is the FILE mode that carries the protection, not the
+// directory's. On Windows neither applies: Go maps only the read-only attribute, and the file inherits
+// whatever ACL the containing directory hands down — so how exposed the key is there follows where the
+// directory lives, which is why the README offers an optional step to restrict it up front.
 func writeCredentials(path string, res provision.Result) error {
 	if dir := filepath.Dir(path); dir != "" {
 		if err := os.MkdirAll(dir, 0o700); err != nil {

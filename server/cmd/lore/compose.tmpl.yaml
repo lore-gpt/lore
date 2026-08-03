@@ -10,7 +10,7 @@
 # topology is already in place.
 #
 # lore-provision is a one-shot that runs after the server is healthy: it creates a
-# first project and writes its id and API key to ./.lore/credentials (0600) so the
+# first project and writes its id and API key to ./.lore/credentials so the
 # quickstart is `up` then `cat ./.lore/credentials`, no hand-run SQL. It is
 # idempotent — a second `up` finds the file and leaves the project untouched — and
 # it never prints the token, so the secret stays out of the logs.
@@ -153,7 +153,14 @@ services:
     restart: "no"
     # The image runs as nonroot, but Docker creates the bind-mount source directory
     # as root, so a nonroot process cannot write the credentials file into it. Run
-    # this one-shot as root so the write succeeds; the file itself is 0600.
+    # this one-shot as root so the write succeeds.
+    #
+    # What that leaves you with, precisely: the file is 0600 on POSIX hosts; the directory is
+    # created by Docker and its mode is not enforced; on Windows the file inherits host ACLs.
+    # There, how exposed the key is follows the ACL of whatever directory ./.lore lands in — a
+    # shared location can leave it readable by other users on the machine (the README has an
+    # optional icacls step). The same applies to ./.lore/credentials.bak, the second
+    # key-bearing file a database reset leaves behind.
     user: "0:0"
     volumes:
       - ./.lore:/creds
