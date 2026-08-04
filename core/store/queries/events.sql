@@ -27,11 +27,20 @@ WHERE project_id = $1 AND id = $2;
 -- extraction pass. The covered_seq subquery scopes the read to events an earlier pass has not
 -- already consumed, so a re-enqueued or retried job never re-reads them. Project-scoped so it is
 -- tenant-safe and (under RLS) reads only the caller's project.
+--
+-- The LIMIT bounds ONE pass, not the run. Without it a client that writes faster than extraction runs
+-- — a bulk import, a backfill, an agent replaying a transcript — produces a single pass over every
+-- pending event, and an extractor's output ceiling is finite: past some window size the model's
+-- response truncates, which fails the pass, and every retry rebuilds the identical oversized window
+-- and fails identically until the job is discarded with the checkpoint frozen. Capping the read turns
+-- that permanent stall into more passes: the caller's tail drain snoozes while any remain, and a
+-- snooze costs no attempt.
 SELECT id, run_id, agent_id, payload, created_at, seq, project_id
 FROM events
 WHERE events.project_id = $1 AND events.run_id = $2
   AND events.seq > (SELECT covered_seq FROM runs WHERE runs.id = $2)
-ORDER BY events.seq;
+ORDER BY events.seq
+LIMIT sqlc.arg(window_limit);
 
 -- name: RunExtractionReadiness :one
 -- Debounce inputs for one run's coalesced extraction, measured over its not-yet-extracted events

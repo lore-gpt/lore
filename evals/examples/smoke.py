@@ -309,11 +309,38 @@ def _build_system(name: str, args: argparse.Namespace, poll_timeout: float) -> t
 
         from mem0 import Memory
 
-        adapter = Mem0Adapter(Memory(), top_k=args.mem0_top_k)
+        # A bare Memory() cannot write on mem0ai 2.0.12: its default model is gpt-5-mini, and its default
+        # params include temperature=0.1 / top_p=0.1 / max_tokens, which that model rejects with a 400.
+        #
+        # mem0 already handles this — LLMBase._get_supported_params drops those params for reasoning models —
+        # but its detector's set lists "gpt-5", "gpt-5o", "gpt-5o-mini" and NOT "gpt-5-mini", so mem0's own
+        # default slips past mem0's own guard. Rather than pick a different engine for the competitor, which
+        # is the one thing a parity comparison must not do, this sets mem0's documented `is_reasoning_model`
+        # escape hatch. The model stays mem0's, and the request becomes exactly the shape mem0 intends for a
+        # GPT-5 model: messages + response_format, with the unsupported params dropped by mem0's own code.
+        #
+        # Everything else stays mem0's choice, including its embedder — text-embedding-3-small@1536, which
+        # happens to be the same one Lore is configured with here, so neither side gets a vector-space edge.
+        mem0_llm_model = "gpt-5-mini"
+        adapter = Mem0Adapter(
+            Memory.from_config(
+                {
+                    "llm": {
+                        "provider": "openai",
+                        "config": {"model": mem0_llm_model, "is_reasoning_model": True},
+                    }
+                }
+            ),
+            top_k=args.mem0_top_k,
+            config_label=(
+                f"oss-default + is_reasoning_model=True "
+                f"(mem0's own flag; its detector misses {mem0_llm_model})"
+            ),
+        )
         # mem0 runs its own OpenAI-backed extraction and embedding on write; there is no separate "extraction
         # mode", and its embedder is internal (not configured or introspected here).
         config = f"mem0ai {version('mem0ai')} ({adapter.config_label}); retrieval top_k={adapter.top_k}"
-        return adapter, "mem0-internal", "", config, "mem0-internal"
+        return adapter, mem0_llm_model, "", config, "mem0-internal"
 
     raise SystemExit(f"unknown system: {name!r} (expected lore or mem0)")
 

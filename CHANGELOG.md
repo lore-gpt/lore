@@ -64,6 +64,21 @@ action on upgrade says so in its entry.
 
 ### Fixed
 
+- **A burst of writes no longer stops a run from ever distilling again.** One extraction pass used to
+  read every event past the run's checkpoint, however many that was. A client writing faster than
+  extraction runs — a bulk import, a backfill, an agent replaying a transcript — could therefore build a
+  window whose extraction output exceeded the model's response ceiling. That failed the pass, every retry
+  rebuilt the identical window and failed identically, and the job was discarded with the checkpoint
+  frozen: the run stopped distilling permanently, and its `covered_seq` never advanced again. Passes are
+  now capped (200 events by default) and the remainder is drained by the pass that follows.
+  <br>Measured, so its limits are stated too: the cap makes truncation survivable rather than impossible.
+  A window can still be too large for dense content, in which case a retry usually clears it — the
+  ceiling depends on how much text the events carry, not on how many there are.
+- **One impossible date from the model no longer discards an entire extraction pass.** A claim's optional
+  `event_time` was parsed strictly, so a value like `2023-02-29` — a date that does not exist — failed the
+  whole decode and threw away every memory, claim and entity extracted alongside it, deterministically, on
+  every retry. An unusable timestamp is now dropped and the rest of the pass is kept. The field is
+  advisory and never drove ordering, so nothing downstream changes.
 - Background jobs that fail or panic are now logged. The queue reported a failed attempt below its own
   logger's threshold, so a job could fail every attempt and then be discarded in silence — including a
   model-mismatch fail-safe that was working correctly and saying nothing.

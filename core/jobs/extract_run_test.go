@@ -77,8 +77,14 @@ func (f *fakeSource) RunExtractionReadiness(_ context.Context, _ db.RunExtractio
 	return f.tailReadiness, nil
 }
 
+// ListRunEvents honours WindowLimit the way the real query's LIMIT does. A fake that returned everything
+// regardless would let a test "prove" the window is bounded while the worker still handed the extractor the
+// whole backlog — the assertion would be about the fake, not the code.
 func (f *fakeSource) ListRunEvents(_ context.Context, arg db.ListRunEventsParams) ([]db.Event, error) {
 	f.gotArg = arg
+	if n := int(arg.WindowLimit); n > 0 && n < len(f.events) {
+		return f.events[:n], nil
+	}
 	return f.events, nil
 }
 
@@ -178,6 +184,89 @@ func pgUUID(t *testing.T, s string) pgtype.UUID {
 		t.Fatalf("parse uuid %q: %v", s, err)
 	}
 	return pgtype.UUID{Bytes: u, Valid: true}
+}
+
+// TestExtractRunWorker_BoundsTheWindowAndDrainsTheRest pins the cap that keeps a burst from stalling a run
+// forever.
+//
+// The failure it prevents is not "a slow pass" — it is permanent. An extractor's output ceiling is finite, so
+// a large enough window truncates the model's response; the pass errors, and because the window is rebuilt
+// from the same events past the same checkpoint, every retry fails identically until the job is discarded with
+// the checkpoint frozen. The run stops distilling for good, and (before the job-error reporting landed) said
+// nothing. Measured for real: a client writing one event per conversational turn produced a 511-event window
+// that hit the ceiling on all three attempts.
+//
+// So this asserts the split, not just the limit argument: with 500 pending and a window of 200, the extractor
+// must see exactly the first 200, the checkpoint must advance only that far, and the worker must SNOOZE rather
+// than report success — a snooze is what returns for the rest without spending an attempt. Asserting only that
+// WindowLimit was passed would pass against a worker that then extracted everything anyway.
+func TestExtractRunWorker_BoundsTheWindowAndDrainsTheRest(t *testing.T) {
+	const pending, window = 500, 200
+	events := make([]db.Event, 0, pending)
+	for i := 1; i <= pending; i++ {
+		events = append(events, db.Event{Seq: int64(i), AgentID: "a", Payload: []byte(`{"memory":"keep"}`)})
+	}
+	src := &fakeSource{
+		events:    events,
+		readiness: ready(pending),
+		// After the pass, the events beyond the window are still pending — this is what the real
+		// readiness query would report, and what makes the worker drain instead of finishing.
+		tailReadiness: ready(pending - window),
+	}
+	spy := &spyExtractor{}
+	per := &spyPersister{}
+	d := jobs.DefaultDebounce()
+	d.MaxWindow = window
+	w := jobs.NewExtractRunWorker(src, spy, per, d)
+
+	job := &river.Job[jobs.ExtractRunArgs]{Args: jobs.ExtractRunArgs{ProjectID: uuid.NewString(), RunID: uuid.NewString()}}
+	err := w.Work(context.Background(), job)
+
+	var snooze *river.JobSnoozeError
+	if !errors.As(err, &snooze) {
+		t.Fatalf("Work = %v, want a snooze — the remaining %d events must come back without burning an attempt",
+			err, pending-window)
+	}
+	if src.gotArg.WindowLimit != int32(window) {
+		t.Errorf("WindowLimit = %d, want %d", src.gotArg.WindowLimit, window)
+	}
+	if len(spy.got.Events) != window {
+		t.Fatalf("extraction window = %d events, want %d — an unbounded pass is what truncates and stalls",
+			len(spy.got.Events), window)
+	}
+	if spy.got.Events[0].Seq != 1 || spy.got.Events[window-1].Seq != window {
+		t.Errorf("window spans seq %d..%d, want 1..%d (the oldest events first, in order)",
+			spy.got.Events[0].Seq, spy.got.Events[window-1].Seq, window)
+	}
+	// The checkpoint may only advance over what was actually distilled, or the untouched remainder is
+	// skipped rather than drained.
+	if per.last.CoveredSeq != int64(window) {
+		t.Errorf("covered_seq = %d, want %d — advancing past undistilled events loses them silently",
+			per.last.CoveredSeq, window)
+	}
+}
+
+// TestExtractRunWorker_UnsetWindowDoesNotReadNothing guards the zero value. MaxWindow reaches the query as a
+// LIMIT, so an unset one would be LIMIT 0 — a worker that distils nothing at all, quietly. A caller who has
+// simply never heard of the field must get the production cap, not silence.
+func TestExtractRunWorker_UnsetWindowDoesNotReadNothing(t *testing.T) {
+	src := &fakeSource{
+		events:    []db.Event{{Seq: 1, AgentID: "a", Payload: []byte(`{"memory":"keep"}`)}},
+		readiness: ready(1),
+	}
+	spy := &spyExtractor{}
+	w := jobs.NewExtractRunWorker(src, spy, &spyPersister{}, jobs.Debounce{IdleWindow: 0, MaxEvents: 1})
+
+	job := &river.Job[jobs.ExtractRunArgs]{Args: jobs.ExtractRunArgs{ProjectID: uuid.NewString(), RunID: uuid.NewString()}}
+	if err := w.Work(context.Background(), job); err != nil {
+		t.Fatalf("Work: %v", err)
+	}
+	if src.gotArg.WindowLimit <= 0 {
+		t.Fatalf("WindowLimit = %d; an unset MaxWindow must not become LIMIT 0", src.gotArg.WindowLimit)
+	}
+	if len(spy.got.Events) != 1 {
+		t.Errorf("extracted %d events, want 1 — a zero window silently distils nothing", len(spy.got.Events))
+	}
 }
 
 func TestExtractRunWorker_GatesThenExtracts(t *testing.T) {
