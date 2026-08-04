@@ -573,8 +573,12 @@ func TestPackBudgetExemptsWorkingAndRawTail(t *testing.T) {
 	if len(res.Sources) != 0 {
 		t.Errorf("distilled sources = %d, want 0 (the budget dropped the only memory): %+v", len(res.Sources), res.Sources)
 	}
-	if strings.Contains(res.Text, "relevance") {
-		t.Errorf("a distilled memory line survived the budget:\n%s", res.Text)
+	// Assert the claim itself — no cited memory line was rendered — rather than a word that happens to
+	// appear on one. This used to search the text for "relevance", which is on every memory line but is
+	// not exclusive to them: adding the word to the pack's header turned this check into an assertion
+	// about the header, permanently true and no longer about the budget at all.
+	if markers := citationMarkers(res.Text); len(markers) != 0 {
+		t.Errorf("a distilled memory line survived the budget (%d cited):\n%s", len(markers), res.Text)
 	}
 	// The live working fact and the raw tail are budget-exempt and fully present.
 	if !strings.Contains(res.Text, `"live_kept"`) {
