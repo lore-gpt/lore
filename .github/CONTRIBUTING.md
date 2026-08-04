@@ -18,7 +18,12 @@ open an issue, comment on an RFC, or send a patch — thank you.
 ## Development workflow
 
 - **Conventional Commits** — `feat:`, `fix:`, `docs:`, `refactor:`, `test:`, `chore:` … This drives the
-  changelog and release train.
+  release train.
+- **[`CHANGELOG.md`](../CHANGELOG.md)** — add an entry under `## [Unreleased]` for anything a user would
+  notice: a new command or flag, a changed default, a different exit code, a moved endpoint. Internal
+  refactors and test-only changes do not need one. If the change requires action on upgrade, say what
+  the action is in the entry itself — the changelog is where someone looks when their setup breaks, and
+  a list of what changed without what to do about it sends them to the commit log anyway.
 - **Small PRs** — keep diffs focused (< ~400 lines where possible); one logical change per PR.
 - **Green CI** — lint + tests must pass. Any architectural change should explain its design
   rationale in the PR description.
