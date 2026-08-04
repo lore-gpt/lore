@@ -282,7 +282,7 @@ export interface components {
         PackResponse: {
             /** @description The assembled, sectioned, data-not-instructions pack. */
             text: string;
-            /** @description The distilled memories that composed the pack, in pack order. */
+            /** @description The distilled memories that composed the pack, in pack order. The bracketed markers in `text` index into this array: `[n]` is `sources[n-1]`, so a citation resolves to a memory id without parsing the text. They are labels, not a ranking — numbering runs continuously while the text is grouped by kind, so `[1]` is the first section's top item rather than the highest-scoring one. Each entry's `score` is the relevance signal. */
             sources: components["schemas"]["PackSource"][];
             /**
              * Format: int64
