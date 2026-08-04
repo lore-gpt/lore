@@ -313,8 +313,42 @@ type wireClaim struct {
 	Entity    string          `json:"entity"`
 	Predicate string          `json:"predicate"`
 	Value     json.RawMessage `json:"value"`
-	EventTime *time.Time      `json:"event_time"`
+	EventTime eventTime       `json:"event_time"`
 	SourceSeq int64           `json:"source_seq"`
+}
+
+// eventTime decodes the model's optional observation timestamp without letting a bad one destroy the pass.
+//
+// Decoding straight into *time.Time makes encoding/json reject anything that is not exact RFC3339, and a model
+// will occasionally invent an instant that does not exist — a real run produced "2023-02-29T00:00:00Z", which
+// is not a date because 2023 is not a leap year. That error propagates out of json.Unmarshal and rejects the
+// ENTIRE tool result: every memory, claim and entity in the window is thrown away. Worse, it is deterministic,
+// so all three attempts send the identical window, fail identically, and the job is discarded with the run's
+// extraction checkpoint stuck where it was. One unusable annotation costs a run its distillation, permanently.
+//
+// So an undecodable value is dropped and the rest of the result is kept. That is proportionate: the field is
+// optional, it is written to claims.event_time and read back by nothing, and the type's own contract says it
+// "never drives ordering (Seq does)" — so a missing one cannot change resolution, recall, or any read path.
+// It is also the discipline the rest of this decoder already follows for model output (normalizeKind, and the
+// empty-content drop in toResult).
+//
+// The drop is silent because this adapter has no logger or metrics seam; a counter belongs with the other
+// extraction metrics if the rate ever needs watching.
+type eventTime struct{ t *time.Time }
+
+func (e *eventTime) UnmarshalJSON(b []byte) error {
+	e.t = nil
+	var s *string
+	if err := json.Unmarshal(b, &s); err != nil || s == nil || *s == "" {
+		// Absent, null, or not even a string. Nothing usable, nothing fatal.
+		return nil
+	}
+	parsed, err := time.Parse(time.RFC3339, *s)
+	if err != nil {
+		return nil
+	}
+	e.t = &parsed
+	return nil
 }
 
 type wireEntity struct {
@@ -360,7 +394,7 @@ func (r wireResult) toResult(events []ext.InputEvent) ext.ExtractResult {
 			Entity:    c.Entity,
 			Predicate: c.Predicate,
 			Value:     c.Value,
-			EventTime: c.EventTime,
+			EventTime: c.EventTime.t,
 			SourceSeq: resolve(c.SourceSeq),
 		})
 	}

@@ -182,19 +182,29 @@ FROM events
 WHERE events.project_id = $1 AND events.run_id = $2
   AND events.seq > (SELECT covered_seq FROM runs WHERE runs.id = $2)
 ORDER BY events.seq
+LIMIT $3
 `
 
 type ListRunEventsParams struct {
-	ProjectID pgtype.UUID `json:"project_id"`
-	RunID     pgtype.UUID `json:"run_id"`
+	ProjectID   pgtype.UUID `json:"project_id"`
+	RunID       pgtype.UUID `json:"run_id"`
+	WindowLimit int32       `json:"window_limit"`
 }
 
 // A run's not-yet-extracted events (seq past the run's checkpoint) in seq order, for the coalesced
 // extraction pass. The covered_seq subquery scopes the read to events an earlier pass has not
 // already consumed, so a re-enqueued or retried job never re-reads them. Project-scoped so it is
 // tenant-safe and (under RLS) reads only the caller's project.
+//
+// The LIMIT bounds ONE pass, not the run. Without it a client that writes faster than extraction runs
+// — a bulk import, a backfill, an agent replaying a transcript — produces a single pass over every
+// pending event, and an extractor's output ceiling is finite: past some window size the model's
+// response truncates, which fails the pass, and every retry rebuilds the identical oversized window
+// and fails identically until the job is discarded with the checkpoint frozen. Capping the read turns
+// that permanent stall into more passes: the caller's tail drain snoozes while any remain, and a
+// snooze costs no attempt.
 func (q *Queries) ListRunEvents(ctx context.Context, arg ListRunEventsParams) ([]Event, error) {
-	rows, err := q.db.Query(ctx, listRunEvents, arg.ProjectID, arg.RunID)
+	rows, err := q.db.Query(ctx, listRunEvents, arg.ProjectID, arg.RunID, arg.WindowLimit)
 	if err != nil {
 		return nil, err
 	}

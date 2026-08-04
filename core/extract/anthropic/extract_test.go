@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/lore-gpt/lore/core/ext"
 )
@@ -302,6 +303,52 @@ func TestExtractDropsEmptyMemoryContent(t *testing.T) {
 	}
 	if len(res.Memories) != 1 || res.Memories[0].Content != "kept" {
 		t.Fatalf("memories = %+v, want only the non-empty one", res.Memories)
+	}
+}
+
+// TestExtractSurvivesAnImpossibleEventTime pins the behaviour that a model-invented instant costs only itself.
+//
+// This is a real failure, not a hypothetical: a run produced "2023-02-29T00:00:00Z" — not a date, because 2023
+// is not a leap year. Decoded straight into *time.Time that error comes out of json.Unmarshal and rejects the
+// whole tool result, so every memory, claim and entity in the window is lost. And it is deterministic: all
+// three attempts send the same window, fail the same way, and the job is discarded with the run's extraction
+// checkpoint frozen — the run silently stops distilling for good.
+//
+// So the fixture deliberately puts the bad timestamp NEXT TO good data, in the same result: the assertions are
+// that the neighbours all survive and only the unusable annotation is missing. Asserting merely that Extract
+// returned no error would pass on a decoder that quietly dropped everything.
+func TestExtractSurvivesAnImpossibleEventTime(t *testing.T) {
+	body := toolUseBody(t, map[string]any{
+		"memories": []map[string]any{{"kind": "semantic", "content": "kept", "source_seq": 1}},
+		"claims": []map[string]any{
+			{"entity": "trip", "predicate": "departs", "value": "berlin", "event_time": "2023-02-29T00:00:00Z", "source_seq": 1},
+			{"entity": "trip", "predicate": "returns", "value": "home", "event_time": "2023-03-01T00:00:00Z", "source_seq": 2},
+		},
+		"entities": []map[string]any{{"name": "trip", "type": "thing"}},
+	})
+	srv, _ := fakeMessages(t, http.StatusOK, body)
+
+	res, err := testExtractor(t, srv).Extract(context.Background(), ext.ExtractInput{Events: twoEvents()})
+	if err != nil {
+		t.Fatalf("an impossible event_time must not fail the pass: %v", err)
+	}
+	// Everything that shared the window with the bad value is still here.
+	if len(res.Memories) != 1 || res.Memories[0].Content != "kept" {
+		t.Errorf("memories = %+v, want the one alongside the bad timestamp to survive", res.Memories)
+	}
+	if len(res.Entities) != 1 {
+		t.Errorf("entities = %+v, want the one alongside the bad timestamp to survive", res.Entities)
+	}
+	if len(res.Claims) != 2 {
+		t.Fatalf("claims = %+v, want both — the claim itself is still a fact without its timestamp", res.Claims)
+	}
+	// Only the unusable annotation is gone, and a valid one next to it is untouched.
+	if res.Claims[0].EventTime != nil {
+		t.Errorf("EventTime = %v, want nil — an instant that does not exist is not an instant", res.Claims[0].EventTime)
+	}
+	if res.Claims[1].EventTime == nil || !res.Claims[1].EventTime.Equal(time.Date(2023, 3, 1, 0, 0, 0, 0, time.UTC)) {
+		t.Errorf("EventTime = %v, want the valid neighbour parsed — leniency must not become 'drop them all'",
+			res.Claims[1].EventTime)
 	}
 }
 

@@ -79,15 +79,30 @@ type EventSource interface {
 type Debounce struct {
 	IdleWindow time.Duration
 	MaxEvents  int
+	// MaxWindow caps how many events ONE pass distils. MaxEvents decides when a pass starts; this
+	// decides how much it takes, and the two are not the same number — a burst can leave thousands
+	// pending by the time the first pass runs.
+	//
+	// It exists because an unbounded window is not merely slow, it is unrecoverable. An extractor's
+	// output ceiling is finite, so past some window size the model's response truncates; the pass
+	// fails, and because the window is rebuilt from the same events every retry fails identically
+	// until the job is discarded — leaving the run's checkpoint frozen and its distillation stopped
+	// for good. A cap converts that into more passes, which the tail drain already handles by
+	// snoozing while events remain, at no cost in attempts.
+	MaxWindow int
 	// BatchPoll is how often an economy-mode pass re-checks its submitted batch for completion,
 	// snoozing between attempts until the provider finishes.
 	BatchPoll time.Duration
 }
 
-// DefaultDebounce is the production window: process after 2s idle or 20 accumulated events, and poll
-// a submitted economy batch every minute.
+// DefaultDebounce is the production window: process after 2s idle or 20 accumulated events, distil at
+// most 200 events per pass, and poll a submitted economy batch every minute.
+//
+// 200 is deliberately well above MaxEvents (a steady stream never reaches it, so ordinary runs see no
+// extra passes) and well below where extraction output runs out of room — a measured stall took a
+// window of 511 real conversational events to reach the ceiling.
 func DefaultDebounce() Debounce {
-	return Debounce{IdleWindow: 2 * time.Second, MaxEvents: 20, BatchPoll: 60 * time.Second}
+	return Debounce{IdleWindow: 2 * time.Second, MaxEvents: 20, MaxWindow: 200, BatchPoll: 60 * time.Second}
 }
 
 // ExtractRunWorker processes ExtractRunArgs: it debounces the run, reads the events past its
@@ -136,6 +151,13 @@ func NewExtractRunWorker(source EventSource, extractor ext.Extractor, persister 
 	}
 	if w.workmem == nil {
 		w.workmem = workmem.NewDisabled()
+	}
+	// An unset MaxWindow would reach the query as LIMIT 0 and read nothing at all — a caller that simply
+	// did not know about the field would get a worker that silently distils no events, which is a far
+	// worse failure than the unbounded window this cap exists to prevent. Coerce it to the production
+	// value instead, the same way the extractor treats an unset token ceiling.
+	if w.debounce.MaxWindow <= 0 {
+		w.debounce.MaxWindow = DefaultDebounce().MaxWindow
 	}
 	return w
 }
@@ -193,7 +215,11 @@ func (w *ExtractRunWorker) Work(ctx context.Context, job *river.Job[ExtractRunAr
 		return river.JobSnooze(w.debounce.IdleWindow)
 	}
 
-	events, err := w.source.ListRunEvents(ctx, db.ListRunEventsParams{ProjectID: projectID, RunID: runID})
+	// Read at most one window's worth. Anything past it stays beyond the checkpoint and is picked up by
+	// the tail drain at the end of this pass, which snoozes rather than consuming an attempt.
+	events, err := w.source.ListRunEvents(ctx, db.ListRunEventsParams{
+		ProjectID: projectID, RunID: runID, WindowLimit: int32(w.debounce.MaxWindow),
+	})
 	if err != nil {
 		return fmt.Errorf("extract_run: list events: %w", err)
 	}
@@ -284,7 +310,11 @@ func (w *ExtractRunWorker) collectBatch(ctx context.Context, job *river.Job[Extr
 	// Re-read the events the batch covered (past the checkpoint, up to the submit-time seq) to rebuild
 	// provenance. Events are append-only, so this is the same set the window was built from; anything
 	// beyond batchCoveredSeq arrived after submission and is left for the next pass by the tail drain.
-	events, err := w.source.ListRunEvents(ctx, db.ListRunEventsParams{ProjectID: projectID, RunID: runID})
+	// The same window cap applies as on submission, which is what makes "the same set" true: submit read
+	// at most MaxWindow, so re-reading at most MaxWindow from the same checkpoint returns exactly it.
+	events, err := w.source.ListRunEvents(ctx, db.ListRunEventsParams{
+		ProjectID: projectID, RunID: runID, WindowLimit: int32(w.debounce.MaxWindow),
+	})
 	if err != nil {
 		return fmt.Errorf("extract_run: collect list events: %w", err)
 	}

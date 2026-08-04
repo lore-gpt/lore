@@ -20,7 +20,9 @@ from ._types import Question, Session, Turn
 # re-measure it under the new universe, never compare across universes.
 DATASET_REPO = "xiaowu0162/longmemeval-cleaned"
 PLACEHOLDER_REVISION = "main"
-DATASET_REVISION = PLACEHOLDER_REVISION
+# Pinned 2026-08-04 to the repo's then-current commit (last upstream change 2025-09-19, so this is a settled
+# snapshot rather than a moving branch). Resolved from the HuggingFace datasets API, not typed by hand.
+DATASET_REVISION = "98d7416c24c778c2fee6e6f3006e7a073259d48f"
 SPLIT_FILES = {
     "s": "longmemeval_s_cleaned.json",
     "m": "longmemeval_m_cleaned.json",
