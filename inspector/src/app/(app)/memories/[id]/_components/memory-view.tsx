@@ -1,6 +1,9 @@
 "use client";
 
+import { useEffect, useState } from "react";
+
 import Link from "next/link";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 
 import { BadgeCheck, Clock, FileClock, Ghost, Hash, type LucideIcon, ShieldCheck } from "lucide-react";
 
@@ -14,15 +17,64 @@ import { CopyButton } from "../../_components/copy-button";
 import { DeleteMemoryButton } from "./delete-memory-button";
 import { VersionsList } from "./versions-list";
 
+// TABS are the two panels of the detail view, and the allowlist for ?tab=. Anything else in the URL falls
+// back to the first entry rather than rendering an empty Tabs body — a hand-edited or stale link should land
+// somewhere useful, not on nothing.
+const TABS = ["overview", "versions"] as const;
+type Tab = (typeof TABS)[number];
+
+function tabFromParam(value: string | null): Tab {
+  return TABS.includes(value as Tab) ? (value as Tab) : "overview";
+}
+
 export function MemoryView({
   memory,
   versions,
   versionsLoaded,
+  addressable = false,
 }: {
   memory: Memory | null;
   versions: MemoryVersion[];
   versionsLoaded: boolean;
+  addressable?: boolean;
 }) {
+  const router = useRouter();
+  const pathname = usePathname();
+  const sp = useSearchParams();
+
+  // Local state mirrors the URL rather than deriving from it, so the modal (which does not write ?tab=) still
+  // has working tabs, and so a tab click paints immediately instead of waiting on a navigation.
+  const [tab, setTab] = useState<Tab>(() => (addressable ? tabFromParam(sp.get("tab")) : "overview"));
+
+  // Follow the URL when something else changes it: back/forward, or opening a shared ?tab= link that the
+  // client router resolves without a full load. Only on the addressable surface, where the URL is the source.
+  useEffect(() => {
+    if (addressable) {
+      setTab(tabFromParam(sp.get("tab")));
+    }
+  }, [addressable, sp]);
+
+  const selectTab = (value: string) => {
+    const next = tabFromParam(value);
+    setTab(next);
+    if (!addressable) {
+      return;
+    }
+    const params = new URLSearchParams(sp.toString());
+    if (next === "overview") {
+      // The default is expressed by absence, so the plain memory URL stays the canonical one to share.
+      params.delete("tab");
+    } else {
+      params.set("tab", next);
+    }
+    const query = params.toString();
+    // replace, not push: flipping between two tabs is not a navigation a user wants to walk back through, and
+    // it would otherwise take several Back presses to leave the page.
+    router.replace(query ? `${pathname}?${query}` : pathname, { scroll: false });
+  };
+
+  // A tombstone has no tabs at all — it shows version history directly — so ?tab= is meaningless there and
+  // the state above simply goes unused.
   if (!memory) {
     return <TombstoneView versions={versions} versionsLoaded={versionsLoaded} />;
   }
@@ -46,7 +98,7 @@ export function MemoryView({
         <Stat icon={Clock} label="Created" value={formatUtc(memory.created_at)} mono />
       </div>
 
-      <Tabs defaultValue="overview">
+      <Tabs value={tab} onValueChange={selectTab}>
         <TabsList>
           <TabsTrigger value="overview">Overview</TabsTrigger>
           <TabsTrigger value="versions">Versions{versionsLoaded ? ` (${versions.length})` : ""}</TabsTrigger>

@@ -33,6 +33,10 @@ open an issue, comment on an RFC, or send a patch — thank you.
   <br>**One-time migration:** if you have a dev stack from before this change it is still under the old
   `lore` name and is now orphaned. It was throwaway dev data — remove it with
   `docker compose -p lore down -v`, then `task compose:up` builds a fresh `lore-dev` stack.
+- **API keys** — `lore keys create --project <id>` prints a token once and is the only time you see it. If you
+  lose the id it printed, `lore keys list --project <id>` shows every key for that project with its
+  non-secret prefix and revocation status; that is how you find the id `lore keys revoke <id>` wants. Revoking
+  an already-revoked key succeeds and reports no change, so a script that runs twice is safe.
 
 ## Releasing
 

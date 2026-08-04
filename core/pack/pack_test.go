@@ -3,6 +3,8 @@ package pack
 import (
 	"fmt"
 	"reflect"
+	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -158,6 +160,97 @@ func TestRenderOrderFramingSourcesAndDeterminism(t *testing.T) {
 	if text2, _ := render(5, 250, live, distilled, tail); text != text2 {
 		t.Errorf("render is not deterministic across calls:\n--- a ---\n%s\n--- b ---\n%s", text, text2)
 	}
+}
+
+// TestCitationMarkersIndexIntoSources pins the one thing the rendered text promises about its numbers: [n]
+// is the 1-based index into Sources, and therefore into the memory_ids written to the pack trace.
+//
+// Nothing asserted this before, and the gap was not theoretical. The counter runs off len(sources), so a
+// change to per-section numbering — [1],[2] under Semantic, then [1],[2] again under Episodic — compiles,
+// renders plausible text, and passes every other test in the repo: the determinism test only compares two
+// renders to each other, and every consumer downstream (all three SDKs, the MCP server, the inspector, the
+// eval harness) treats the pack text as an opaque blob. The correspondence would break silently and only
+// surface as a model citing [2] and a reader resolving it to the wrong memory.
+//
+// The fixture deliberately spans all three sections with two items each, because a single item per section
+// cannot tell continuous numbering from per-section numbering — both render [1] first.
+func TestCitationMarkersIndexIntoSources(t *testing.T) {
+	distilled := map[string][]memItem{
+		sectionSemantic: {
+			{id: mkID(1), content: "auth service uses OAuth", kind: sectionSemantic, score: 0.09},
+			{id: mkID(2), content: "tokens rotate hourly", kind: sectionSemantic, score: 0.08},
+		},
+		sectionEpisodic: {
+			{id: mkID(3), content: "deploy failed at 3pm", kind: sectionEpisodic, score: 0.07},
+			{id: mkID(4), content: "rollback finished at 4pm", kind: sectionEpisodic, score: 0.06},
+		},
+		sectionProcedural: {
+			{id: mkID(5), content: "run make deploy", kind: sectionProcedural, score: 0.05},
+			{id: mkID(6), content: "then tail the worker log", kind: sectionProcedural, score: 0.04},
+		},
+	}
+
+	text, sources := render(5, 250, nil, distilled, nil)
+
+	markers := citationMarkers(text)
+	if len(markers) != len(sources) {
+		t.Fatalf("rendered %d citation markers for %d sources; every distilled memory is cited exactly once\n%s",
+			len(markers), len(sources), text)
+	}
+
+	// Continuous across sections, never restarting: 1..n in text order.
+	for i, m := range markers {
+		if m.n != i+1 {
+			t.Fatalf("marker %d of %d is [%d]; numbering must run continuously across sections, not restart "+
+				"per section — a restarted counter makes [n] ambiguous without also naming the section\n%s",
+				i+1, len(markers), m.n, text)
+		}
+	}
+
+	// And the number resolves to the right memory: [n] -> sources[n-1].
+	for _, m := range markers {
+		want := uuidStr(sources[m.n-1].ID)
+		if m.memoryID != want {
+			t.Errorf("[%d] cites memory %s, but sources[%d] is %s — the citation label must be the index into "+
+				"Sources, which is also the order written to the pack trace", m.n, m.memoryID, m.n-1, want)
+		}
+	}
+
+	// The pack must SAY what the numbers mean. Continuous numbering over a section-first ordering means [1] is
+	// the top of the first section rather than the best-scoring item, so a model reading position as importance
+	// is reading the pack wrong — and the correspondence pinned above does nothing about that on its own. This
+	// assertion exists because deleting the guidance breaks no other test: it changes no structure, only what
+	// the reader is told.
+	if !strings.Contains(text, "Bracketed numbers cite entries in sources; relevance is per-row.") {
+		t.Errorf("the pack does not tell the reader that the numbers are citation labels rather than a "+
+			"ranking; without it [1] reads as \"most relevant\" when it is only the first section's top item\n%s",
+			text)
+	}
+}
+
+// citationMarkers extracts every "[n] … [memory <uuid> …]" line from a rendered pack, in text order. It parses
+// the rendered text rather than trusting the renderer's own bookkeeping — reading len(sources) back would
+// assert the code against itself and pass under exactly the mutation this test exists to catch.
+func citationMarkers(text string) []struct {
+	n        int
+	memoryID string
+} {
+	re := regexp.MustCompile(`(?m)^\[(\d+)\].*\[memory ([0-9a-f-]{36}) `)
+	var out []struct {
+		n        int
+		memoryID string
+	}
+	for _, m := range re.FindAllStringSubmatch(text, -1) {
+		n, err := strconv.Atoi(m[1])
+		if err != nil {
+			continue
+		}
+		out = append(out, struct {
+			n        int
+			memoryID string
+		}{n: n, memoryID: m[2]})
+	}
+	return out
 }
 
 // TestSortEntriesFreshestFirstThenSubject drives the working-section sort directly, with input the query

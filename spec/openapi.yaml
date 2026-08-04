@@ -618,7 +618,12 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/PackSource"
-          description: The distilled memories that composed the pack, in pack order.
+          description: >-
+            The distilled memories that composed the pack, in pack order. The bracketed markers in `text`
+            index into this array: `[n]` is `sources[n-1]`, so a citation resolves to a memory id without
+            parsing the text. They are labels, not a ranking — numbering runs continuously while the text is
+            grouped by kind, so `[1]` is the first section's top item rather than the highest-scoring one.
+            Each entry's `score` is the relevance signal.
         covered_seq:
           type: integer
           format: int64

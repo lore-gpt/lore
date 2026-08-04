@@ -305,7 +305,10 @@ error never takes the process down. All standard `OTEL_EXPORTER_OTLP_*` variable
 are honoured.
 
 API keys are not configured through the environment: mint one per project with `lore keys create --project
-<id>` (it prints the token once) and revoke it with `lore keys revoke <id>`.
+<id>` (it prints the token once), see what a project has with `lore keys list --project <id>` (ids, names,
+non-secret prefixes and revocation status — never the keys themselves), and revoke one with `lore keys revoke
+<id>`. Revoking is idempotent: a key that is already revoked reports no change and succeeds, so a retried
+script is safe, while an unknown id still fails.
 
 </details>
 
