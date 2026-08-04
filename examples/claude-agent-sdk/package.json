@@ -1,0 +1,25 @@
+{
+  "name": "lore-example-claude-agent-sdk",
+  "version": "0.0.0",
+  "private": true,
+  "description": "A Claude Agent SDK agent that reaches Lore through its MCP tools.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.check.json",
+    "test": "node --test",
+    "start": "node src/coordinate.ts",
+    "check": "pnpm typecheck && pnpm test"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.1.10"
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@types/node": "^22.10.0",
+    "typescript": "5.9.3"
+  }
+}

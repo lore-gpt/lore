@@ -2,9 +2,14 @@ name: examples
 
 # Compiles and lints each example on any change under examples/. Path-filtered natively (no third-party
 # filter action — a known CI supply-chain surface), so unrelated PRs never trigger it: keep it OUT of
-# required checks. Each example installs the SDK from its published package via its own uv.lock, so an SDK
-# regression — or a breaking framework release the lock would surface — shows up here first. A live smoke
-# run against a real Lore is a separate, dormant job (below), off unless a repo variable turns it on.
+# required checks. Each example installs the SDK from its published package via its own lockfile, so an
+# SDK regression — or a breaking framework release the lock would surface — shows up here first. A live
+# smoke run against a real Lore is a separate, dormant job (below), off unless a repo variable turns it on.
+#
+# The routine jobs deliberately stop short of running an agent: two of the three examples need no model
+# key because their reasoning is stubbed, but the Agent SDK one has no dry-run, so its job verifies the
+# wiring and the MCP tool contract instead. What each job does and does not prove is stated in that
+# example's README rather than inferred from a green check.
 on:
   pull_request:
     paths:
@@ -36,6 +41,50 @@ jobs:
       - name: lint
         run: uv run ruff check .
 
+  crewai:
+    name: crewai (build · lint)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: examples/crewai
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v5
+      - name: install (frozen lockfile)
+        # crewai does not support 3.14; pin the interpreter rather than take the runner's default,
+        # which will move.
+        run: uv sync --frozen --python 3.13
+      - name: build the crew (no live server)
+        # Constructing a Crew runs CrewAI's full Pydantic validation — a missing agent on a task, a
+        # missing required field — so this catches real wiring errors without a model key or a
+        # running Lore. It is the same shape as the LangGraph check above.
+        run: uv run python -c "from remember import build_crew; from loregpt import LoreClient; LoreClient(api_key='ci-check'); build_crew(prior='')"
+      - name: lint
+        run: uv run ruff check .
+
+  claude-agent-sdk:
+    name: claude-agent-sdk (typecheck · tool contract)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: examples/claude-agent-sdk
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: examples/claude-agent-sdk/pnpm-lock.yaml
+      - name: install (frozen lockfile)
+        run: pnpm install --frozen-lockfile
+      - name: typecheck and verify the MCP tool contract
+        # The second half starts the PUBLISHED @loregpt/mcp over stdio and asserts it still offers every
+        # tool this example allows. Tool names are strings crossing a process boundary, so a rename
+        # upstream is invisible to the type-checker and to the agent until a model calls something that
+        # is not there. Needs no Anthropic key and no running Lore.
+        run: pnpm check
+
   langgraph-live:
     name: langgraph (live smoke — dormant)
     runs-on: ubuntu-latest
@@ -55,6 +104,13 @@ jobs:
         run: |
           set -a; source ../../.lore/credentials; set +a
           uv run coordinate.py
+      - name: run the crewai example against live Lore
+        # Two kickoffs with a distillation wait between them, so this exercises the worker as well as
+        # the API — the LangGraph run above never waits for extraction.
+        working-directory: examples/crewai
+        run: |
+          set -a; source ../../.lore/credentials; set +a
+          uv run remember.py
       - name: tear down
         if: always()
         run: docker compose down -v
