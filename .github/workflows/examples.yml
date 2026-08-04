@@ -70,7 +70,12 @@ jobs:
         working-directory: examples/claude-agent-sdk
     steps:
       - uses: actions/checkout@v5
-      - uses: pnpm/action-setup@v4
+      # Same action version and pin as every other pnpm job in this repo. The version has to be given
+      # explicitly: no package.json here declares `packageManager`, and without either the action
+      # fails at setup with "No pnpm version is specified".
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 11
       - uses: actions/setup-node@v5
         with:
           node-version: 22
