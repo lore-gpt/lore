@@ -52,6 +52,71 @@ func (q *Queries) CreateAPIKey(ctx context.Context, arg CreateAPIKeyParams) (Cre
 	return i, err
 }
 
+const getAPIKeyRevokedAt = `-- name: GetAPIKeyRevokedAt :one
+SELECT revoked_at
+FROM api_keys
+WHERE id = $1
+`
+
+// lore:tenant-exempt: the follow-up read for the CLI's revoke, in the same admin context as RevokeAPIKey and
+// keyed by the same operator-held id. It exists to turn "no rows affected" into an answer: no row here means
+// the id is unknown, a row means it was revoked already and when. Deliberately NOT merged into the UPDATE as
+// a CTE — a CTE's SELECT arm reads the statement-start snapshot while the UPDATE sees the post-lock row, and
+// that divergence has already produced a wrong answer elsewhere in this schema. Two statements on a failed
+// path cost one extra round trip and cannot disagree with themselves.
+func (q *Queries) GetAPIKeyRevokedAt(ctx context.Context, id pgtype.UUID) (pgtype.Timestamptz, error) {
+	row := q.db.QueryRow(ctx, getAPIKeyRevokedAt, id)
+	var revoked_at pgtype.Timestamptz
+	err := row.Scan(&revoked_at)
+	return revoked_at, err
+}
+
+const listProjectAPIKeys = `-- name: ListProjectAPIKeys :many
+SELECT id, name, key_prefix, created_at, revoked_at
+FROM api_keys
+WHERE project_id = $1
+ORDER BY created_at DESC, id
+`
+
+type ListProjectAPIKeysRow struct {
+	ID        pgtype.UUID        `json:"id"`
+	Name      *string            `json:"name"`
+	KeyPrefix *string            `json:"key_prefix"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+	RevokedAt pgtype.Timestamptz `json:"revoked_at"`
+}
+
+// Every key minted for one project, newest first, WITHOUT the hash — the raw token is unrecoverable by design
+// and the stored hash is not something an operator ever needs to see. key_prefix is what makes a row
+// recognisable, and this is the query it was added for. Revoked keys are included on purpose: the revocation
+// history is what an operator is usually looking for. project_id is in the predicate, so this is tenant-scoped
+// by construction.
+func (q *Queries) ListProjectAPIKeys(ctx context.Context, projectID pgtype.UUID) ([]ListProjectAPIKeysRow, error) {
+	rows, err := q.db.Query(ctx, listProjectAPIKeys, projectID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListProjectAPIKeysRow
+	for rows.Next() {
+		var i ListProjectAPIKeysRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Name,
+			&i.KeyPrefix,
+			&i.CreatedAt,
+			&i.RevokedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const lookupAPIKeyProject = `-- name: LookupAPIKeyProject :one
 SELECT project_id
 FROM api_keys
@@ -79,8 +144,9 @@ WHERE id = $1 AND revoked_at IS NULL
 `
 
 // lore:tenant-exempt: operator revokes a key by its id (an admin CLI action with no tenant context; the id is
-// the one printed when the key was minted). Idempotent-ish: a already-revoked key updates no row, so the
-// caller can report "not found or already revoked" from a zero row count.
+// the one printed when the key was minted). A already-revoked key updates no row, so zero rows means "either
+// unknown or already revoked" — the two are NOT distinguishable from this result alone. The caller tells them
+// apart with GetAPIKeyRevokedAt below, which only runs once this has already reported no change.
 func (q *Queries) RevokeAPIKey(ctx context.Context, id pgtype.UUID) (int64, error) {
 	result, err := q.db.Exec(ctx, revokeAPIKey, id)
 	if err != nil {
