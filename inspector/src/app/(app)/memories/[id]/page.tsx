@@ -22,7 +22,8 @@ export default async function MemoryDetailPage({ params }: { params: Promise<{ i
         <ArrowLeft className="size-4" />
         Memories
       </Link>
-      <DetailBody detail={detail} />
+      {/* This is the surface a link points at, so the active tab lives in the URL here. */}
+      <DetailBody detail={detail} addressable />
     </div>
   );
 }
