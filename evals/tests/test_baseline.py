@@ -59,6 +59,39 @@ def test_universe_from_provenance_carries_the_key_fields() -> None:
     assert Universe.of(prov, "variance_answer") == _universe()
 
 
+def test_isolation_is_part_of_the_universe_key() -> None:
+    """An isolation change is a universe change, so a reference measured under one cannot grade the other.
+
+    This is not bookkeeping. A run where every question shares one memory store recalls the other questions'
+    histories — measured here at 25-65% of a pack's cited sources — and because the context is a fixed size,
+    that displaces the evidence the question actually needs. Its accuracy is not the same quantity as an
+    isolated run's, so the two must never be compared, and folding isolation into the key makes that
+    impossible rather than merely discouraged."""
+
+    def prov(isolation: str) -> Provenance:
+        return Provenance(
+            dataset="x",
+            dataset_revision="3f1a9c0",
+            split="s",
+            n=50,
+            judge_model="gpt-4o-2024-08-06",
+            judge_prompt_hash="deadbeef",
+            answerer_model="claude",
+            extraction_model="haiku",
+            generated_at="t",
+            isolation=isolation,
+        )
+
+    isolated = Universe.of(prov("per-question"), "variance_answer")
+    shared = Universe.of(prov(""), "variance_answer")
+
+    assert isolated != shared, "an isolated run must not share a universe with a shared-store run"
+    assert "per-question" in isolated.protocol
+    # A baseline locked before isolation was enforced must not silently grade an isolated run.
+    locked_before = Baseline(reference_accuracy=0.80, universe=shared, measured_at="t")
+    assert not locked_before.applies_to(isolated)
+
+
 def test_baseline_round_trips_through_disk(tmp_path: Path) -> None:
     base = Baseline(reference_accuracy=0.83, universe=_universe(), measured_at="2026-07-21T00:00:00Z")
     path = tmp_path / "mem0.json"

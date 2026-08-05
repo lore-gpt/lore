@@ -65,9 +65,34 @@ uv run python -m examples.smoke --dry-run --split fixture --n 3 --systems lore,m
 The real evaluation (against a running Lore stack, a real extractor, the GPT-4o judge, and the Claude answerer,
 plus Mem0's OpenAI-backed extraction) is **secret-gated** and **staged**. Install the competitor extra with
 `uv sync --extra competitors`. It needs an OpenAI key (judge + Mem0), an Anthropic key (answerer), and a Lore
-deployment (`LORE_API_KEY` / `LORE_BASE_URL`); costs are estimated before the run via `--dry-run`. Result
-artifacts (scores, model outputs) are gitignored — a standalone number is not published until a measurement-
-gated decision.
+deployment (`LORE_BASE_URL`); costs are estimated before the run via `--dry-run`. Result artifacts (scores,
+model outputs) are gitignored — a standalone number is not published until a measurement-gated decision.
+
+### Isolating each question
+
+LongMemEval asks whether a system can answer from **one** user's history. Lore scopes distilled recall to a
+project and only the raw tail to a run, so questions sharing a project recall each other's histories — on a
+three-question probe, 25-65% of a pack's cited sources came from a different question, and because the context
+is a fixed size those displace the evidence the question needs. Mem0 isolates for free (a fresh `user_id` per
+ingestion), so a shared-project Lore run would not be measuring the same thing.
+
+So a real Lore run provisions an empty project per ingestion, and refuses to start without one. Pass the
+command that creates one for your deployment; `{name}` is substituted per ingestion, and the command must
+print the API key on stdout — which `lore provision` does when run **without** `--out`:
+
+```bash
+uv run python -m examples.smoke --split s --n 50 --systems lore \
+  --lore-provision-cmd 'docker compose -f /path/to/docker-compose.yml run --rm --no-deps lore-server provision --project {name}' \
+  --lore-poll-timeout 300
+```
+
+Two things to know before running it:
+
+- **Use a throwaway database.** Every ingestion leaves a project behind and nothing reclaims them; that is
+  deliberate (a cleanup path would be machinery for a measurement that runs on a disposable stack). Do not
+  point a real deployment at this.
+- **Raise `--lore-poll-timeout`.** The default 60s is not enough at LongMemEval scale — a 514-event question
+  was measured taking 94-177s to distil, and one timeout fails the whole run.
 
 ## License
 

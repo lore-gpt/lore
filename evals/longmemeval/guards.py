@@ -24,6 +24,24 @@ def dataset_pin_blocker(split: str, dataset_revision: str) -> str | None:
     return None
 
 
+def lore_isolation_blocker(provision_command: str) -> str | None:
+    """A real Lore run must give every question its own project. Lore scopes distilled recall to the project
+    and only the raw tail to the run, so questions sharing a project recall each other's histories: measured
+    on this harness, 25-65% of a pack's cited sources came from a different question, and a fixed-size pack
+    means those displace the evidence the question needs rather than merely adding to it. The system Lore is
+    compared against isolates per question, so a shared-project run does not measure the same thing.
+
+    Blocks when no provisioning command is configured — the run would otherwise silently produce a
+    contaminated number, which is worse than not producing one."""
+    if not provision_command.strip():
+        return (
+            "every question would share one Lore project, so each question's recall would include the "
+            "other questions' histories — set --lore-provision-cmd to provision an isolated project per "
+            "ingestion (see the eval runbook for the command for your deployment)"
+        )
+    return None
+
+
 def lore_embedder_blocker(embedder: str) -> str | None:
     """A real Lore run must know, and not fake, its embedding model. Fail closed when the identity could not be
     read from the server's /healthz (empty or the sentinel 'unknown'), and refuse the fixture embedder — a

@@ -183,6 +183,11 @@ class SystemReport:
             lines.append(f"- embedding: `{self.provenance.embedding_model}`")
         if self.provenance.system_config:
             lines.append(f"- system config: {self.provenance.system_config}")
+        # Isolation belongs next to the score because it changes what the score means: without it a question
+        # recalls the other questions' histories, and in a fixed-size context that displaces its own
+        # evidence. A reader comparing two reports has to see it without opening the JSON.
+        if self.provenance.isolation:
+            lines.append(f"- isolation: {self.provenance.isolation}")
         lines.extend(
             [
                 f"- dataset: `{self.provenance.dataset}`@`{self.provenance.dataset_revision}` "

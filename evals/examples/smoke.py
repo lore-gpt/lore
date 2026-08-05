@@ -25,9 +25,11 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import itertools
 import os
 import sys
 from pathlib import Path
+from typing import NamedTuple
 
 from longmemeval import (
     DATASET_REPO,
@@ -114,6 +116,14 @@ def main() -> None:
     parser.add_argument("--answerer-model", default=os.environ.get("LORE_ANSWERER_MODEL", DEFAULT_ANSWERER_MODEL))
     parser.add_argument("--extraction-mode", default="realtime", choices=["realtime", "economy"])
     parser.add_argument("--lore-poll-timeout", type=float, default=0.0, help="0 = auto (60s realtime, 600s economy)")
+    parser.add_argument(
+        "--lore-provision-cmd",
+        default=os.environ.get("LORE_PROVISION_CMD", ""),
+        help="command that creates ONE empty Lore project and prints its API key on stdout, with {name} "
+        "substituted per ingestion. Required for a real Lore run: recall is project-scoped, so without it "
+        "every question would see the others' histories. Split with shlex (use forward slashes in paths). "
+        'e.g. "docker compose -f infra/compose.yml run --rm --no-deps lore-server provision --project {name}"',
+    )
     parser.add_argument("--mem0-top-k", type=int, default=20)
     parser.add_argument("--report-dir", default="reports")
     parser.add_argument("--cache-dir", default="judge_cache")
@@ -163,9 +173,8 @@ def main() -> None:
     poll_timeout = args.lore_poll_timeout or (600.0 if args.extraction_mode == "economy" else 60.0)
     reports = []
     for name in systems:
-        system, extraction_model, extraction_mode, system_config, embedding_model = _build_system(
-            name, args, poll_timeout
-        )
+        sut = _build_system(name, args, poll_timeout)
+        system = sut.system
         stats = RunStats()
 
         if args.batch:
@@ -209,11 +218,13 @@ def main() -> None:
             judge_model=judge.model,
             judge_prompt_hash=PROMPT_HASH,
             answerer_model=args.answerer_model,
-            extraction_model=extraction_model,
+            extraction_model=sut.extraction_model,
             generated_at=_now(),
-            extraction_mode=extraction_mode,
-            system_config=system_config,
-            embedding_model=embedding_model,
+            extraction_mode=sut.extraction_mode,
+            system_config=sut.config,
+            embedding_model=sut.embedding_model,
+            isolation=sut.isolation,
+            provision_command=sut.provision_command,
         )
         report = SystemReport(name, provenance, variance_answer, cache.hit_rate, stats, variance_pipeline)
         stamp = provenance.generated_at.replace(":", "").replace("-", "")
@@ -278,19 +289,55 @@ def _apply_baseline_gate(reports: list[SystemReport], baseline_path: Path, *, qu
             )
 
 
-def _build_system(name: str, args: argparse.Namespace, poll_timeout: float) -> tuple[object, str, str, str, str]:
-    """Construct a memory system + its fairness metadata (extraction_model, extraction_mode, system_config,
-    embedding_model)."""
+class SystemUnderTest(NamedTuple):
+    """A constructed memory system plus the fairness metadata its report must carry. A named tuple rather
+    than a bare tuple because these are provenance fields: a caller that silently swapped two of them would
+    misreport what was measured, and the report is the only record a later reader gets."""
+
+    system: object
+    extraction_model: str
+    extraction_mode: str
+    config: str
+    embedding_model: str
+    # How this system kept one question's memory out of another's. Both systems isolate per question — a
+    # fresh project for Lore, a fresh user_id for Mem0 — which is what makes them comparable at all.
+    isolation: str
+    # Only Lore needs a command to create an isolated scope; Mem0's is a string it makes up, so this is empty
+    # there. Recorded for reproducibility; it carries no secret.
+    provision_command: str = ""
+
+
+def _build_system(name: str, args: argparse.Namespace, poll_timeout: float) -> SystemUnderTest:
+    """Construct a memory system + its fairness metadata."""
     from longmemeval import LoreAdapter, Mem0Adapter
 
     if name == "lore":
         from loregpt import LoreClient
 
+        from longmemeval import lore_isolation_blocker, parse_command, provision_project
+
         base_url = os.environ.get("LORE_BASE_URL", "http://localhost:8080")
-        client = LoreClient(api_key=_require("LORE_API_KEY"), base_url=base_url)
+
+        # Fail closed before spending anything: without per-question projects the run would measure recall
+        # over a pool of other questions' histories, which is a different (and much easier to misread)
+        # question than the one LongMemEval asks.
+        isolation_blocker = lore_isolation_blocker(args.lore_provision_cmd)
+        if isolation_blocker:
+            print(f"error: {isolation_blocker}", file=sys.stderr)
+            raise SystemExit(2)
+        argv = parse_command(args.lore_provision_cmd)
+
+        # One fresh project per ingestion. The counter only has to make names unique within a run; the
+        # measurement database is single-use, so nothing reclaims the projects afterwards.
+        counter = itertools.count(1)
+
+        def new_lore_client() -> LoreClient:
+            key = provision_project(argv, f"lme-{next(counter)}")
+            return LoreClient(api_key=key, base_url=base_url)
+
         # Dogfooding: the operator runs the worker in this extraction mode; the adapter records it and waits on
         # the matching cadence (economy distillation lands on a batch schedule).
-        lore = LoreAdapter(client, poll_timeout=poll_timeout)
+        lore = LoreAdapter(new_lore_client, poll_timeout=poll_timeout)
         # Record the retrieval-context budget so the fairness record makes each system's context size explicit
         # (a cross-system delta could otherwise reflect a budget asymmetry rather than memory quality).
         extraction_model = os.environ.get("LORE_EXTRACTION_MODEL", "unknown")
@@ -302,7 +349,10 @@ def _build_system(name: str, args: argparse.Namespace, poll_timeout: float) -> t
             print(f"error: {embed_blocker}", file=sys.stderr)
             raise SystemExit(2)
         config = f"retrieval token_budget={lore.token_budget}"
-        return lore, extraction_model, args.extraction_mode, config, embedding_model
+        return SystemUnderTest(
+            lore, extraction_model, args.extraction_mode, config, embedding_model,
+            isolation="per-question", provision_command=args.lore_provision_cmd,
+        )
 
     if name == "mem0":
         from importlib.metadata import version
@@ -340,7 +390,9 @@ def _build_system(name: str, args: argparse.Namespace, poll_timeout: float) -> t
         # mem0 runs its own OpenAI-backed extraction and embedding on write; there is no separate "extraction
         # mode", and its embedder is internal (not configured or introspected here).
         config = f"mem0ai {version('mem0ai')} ({adapter.config_label}); retrieval top_k={adapter.top_k}"
-        return adapter, mem0_llm_model, "", config, "mem0-internal"
+        # Mem0 isolates for free: the adapter searches under a fresh per-ingest user_id, so no provisioning
+        # command is needed. Same guarantee as Lore's fresh project, which is what makes the two comparable.
+        return SystemUnderTest(adapter, mem0_llm_model, "", config, "mem0-internal", isolation="per-question")
 
     raise SystemExit(f"unknown system: {name!r} (expected lore or mem0)")
 

@@ -79,3 +79,13 @@ class Provenance:
     # (extraction + answerer + judge + embedding). For Lore it is the composed embedder's model@dim identity
     # (e.g. "text-embedding-3-small@1536" or the offline "fixture-embed-v1@64"); empty when not applicable.
     embedding_model: str = ""
+    # How each question's memory was isolated from the others'. "per-question" means every question was
+    # measured against a store holding only its own history — a fresh project for Lore, a fresh user_id for
+    # Mem0. It belongs to the universe key (see Universe.of), not to the notes, because a run without it
+    # measures something else entirely: recall reaching across questions competes for a fixed-size context
+    # and displaces the evidence the question needs. Empty means the run did not isolate, which is why runs
+    # from before this was enforced can never be compared against ones after.
+    isolation: str = ""
+    # The command template that provisioned each isolated scope, recorded verbatim so a later reader can
+    # reproduce the run. It carries no secret — the key it prints is never stored anywhere.
+    provision_command: str = ""

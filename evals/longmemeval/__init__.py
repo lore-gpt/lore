@@ -43,7 +43,7 @@ from .batch import (
     run_batch,
 )
 from .cache import CacheKey, JudgeCache, JudgeDecision, hash_answer
-from .guards import dataset_pin_blocker, lore_embedder_blocker
+from .guards import dataset_pin_blocker, lore_embedder_blocker, lore_isolation_blocker
 from .judge import (
     DEFAULT_JUDGE_MODEL,
     PROMPT_HASH,
@@ -61,6 +61,7 @@ from .loader import (
     load_questions,
     parse_question,
 )
+from .provision import NAME_PLACEHOLDER, ProvisionError, parse_command, provision_project
 from .report import (
     VARIANCE_ANSWER,
     VARIANCE_PIPELINE,
@@ -88,6 +89,7 @@ __all__ = [
     "DEFAULT_ANSWERER_MODEL",
     "DEFAULT_JUDGE_MODEL",
     "GATE_MARGIN",
+    "NAME_PLACEHOLDER",
     "PLACEHOLDER_REVISION",
     "PROMPT_HASH",
     "PUBLISHED_MEM0_BAND",
@@ -118,6 +120,7 @@ __all__ = [
     "MemorySystem",
     "OpenAIBatchProvider",
     "Provenance",
+    "ProvisionError",
     "Question",
     "ResumeStore",
     "RunStats",
@@ -139,8 +142,11 @@ __all__ = [
     "hash_answer",
     "load_questions",
     "lore_embedder_blocker",
+    "lore_isolation_blocker",
     "openai_judge",
+    "parse_command",
     "parse_question",
+    "provision_project",
     "run_batch",
     "run_trial",
     "run_trial_batched",
