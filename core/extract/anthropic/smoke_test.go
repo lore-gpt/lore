@@ -69,10 +69,10 @@ func TestSmokeLiveExtraction(t *testing.T) {
 	}
 }
 
-// specificsWindow is the window TestSmokeLiveExtractionRecordsThisRunsFacts distils. Five of its eight
-// events are an agent restating well-known background — the kind of thing that would be just as true
-// without this run having happened — and only three carry a value that belongs to this team. Under real
-// load an extractor is choosing what to keep, and that ratio is what makes the choice visible.
+// specificsWindow is the window TestSmokeLiveExtractionRecordsThisRunsFacts distils. Six of its ten events
+// are an agent restating well-known background — the kind of thing that would be just as true without this
+// run having happened — and four carry a value that belongs to this team. Under real load an extractor is
+// choosing what to keep, and that ratio is what makes the choice visible.
 var specificsWindow = []ext.InputEvent{
 	{Seq: 1, AgentID: "researcher", Payload: json.RawMessage(
 		`{"message":"Some background on vector indexes for the group: an HNSW index is a multi-layer proximity graph. Search starts at a sparse top layer and descends, so lookups are logarithmic rather than linear in the number of vectors. Recall is traded against build time and memory through the graph degree and the size of the candidate list kept during a search. Approximate indexes are approximate by construction — they do not promise the exact nearest neighbours, only close ones."}`)},
@@ -90,6 +90,13 @@ var specificsWindow = []ext.InputEvent{
 		`{"message":"Since it came up: database migrations are usually split into expand and contract phases. The expand phase adds the new shape while the old one still works, the application is moved over, and only then does the contract phase remove the old shape. This keeps every intermediate deploy runnable, which matters because a rollback lands on an intermediate state."}`)},
 	{Seq: 8, AgentID: "coder", Payload: json.RawMessage(
 		`{"message":"Rolled the auth service forward to 2.4.0. 2.3.0 is no longer deployed anywhere."}`)},
+	// The last pair is the hardest shape: a general question wrapped around a specific fact. Everything in
+	// the exchange except the row count is textbook material, and an extractor that judges the exchange
+	// rather than the statement drops the row count with it.
+	{Seq: 9, AgentID: "coder", Payload: json.RawMessage(
+		`{"message":"Our users table has 12.4 million rows. What is the safest way to add a NOT NULL column to a table that size?"}`)},
+	{Seq: 10, AgentID: "researcher", Payload: json.RawMessage(
+		`{"message":"Adding a NOT NULL column with a default used to rewrite the whole table under an ACCESS EXCLUSIVE lock. Modern Postgres stores the default in the catalogue instead, so the add itself is fast. Where a computed value is needed, the usual shape is to add the column nullable, backfill it in batches so no single statement holds a long transaction, and only then set NOT NULL — validated separately so the constraint check does not block writes either."}`)},
 }
 
 // fabricatedDate matches an ISO calendar date. specificsWindow contains no date at all — only the weekday
@@ -102,9 +109,11 @@ var fabricatedDate = regexp.MustCompile(`\d{4}-\d{2}-\d{2}`)
 //
 //   - keeps the specifics — a memory saying the search API "is rate limited" without the limit, or that the
 //     freeze "starts Friday" without the hour, cannot answer the question it was stored for.
-//   - leaves out general knowledge — five of this window's eight events are an agent restating textbook
+//   - leaves out general knowledge — six of this window's ten events are an agent restating textbook
 //     material. Recording it produced four background memories out of seven and entities like "HNSW index",
-//     which in a budgeted pack displace the run's own facts rather than adding to them.
+//     which in a budgeted pack displace the run's own facts rather than adding to them. The last pair is the
+//     hard case: a general question wrapped around a specific fact, where both contracts apply at once and
+//     an extractor that judges the exchange instead of the statement satisfies neither.
 //   - invents no calendar date — the events say "Friday" and never name a date, yet a pass turned that into
 //     a precise timestamp. A manufactured specific is worse than a vague one: it reads as evidence.
 //
@@ -112,10 +121,22 @@ var fabricatedDate = regexp.MustCompile(`\d{4}-\d{2}-\d{2}`)
 // choose between, so everything survives under any instruction; only a window where most of the content is
 // worth dropping can tell a good instruction from a bad one.
 //
-// Honest about what each subtest is worth: run against the instructions this prompt replaced, the last two
-// fail every time and the first passes. So "keeps the specifics" is a guard against losing ground rather
-// than evidence of having gained any — the specifics were never the thing being dropped at this window
-// size. It stays because it is the contract most likely to be broken by a future edit chasing brevity.
+// Honest about what each subtest is worth, since two prompt revisions have now been measured against it:
+//
+//   - Against the instructions before any of these rules existed, "leaves out general knowledge" and
+//     "invents no calendar date" fail every time while "keeps the specifics" passes. So that first one is a
+//     guard against losing ground rather than evidence of a gain — specifics were not what was being dropped
+//     at this window size. It stays because it is the contract most likely to be broken by an edit chasing
+//     brevity.
+//   - Against the revision before the general-knowledge rule was made per-statement, "leaves out general
+//     knowledge" fails on the last pair alone: asked a direct question, the extractor recorded the textbook
+//     answer as though being asked had made it this run's content.
+//
+// And one thing this window does NOT catch, said plainly so a later reader does not over-trust it. What
+// motivated the per-statement rule was measured on real data: a fact stated in passing while asking for
+// advice — "I aimed to raise $200", "compatible with my Sony A7R IV" — disappearing along with the advice.
+// At ten events the row count survives without that rule, so this test does not reproduce that failure.
+// Only a haystack where most of the content is advice does.
 //
 // It asserts model behaviour, so no offline fake can stand in: a fixture extractor would only re-assert what
 // the fixture was written to return. Skipped unless ANTHROPIC_API_KEY is set, and run deliberately:
@@ -179,6 +200,10 @@ func TestSmokeLiveExtractionRecordsThisRunsFacts(t *testing.T) {
 			// deliberately NOT asserted absent, because narrating the change ("rolled forward from 2.3.0 to
 			// 2.4.0") is a correct memory. "2.4" also matches a shortened rendering of 2.4.0.
 			{"the version in effect after the roll-forward", []string{"2.4"}},
+			// Stated while asking a general question. An extractor that judges the exchange rather than
+			// the statement drops this with the answer that follows it — measured happening on real data,
+			// where a row count, a price and a piece of hardware all vanished this way.
+			{"the row count stated inside a general question", []string{"12.4", "12,400,000", "12400000"}},
 		} {
 			found := false
 			for _, form := range want.forms {
@@ -197,7 +222,10 @@ func TestSmokeLiveExtractionRecordsThisRunsFacts(t *testing.T) {
 		// One marker per background event, chosen so it cannot occur in a memory about this team's own work:
 		// nothing the platform, release-manager or coder agents said touches any of these.
 		for _, marker := range []string{"hnsw", "proximity graph", "nearest neighb", "connection pool",
-			"forking a backend", "backoff", "idempoten", "expand and contract", "expand-contract"} {
+			"forking a backend", "backoff", "idempoten", "expand and contract", "expand-contract",
+			// From the answer to the row-count question: the advice must go even though the fact it
+			// answers must stay.
+			"access exclusive", "backfill", "catalogue"} {
 			if strings.Contains(got, marker) {
 				t.Errorf("the pass recorded background material (%q) — it would have been just as true "+
 					"before this run started, and in a budgeted pack it displaces the run's own facts", marker)
