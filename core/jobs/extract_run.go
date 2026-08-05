@@ -169,6 +169,37 @@ func NewExtractRunWorker(source EventSource, extractor ext.Extractor, persister 
 	return w
 }
 
+// extractJobTimeout bounds one extraction attempt.
+//
+// It exists because River's default is one minute and a real pass does not fit in it: a 200-event window of
+// conversational content was measured needing longer, so the deadline cancelled the attempt, and — since the
+// window is rebuilt identically — it cancelled the retry too. That is the same permanent-stall shape as a
+// truncated response, reached by a different road: three cancellations discard the job and the run's
+// checkpoint never moves again. (EnsureIndexWorker already opts out of the same default, and its comment
+// describes the same hazard for a long index build.)
+//
+// It bounds the whole ATTEMPT, not one model call, and the difference is the reason it is this large: a pass
+// whose answer overruns the output ceiling halves its window and tries again, down to the floor, so a single
+// attempt can make several calls. At the pace measured for a pass that fits — a minute or two — that whole
+// schedule lands around ten minutes, so a ten-minute deadline would leave almost no margin and would start
+// cutting passes that were about to succeed. This is a backstop for a pass that has gone wrong, not a budget
+// the normal path should ever approach.
+//
+// It is deliberately NOT a per-call timeout: the provider client already enforces one (ten minutes for our
+// output ceiling, from its own scaling rule), and duplicating that here would only make the two race. A
+// pathological schedule of several full-length calls can still exceed this and be cancelled, which is the
+// intended outcome — River retries, and something that slow needs an operator, not more patience.
+//
+// Bounded rather than unbounded (-1) is where this differs from the index build, and the reason is what else
+// wants the slot: that one runs alone on its own single-worker queue, so an unbounded build starves nothing,
+// while extraction shares the default queue's ten slots and a job that never returns holds one for good.
+const extractJobTimeout = 30 * time.Minute
+
+// Timeout overrides River's one-minute default for extraction. See extractJobTimeout.
+func (w *ExtractRunWorker) Timeout(*river.Job[ExtractRunArgs]) time.Duration {
+	return extractJobTimeout
+}
+
 // Work runs one coalesced extraction pass for the job's run. A run may be in one of two phases: if an
 // earlier attempt submitted an economy batch that is still processing, this attempt collects it;
 // otherwise it debounces, reads the window, and either distils it synchronously (realtime) or submits

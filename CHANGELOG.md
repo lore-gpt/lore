@@ -89,6 +89,14 @@ action on upgrade says so in its entry.
   (`LORE_EXTRACTION_MAX_WINDOW`, `LORE_EXTRACTION_MAX_TOKENS`) and the default ceiling has been raised to
   fit the default window. Content dense enough to overrun the ceiling a handful of events at a time still
   stops that run, now loudly and naming the variable to raise, rather than in silence.
+- **An extraction pass that needs more than a minute is no longer cancelled for it.** Extraction inherited
+  the job queue's one-minute default deadline, which a real pass does not fit inside: a 200-event window of
+  conversational content was measured overrunning it, and because the window is rebuilt from the same events,
+  the retry overran it identically — three cancellations discarded the job and left the run's checkpoint
+  frozen, the same permanent stall as a truncated response, arrived at by a different road. It also read as
+  an intermittent provider fault rather than a deadline. Extraction now gets its own deadline, generous
+  enough for a pass that shrinks its window and retries several times within one attempt, and still bounded
+  so a stuck job cannot hold a worker slot indefinitely.
 - **One impossible date from the model no longer discards an entire extraction pass.** A claim's optional
   `event_time` was parsed strictly, so a value like `2023-02-29` — a date that does not exist — failed the
   whole decode and threw away every memory, claim and entity extracted alongside it, deterministically, on

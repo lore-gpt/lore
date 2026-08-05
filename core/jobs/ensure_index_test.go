@@ -3,6 +3,7 @@ package jobs
 import (
 	"testing"
 
+	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/rivertype"
 )
 
@@ -38,5 +39,29 @@ func TestEnsureIndexInsertOpts(t *testing.T) {
 func TestEnsureIndexWorkerTimeoutUnbounded(t *testing.T) {
 	if got := (&EnsureIndexWorker{}).Timeout(nil); got != -1 {
 		t.Errorf("ensure_index Timeout = %v, want -1 (no per-job deadline for a long index build)", got)
+	}
+}
+
+// TestExtractRunWorkerTimeoutOutlivesAPass pins extraction's own deadline. Both halves of it carry weight.
+//
+// Longer than River's default, because that default is one minute and a real pass does not fit inside it: a
+// 200-event window of conversational content was measured overrunning it, and since the window is rebuilt
+// identically the retry overran it too. Three cancellations discard the job and the run stops distilling for
+// good — the same permanent stall a truncated response used to cause, reached by a different road. A
+// regression to the default brings that back, disguised as an intermittent provider problem.
+//
+// Still bounded, unlike the index build's -1, because extraction shares the default queue's worker slots: a
+// job that never returns holds one of them for good, whereas an unbounded index build sits alone on its own
+// single-worker queue and starves nothing. The two workers want opposite answers for the same reason —
+// what else is competing for the slot.
+func TestExtractRunWorkerTimeoutOutlivesAPass(t *testing.T) {
+	got := (&ExtractRunWorker{}).Timeout(nil)
+	if got <= river.JobTimeoutDefault {
+		t.Errorf("extract_run Timeout = %v, want longer than River's default %v — a real pass needs more, and "+
+			"a deadline that cancels one cancels every identical retry too", got, river.JobTimeoutDefault)
+	}
+	if got <= 0 {
+		t.Errorf("extract_run Timeout = %v; extraction shares the default queue, so an unbounded job would "+
+			"hold one of its worker slots for good", got)
 	}
 }
