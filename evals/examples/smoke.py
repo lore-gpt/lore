@@ -126,6 +126,23 @@ def main() -> None:
         'e.g. "docker compose -f infra/compose.yml run --rm --no-deps lore-server provision --project {name}"',
     )
     parser.add_argument("--mem0-top-k", type=int, default=20)
+    parser.add_argument(
+        "--mem0-workers",
+        type=int,
+        default=1,
+        help="ingest Mem0's questions in this many worker PROCESSES (default 1 = serial). Mem0 spends about "
+        "38 minutes per LongMemEval-S question, so n=50 is over thirty hours serially. Questions are "
+        "independent scopes, so this only changes how many are in flight — never the order inside one. "
+        "Start conservatively: our speed must not cost their quality, and the run reports Mem0-side "
+        "failures so a raised error rate is visible before it is baked into a reference.",
+    )
+    parser.add_argument(
+        "--mem0-run-dir",
+        default="",
+        help="scratch root for this run's Mem0 stores; defaults to a fresh timestamped directory under "
+        "--resume-dir. Each run MUST get its own: Mem0's local store outlives the process while the scope "
+        "counter restarts at 1, so a shared root makes run 2's question N searchable alongside run 1's.",
+    )
     parser.add_argument("--report-dir", default="reports")
     parser.add_argument("--cache-dir", default="judge_cache")
     parser.add_argument("--resume-dir", default="batch_resume")
@@ -193,7 +210,8 @@ def main() -> None:
             )
         else:
             answer_trials = run_variance_reuse_ingest(
-                system, answer_questions, answerer, judge, cache, args.trials, stats=stats
+                system, answer_questions, answerer, judge, cache, args.trials, stats=stats,
+                contexts=_mem0_contexts(name, args, answer_questions, sut),
             )
         variance_answer = VarianceResult(VARIANCE_ANSWER, tuple(tuple(t) for t in answer_trials))
 
@@ -488,6 +506,58 @@ def _mem0_degraded_legs() -> list[str]:
         if not extract_entities("The auth service was rolled forward to 2.4.0 on Friday."):
             degraded.append("entity extraction returns nothing (spaCy missing, unimportable, or no model)")
     return degraded
+
+
+def _mem0_run_root(args: argparse.Namespace) -> Path:
+    """This run's own scratch root for Mem0's stores. Fresh by default, because sharing one across runs is
+    how question N of run 2 ends up searchable alongside question N of run 1."""
+    if args.mem0_run_dir:
+        return Path(args.mem0_run_dir)
+    stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%S")
+    return Path(args.resume_dir) / f"mem0-run-{stamp}"
+
+
+def _mem0_contexts(
+    name: str, args: argparse.Namespace, questions: list[Question], sut: SystemUnderTest
+) -> dict[str, str] | None:
+    """Ingest Mem0's questions through the worker pool, or return None to let the runner ingest serially.
+
+    Only Mem0 takes this path. Lore's ingestion is server-side work through one deployment, so running its
+    questions concurrently would change queue depth and extraction scheduling — measurement conditions, not
+    just speed — and its serial cost is affordable anyway.
+    """
+    if name != "mem0" or args.mem0_workers <= 1:
+        return None
+
+    from longmemeval import ContextCheckpoint, Heartbeat, Mem0PoolConfig, build_mem0_contexts
+
+    root = _mem0_run_root(args)
+    root.mkdir(parents=True, exist_ok=True)
+    checkpoint = ContextCheckpoint(root / "contexts.jsonl")
+    heartbeat = Heartbeat(root / "heartbeat.json", total=len(questions))
+    print(
+        f"mem0: ingesting {len(questions)} questions across {args.mem0_workers} worker processes",
+        file=sys.stderr,
+    )
+    print(f"      progress: {heartbeat.path}", file=sys.stderr)
+    print(
+        f"      resume:   {checkpoint.path} "
+        f"(re-running with --mem0-run-dir {root} skips what is already finished)",
+        file=sys.stderr,
+        flush=True,
+    )
+    cfg = Mem0PoolConfig(
+        root=root,
+        llm_model=sut.extraction_model,
+        is_reasoning_model=True,
+        top_k=args.mem0_top_k,
+        split=args.split,
+        n=args.n,
+        cache_dir=Path(args.cache_dir),
+    )
+    return build_mem0_contexts(
+        questions, cfg, workers=args.mem0_workers, checkpoint=checkpoint, heartbeat=heartbeat
+    )
 
 
 if __name__ == "__main__":
