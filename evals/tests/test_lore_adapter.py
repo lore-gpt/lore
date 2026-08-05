@@ -51,7 +51,7 @@ def _sessions() -> list[Session]:
 
 def test_ingest_writes_turns_with_role_and_date_prefix() -> None:
     fake = FakeLore(covered_after=1)
-    adapter = LoreAdapter(fake, sleep=lambda s: None)
+    adapter = LoreAdapter(lambda: fake, sleep=lambda s: None)
     adapter.ingest(_sessions())
     assert [agent for _, agent, _ in fake.writes] == ["user", "assistant", "user"]
     assert fake.writes[0][2] == "[2031/01/04] user: hi"
@@ -61,7 +61,7 @@ def test_ingest_writes_turns_with_role_and_date_prefix() -> None:
 def test_ryw_poll_waits_until_covered() -> None:
     fake = FakeLore(covered_after=3)  # covered_seq catches up on the 3rd probe
     sleeps: list[float] = []
-    adapter = LoreAdapter(fake, sleep=sleeps.append, poll_interval=0.1, poll_timeout=10.0)
+    adapter = LoreAdapter(lambda: fake, sleep=sleeps.append, poll_interval=0.1, poll_timeout=10.0)
     adapter.ingest(_sessions())
     probes = [p for p in fake.packs if p[0] == "distillation probe"]
     assert len(probes) == 3
@@ -71,7 +71,7 @@ def test_ryw_poll_waits_until_covered() -> None:
 
 def test_retrieve_packs_with_read_your_writes() -> None:
     fake = FakeLore(covered_after=1)
-    adapter = LoreAdapter(fake, sleep=lambda s: None)
+    adapter = LoreAdapter(lambda: fake, sleep=lambda s: None)
     adapter.ingest(_sessions())
     context = adapter.retrieve("what?", "2031/02/01")
     answer_pack = next(p for p in fake.packs if p[0] == "what?")
@@ -81,12 +81,44 @@ def test_retrieve_packs_with_read_your_writes() -> None:
 
 def test_distillation_timeout_when_never_caught_up() -> None:
     fake = FakeLore(covered_after=999)
-    adapter = LoreAdapter(fake, sleep=lambda s: None, poll_interval=0.1, poll_timeout=0.3)
+    adapter = LoreAdapter(lambda: fake, sleep=lambda s: None, poll_interval=0.1, poll_timeout=0.3)
     with pytest.raises(DistillationTimeout):
         adapter.ingest(_sessions())
 
 
 def test_retrieve_before_ingest_raises() -> None:
-    adapter = LoreAdapter(FakeLore())
+    adapter = LoreAdapter(FakeLore)
     with pytest.raises(RuntimeError):
         adapter.retrieve("q", "d")
+
+
+def test_each_ingest_gets_a_fresh_isolated_client() -> None:
+    """The isolation guarantee, asserted where it can be broken.
+
+    Lore scopes distilled recall to the project, so two questions sharing one client share recall: measured
+    on a real run, a quarter to two thirds of a pack's cited sources came from a different question, and a
+    fixed-size pack means those crowd out the evidence the question needs. An adapter that resolved its
+    client once — the obvious refactor, and the shape this one used to have — would pass every other test in
+    this file while quietly measuring that.
+
+    So this asserts the factory is consulted per ingest AND that each retrieve went to that ingest's client,
+    which is the half a call-count assertion alone would miss."""
+    made: list[FakeLore] = []
+
+    def factory() -> FakeLore:
+        made.append(FakeLore(covered_after=1))
+        return made[-1]
+
+    adapter = LoreAdapter(factory, sleep=lambda s: None)
+
+    adapter.ingest(_sessions())
+    adapter.retrieve("first", "d")
+    adapter.ingest(_sessions())
+    adapter.retrieve("second", "d")
+
+    assert len(made) == 2, "each ingest must provision its own project; a reused client shares recall"
+    assert made[0] is not made[1]
+    # Each question's history and its own query landed on its own client — nothing crossed over.
+    assert len(made[0].writes) == 3 and len(made[1].writes) == 3
+    assert [q for q, _, _ in made[0].packs if q != "distillation probe"] == ["first"]
+    assert [q for q, _, _ in made[1].packs if q != "distillation probe"] == ["second"]

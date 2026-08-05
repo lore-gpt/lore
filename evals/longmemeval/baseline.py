@@ -57,13 +57,18 @@ class Universe:
 
     @staticmethod
     def of(prov: Provenance, protocol: str) -> Universe:
+        # The isolation model folds into the protocol rather than sitting beside it, so no caller can build a
+        # universe that forgets it. It is not a nuance: a run where questions share a memory store measures
+        # recall over a pool the question was never supposed to have, and its number is not comparable to one
+        # that isolates. Folding it in makes that incomparability structural — a reference locked before
+        # isolation was enforced simply will not match a run after.
         return Universe(
             dataset_revision=prov.dataset_revision,
             judge_model=prov.judge_model,
             judge_prompt_hash=prov.judge_prompt_hash,
             answerer_model=prov.answerer_model,
             n=prov.n,
-            protocol=protocol,
+            protocol=f"{protocol}+isolation={prov.isolation}" if prov.isolation else protocol,
         )
 
 
