@@ -15,7 +15,7 @@ Flows (each has a synchronous form and a Batch-API twin):
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 
 from ._types import Question, Verdict
 from .adapters import MemorySystem
@@ -75,15 +75,23 @@ def run_variance_reuse_ingest(
     n_trials: int,
     *,
     stats: RunStats | None = None,
+    contexts: Mapping[str, str] | None = None,
 ) -> list[list[Verdict]]:
     """Ingest each question ONCE, then run `n_trials` answer+judge passes over the fixed retrieved contexts.
     The per-trial accuracy spread is the answerer+judge variance the harness gates on (ingestion held fixed).
     Each trial judges under its own cache variant, so a variance measurement actually samples N times (a shared
-    cache key would serve trial 1's decision to every later trial and collapse the spread to zero)."""
-    contexts: dict[str, str] = {}
-    for question in questions:
-        system.ingest(question.sessions)
-        contexts[question.question_id] = system.retrieve(question.question, question.question_date)
+    cache key would serve trial 1's decision to every later trial and collapse the spread to zero).
+
+    `contexts` supplies already-ingested contexts and skips the ingestion loop entirely. That is not a
+    shortcut around the protocol: this protocol holds ingestion fixed by definition, so a context built
+    elsewhere — by a resumed run, or by a worker pool that ingested the questions concurrently — is the same
+    input the loop below would have produced, and re-running ingestion would only spend the money twice."""
+    if contexts is None:
+        built: dict[str, str] = {}
+        for question in questions:
+            system.ingest(question.sessions)
+            built[question.question_id] = system.retrieve(question.question, question.question_date)
+        contexts = built
 
     trials: list[list[Verdict]] = []
     for trial in range(n_trials):

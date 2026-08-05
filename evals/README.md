@@ -106,6 +106,52 @@ completes, the report reads normally, and only the number is wrong:
 | The embedder is unknown or the offline fixture | A vector space no deployment uses is not the one the score claims to be about |
 | The extractor is unknown or the offline fixture | The fixture returns canned output, so the run measures the fixture rather than extraction. This identity is read from the server's `/healthz` and never from the harness process's own environment — extraction runs in the worker, so this process's `LORE_EXTRACTION_*` says nothing about it |
 
+### Mem0 takes hours, and the run is built to survive that
+
+Measured on LongMemEval-S: **about 38 minutes per question**, roughly fifty sessions each needing two LLM
+calls on a reasoning model. Serially that is ~6 hours at n=10 and over **thirty hours** at n=50. Cost is not
+the constraint — single-digit dollars — wall clock is.
+
+`--mem0-workers N` ingests N questions at once, in separate **processes**:
+
+```bash
+uv run python -m examples.smoke --split s --n 50 --systems mem0 --trials 3 --mem0-workers 4
+```
+
+Three things about that, in the order they matter:
+
+- **It changes speed, not the competitor.** Sessions inside one question stay ordered, because Mem0 decides
+  whether a new fact adds to or updates what is already there. Across questions there is no such link — each
+  is ingested and searched under its own scope. Same model, same flags, same order within a question; only
+  the number of questions in flight changes.
+- **Processes, not threads, deliberately.** `qdrant-client`'s local mode carries no lock of its own, so
+  sharing one store between threads would rest on a race not happening rather than on it being impossible. A
+  two-worker thread probe passed, which proves only that. Per-worker stores inside one process are not an
+  option either: Mem0 opens a second, fixed store under its home whatever you configure, and a second
+  `Memory` in the same process collides with it. `MEM0_DIR` moves that home, so separate processes share
+  nothing.
+- **Start conservatively and watch their error rate.** Our speed must not cost their quality. The run prints
+  any Mem0-side ingestion failures; if they appear, lower the worker count before the number is baked into a
+  reference.
+
+Turning down Mem0's reasoning effort would be faster still and is **deliberately not done**: that changes the
+competitor's own configuration, which is the one thing a parity comparison must not do. Parallelism is ours
+to choose; their settings are not.
+
+**Each run gets its own store root.** Mem0's local store outlives the process while the harness's scope
+counter restarts at 1 in each one, so two runs sharing a root write different questions into the same scope
+and then search them together — measured in a live store, one scope holding 558 memories from one day's run
+and 635 from the next. `--mem0-run-dir` defaults to a fresh timestamped directory for exactly that reason;
+pass it explicitly only to resume.
+
+**Interruptions cost the unfinished questions, not the run.** Each finished question's context is appended to
+`contexts.jsonl` under the run directory as soon as it lands, and re-running with the same `--mem0-run-dir`
+skips whatever is already there. Alongside it, `heartbeat.json` is rewritten every thirty seconds with what
+is in flight, how long it has been going and an ETA — so a run that has died is distinguishable from one that
+is merely slow, which is the question two lost runs could not answer.
+
+For a run measured in hours, start it detached rather than inside a terminal session you might close.
+
 Mem0 has a refusal of its own. Its search is a hybrid — semantic, BM25 keyword, and an entity boost — and the
 two non-semantic legs are optional dependencies that degrade to a no-op with a log line and no error. A bare
 install therefore scores it on one leg of three against Lore's full hybrid: an asymmetry in our favour that is

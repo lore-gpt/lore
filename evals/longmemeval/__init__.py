@@ -67,6 +67,9 @@ from .loader import (
     load_questions,
     parse_question,
 )
+from .mem0_pool import Mem0PoolConfig
+from .mem0_pool import build_contexts as build_mem0_contexts
+from .progress import ContextCheckpoint, Heartbeat
 from .provision import NAME_PLACEHOLDER, ProvisionError, parse_command, provision_project
 from .report import (
     VARIANCE_ANSWER,
@@ -112,8 +115,10 @@ __all__ = [
     "BatchRequest",
     "BatchStatus",
     "CacheKey",
+    "ContextCheckpoint",
     "DistillationTimeout",
     "GateOutcome",
+    "Heartbeat",
     "Judge",
     "JudgeCache",
     "JudgeDecision",
@@ -123,6 +128,7 @@ __all__ = [
     "MeanStd",
     "Mem0Adapter",
     "Mem0Like",
+    "Mem0PoolConfig",
     "MemorySystem",
     "OpenAIBatchProvider",
     "Provenance",
@@ -140,6 +146,7 @@ __all__ = [
     "anthropic_answerer",
     "build_answer_prompt",
     "build_grading_prompt",
+    "build_mem0_contexts",
     "dataset_pin_blocker",
     "decide_baseline",
     "deterministic_subset",
