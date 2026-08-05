@@ -38,6 +38,17 @@ action on upgrade says so in its entry.
 
 ### Changed
 
+- **Extraction records the run, not the model's general knowledge.** A pass used to distil textbook material
+  an agent happened to restate — how a technology works, what a practice is for — as readily as the team's
+  own facts: on a window where most of the content was background, more than half the memories it produced
+  were statements that would have been just as true before the run started. A context pack has a token
+  budget, so those displace the run's own facts rather than adding to them. A pass now records only what is
+  true of that team, that project, that run; carries across the specific values an event states — quantities,
+  dates and times, versions, limits, identifiers — instead of summarising them away; and treats the later of
+  two values for the same thing as the one in effect. Entities are likewise the things the team works on,
+  rather than concepts that came up in an explanation.
+  <br>Memories are not re-distilled, so this shapes passes from here on; what is already stored stays as it
+  was extracted.
 - **`/metrics` now listens on its own port, for both `serve` and `worker`.** It was previously served
   on the server's API port, which made it impossible to publish the API without also publishing an
   unauthenticated metrics endpoint. Both roles now bind `LORE_METRICS_ADDR` (default `:9090`), and the
@@ -97,6 +108,12 @@ action on upgrade says so in its entry.
   an intermittent provider fault rather than a deadline. Extraction now gets its own deadline, generous
   enough for a pass that shrinks its window and retries several times within one attempt, and still bounded
   so a stuck job cannot hold a worker slot indefinitely.
+- **Extraction no longer invents a date it was never given.** A window in which an agent said a code freeze
+  starts "Friday at 18:00 UTC" came back with a claim timestamped to a specific calendar day — the same
+  wrong day on every attempt, so it read as a fact rather than a guess. Nothing in the events named that
+  day: an extraction pass sees per-run sequence numbers and payloads, never dates. A manufactured specific
+  is worse than a vague one because it looks like evidence, so stated values are now copied across as
+  stated: "Friday" stays "Friday".
 - **One impossible date from the model no longer discards an entire extraction pass.** A claim's optional
   `event_time` was parsed strictly, so a value like `2023-02-29` — a date that does not exist — failed the
   whole decode and threw away every memory, claim and entity extracted alongside it, deterministically, on
