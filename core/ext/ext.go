@@ -104,6 +104,9 @@ type Embedder interface {
 type Extractor interface {
 	// Extract returns the candidates distilled from in.Events. A provider or transport failure
 	// returns an error (e.g. ErrExtractorUnavailable) and no partial result; the caller retries.
+	// An implementation whose answer overran its own output ceiling must return ErrResponseTruncated
+	// rather than a partial result, so the caller can shrink the window instead of retrying a window
+	// that will truncate identically every time.
 	Extract(ctx context.Context, in ExtractInput) (ExtractResult, error)
 }
 

@@ -34,6 +34,11 @@ type Config struct {
 	// the read proceeds without it. Zero (unset) uses retrieval.DefaultPartialTimeout. Lower it to cap tail
 	// latency at the cost of dropping semantic recall when the embedding provider is slow.
 	RetrievalPartialTimeout time.Duration
+	// ExtractionMaxWindow caps how many events one extraction pass distils (used by the worker; ignored by
+	// the server). Zero (unset) uses jobs.DefaultDebounce's value. It pairs with the extractor's output
+	// ceiling: a pass whose answer overruns the ceiling halves this window and retries, so the two only
+	// have to be roughly right rather than exactly matched to the traffic.
+	ExtractionMaxWindow int
 }
 
 // extensions holds the swappable extension-point implementations. Phase 0 wires

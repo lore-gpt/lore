@@ -26,6 +26,15 @@ action on upgrade says so in its entry.
 - Examples for [CrewAI](examples/crewai/) and the [Claude Agent SDK](examples/claude-agent-sdk/),
   joining the existing LangGraph one. Each covers a different capability: read-your-writes within a run,
   recall across runs, and tool-driven access over MCP.
+- `LORE_EXTRACTION_MAX_TOKENS` and `LORE_EXTRACTION_MAX_WINDOW` size one extraction pass: how much room
+  its answer has, and how many events it distils. The right pair depends on how much text your events
+  carry, which is why they are yours to set — but a mismatch costs extra model calls rather than lost
+  memories, because a pass that overruns the ceiling shrinks and retries. The ceiling is a cap, not a
+  spend: you are billed for tokens actually generated.
+- `lore_extract_window_shrink_total` counts passes that overran the output ceiling, by outcome —
+  `retried` (halved and distilled) or `exhausted` (still too dense at the floor, so that run has stopped
+  distilling). A steady `retried` rate is the signal to re-size the pair above; any `exhausted` needs
+  attention.
 
 ### Changed
 
@@ -70,10 +79,16 @@ action on upgrade says so in its entry.
   window whose extraction output exceeded the model's response ceiling. That failed the pass, every retry
   rebuilt the identical window and failed identically, and the job was discarded with the checkpoint
   frozen: the run stopped distilling permanently, and its `covered_seq` never advanced again. Passes are
-  now capped (200 events by default) and the remainder is drained by the pass that follows.
-  <br>Measured, so its limits are stated too: the cap makes truncation survivable rather than impossible.
-  A window can still be too large for dense content, in which case a retry usually clears it — the
-  ceiling depends on how much text the events carry, not on how many there are.
+  now capped (200 events by default), and a pass whose answer still overruns the ceiling halves its window
+  and retries until it fits — committing what fits and leaving the rest for the next pass, so a dense run
+  makes progress instead of stopping. The remainder is drained by the pass that follows.
+  <br>The cap alone was not enough, and measuring said so: a real conversational workload overran the
+  ceiling at exactly the 200-event cap, on all three attempts, and froze the run — the same permanent stall
+  one size down. A cap is a guess about how much text an event carries, and only shrinking in response to
+  the actual answer removes the guess. The two bounds are now adjustable
+  (`LORE_EXTRACTION_MAX_WINDOW`, `LORE_EXTRACTION_MAX_TOKENS`) and the default ceiling has been raised to
+  fit the default window. Content dense enough to overrun the ceiling a handful of events at a time still
+  stops that run, now loudly and naming the variable to raise, rather than in silence.
 - **One impossible date from the model no longer discards an entire extraction pass.** A claim's optional
   `event_time` was parsed strictly, so a value like `2023-02-29` — a date that does not exist — failed the
   whole decode and threw away every memory, claim and entity extracted alongside it, deterministically, on

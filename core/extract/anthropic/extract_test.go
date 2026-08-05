@@ -200,8 +200,8 @@ func TestExtractRequestShape(t *testing.T) {
 	if req.Temperature == nil || *req.Temperature != 0.0 {
 		t.Errorf("temperature = %v, want 0.0", req.Temperature)
 	}
-	if req.MaxTokens != defaultMaxTokens {
-		t.Errorf("max_tokens = %d, want %d", req.MaxTokens, defaultMaxTokens)
+	if req.MaxTokens != DefaultMaxTokens {
+		t.Errorf("max_tokens = %d, want %d", req.MaxTokens, DefaultMaxTokens)
 	}
 	if req.ToolChoice.Type != "tool" || req.ToolChoice.Name != toolName {
 		t.Errorf("tool_choice = %+v, want forced %s", req.ToolChoice, toolName)
@@ -258,10 +258,17 @@ func TestExtractRateLimitRetryable(t *testing.T) {
 	}
 }
 
-func TestExtractTruncatedResultUnavailable(t *testing.T) {
-	// stop_reason "max_tokens": the tool input decodes fine but is only partial.
-	// The adapter must not present it as a complete extraction (which would let the
-	// worker advance the checkpoint past silently-dropped candidates); it retries.
+// TestExtractTruncatedResultIsItsOwnSentinel pins the error taxonomy, not just the rejection. A
+// max_tokens response decodes fine but is only partial, so the adapter must not present it as a complete
+// extraction — that would let the worker advance the checkpoint past silently-dropped candidates.
+//
+// The half that matters is which error it reports. Truncation and an unreachable provider need opposite
+// responses: waiting fixes an outage, and nothing but a smaller window fixes truncation. When both arrived
+// as ErrExtractorUnavailable the worker could only wait, so it spent every attempt re-sending a
+// byte-identical window and the run's checkpoint froze for good. So the negative assertion below is the
+// load-bearing one: a change that folds truncation back under ErrExtractorUnavailable still satisfies
+// "returns an error" and would silently restore that stall.
+func TestExtractTruncatedResultIsItsOwnSentinel(t *testing.T) {
 	resp := map[string]any{
 		"id": "msg_t", "type": "message", "role": "assistant", "model": "claude-haiku-4-5",
 		"stop_reason": "max_tokens",
@@ -281,8 +288,12 @@ func TestExtractTruncatedResultUnavailable(t *testing.T) {
 	srv, _ := fakeMessages(t, http.StatusOK, string(b))
 
 	_, err = testExtractor(t, srv).Extract(context.Background(), ext.ExtractInput{Events: twoEvents()})
-	if !errors.Is(err, ext.ErrExtractorUnavailable) {
-		t.Fatalf("truncated err = %v, want ErrExtractorUnavailable", err)
+	if !errors.Is(err, ext.ErrResponseTruncated) {
+		t.Fatalf("truncated err = %v, want ErrResponseTruncated", err)
+	}
+	if errors.Is(err, ext.ErrExtractorUnavailable) {
+		t.Fatalf("truncated err = %v also matches ErrExtractorUnavailable; the worker cannot tell "+
+			"'shrink the window' from 'wait for the provider' and will stall the run on identical retries", err)
 	}
 }
 

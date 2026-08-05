@@ -106,10 +106,14 @@ func NewWorker(st *store.Store, extractor ext.Extractor, adjudicator ext.Adjudic
 	// RLS-subject application role, these reads must also set the per-run project scope (via the
 	// store), or the tenant policies would return no rows and extraction would silently stall — the
 	// writes are already scoped, the reads are not yet.
+	debounce := jobs.DefaultDebounce()
+	if o.maxWindow > 0 {
+		debounce.MaxWindow = o.maxWindow
+	}
 	river.AddWorker(workers, jobs.NewExtractRunWorker(
 		db.New(pool), extractor,
 		jobs.NewPGPersister(st, adjudicator, embedder, jobs.WithIndexEnqueuer(indexEnqueuer{}), jobs.WithPersisterMetrics(m)),
-		jobs.DefaultDebounce(), jobs.WithWorkmemStore(wm), jobs.WithExtractMetrics(m)))
+		debounce, jobs.WithWorkmemStore(wm), jobs.WithExtractMetrics(m)))
 	// The vector-index build runs off the write path: the persister enqueues it when a project first pins its
 	// model, and it builds the per-partition HNSW with the composed embedder's dimension.
 	river.AddWorker(workers, jobs.NewEnsureIndexWorker(store.NewPgVectorIndex(pool), embedder))

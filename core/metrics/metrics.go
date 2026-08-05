@@ -84,6 +84,7 @@ type Registry struct {
 	ExtractEventsGated     prometheus.Counter
 	ExtractEventsExtracted prometheus.Counter
 	ExtractStateRouted     *prometheus.CounterVec // [lane]
+	ExtractWindowShrink    *prometheus.CounterVec // [outcome]
 	// (ensure_index build outcomes are covered by lore_queue_jobs_total{kind="ensure_index"} + the queue-depth
 	// gauge, from the shared worker middleware — no dedicated counter is needed.)
 
@@ -197,6 +198,10 @@ func New(reg prometheus.Registerer) *Registry {
 		ExtractStateRouted: f.NewCounterVec(prometheus.CounterOpts{
 			Name: "lore_extract_state_routed_total", Help: "kind:state events routed to a lane (hot working-memory or durable).",
 		}, []string{"lane"}),
+		ExtractWindowShrink: f.NewCounterVec(prometheus.CounterOpts{
+			Name: "lore_extract_window_shrink_total",
+			Help: "Extraction windows that overran the model's output ceiling, by outcome: retried (halved and distilled) or exhausted (still truncating at the floor, so the run stopped distilling). A steady retried rate means the content is denser than the configured window and ceiling; any exhausted needs a higher LORE_EXTRACTION_MAX_TOKENS.",
+		}, []string{"outcome"}),
 
 		QueueJobs: f.NewCounterVec(prometheus.CounterOpts{
 			Name: "lore_queue_jobs_total", Help: "Worked jobs by kind and outcome.",

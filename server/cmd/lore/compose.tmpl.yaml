@@ -124,6 +124,11 @@ services:
       LORE_EXTRACTION_PROVIDER: "${LORE_EXTRACTION_PROVIDER:-}"
       LORE_EXTRACTION_MODEL: "${LORE_EXTRACTION_MODEL:-}"
       ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
+      # How much one pass distils and how much room its answer has. Unset uses the built-in pair; raise
+      # the ceiling (or lower the window) for events that carry a lot of text. A pass that overruns the
+      # ceiling halves its window and retries, so these only have to be roughly right.
+      LORE_EXTRACTION_MAX_TOKENS: "${LORE_EXTRACTION_MAX_TOKENS:-}"
+      LORE_EXTRACTION_MAX_WINDOW: "${LORE_EXTRACTION_MAX_WINDOW:-}"
       # Must match lore-server's embedding config: the worker embeds stored memories,
       # serve embeds the query, and the two share one vector space only if identical.
       LORE_EMBEDDING_PROVIDER: "${LORE_EMBEDDING_PROVIDER:-}"

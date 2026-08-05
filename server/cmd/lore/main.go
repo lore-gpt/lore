@@ -207,7 +207,7 @@ func workerCmd() *cobra.Command {
 			// Choose the extraction provider from configuration and inject it into
 			// the worker. A misconfiguration (e.g. anthropic without a key) fails
 			// here, before the worker starts consuming jobs.
-			extractor, err := extraction.Build(ctx, cfg.ExtractionProvider, cfg.AnthropicAPIKey, cfg.ExtractionModel)
+			extractor, err := extraction.Build(ctx, cfg.ExtractionProvider, cfg.AnthropicAPIKey, cfg.ExtractionModel, cfg.ExtractionMaxTokens)
 			if err != nil {
 				return err
 			}
@@ -237,7 +237,8 @@ func workerCmd() *cobra.Command {
 			serveMetrics(ctx, "worker", cfg.MetricsAddr, tel.MetricsHandler)
 
 			w, err := core.NewWorker(ctx, core.Config{
-				DatabaseURL: cfg.DatabaseURL,
+				DatabaseURL:         cfg.DatabaseURL,
+				ExtractionMaxWindow: cfg.ExtractionMaxWindow,
 			}, core.WithExtractor(extractor), core.WithWorkmem(wm), core.WithEmbedder(embedder),
 				core.WithMeterRegistry(tel.Metrics), core.WithTracerProvider(tel.Tracer))
 			if err != nil {

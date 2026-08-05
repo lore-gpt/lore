@@ -9,7 +9,7 @@ import (
 )
 
 func TestBuildUnsetUsesFixture(t *testing.T) {
-	x, err := Build(context.Background(), "", "", "")
+	x, err := Build(context.Background(), "", "", "", 0)
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -22,7 +22,7 @@ func TestBuildUnsetWithKeyStillFixture(t *testing.T) {
 	// No-surprise-spend guarantee: a key present in the environment must NOT enable
 	// paid API calls on its own — only an explicit provider=anthropic does. Unset
 	// stays on the offline fixture even when a real-looking key is passed.
-	x, err := Build(context.Background(), "", "sk-not-used", "")
+	x, err := Build(context.Background(), "", "sk-not-used", "", 0)
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -32,7 +32,7 @@ func TestBuildUnsetWithKeyStillFixture(t *testing.T) {
 }
 
 func TestBuildFixtureExplicit(t *testing.T) {
-	x, err := Build(context.Background(), ProviderFixture, "", "")
+	x, err := Build(context.Background(), ProviderFixture, "", "", 0)
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -42,7 +42,7 @@ func TestBuildFixtureExplicit(t *testing.T) {
 }
 
 func TestBuildAnthropicWithKey(t *testing.T) {
-	x, err := Build(context.Background(), ProviderAnthropic, "test-key", "")
+	x, err := Build(context.Background(), ProviderAnthropic, "test-key", "", 0)
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -55,7 +55,7 @@ func TestBuildProviderCaseInsensitive(t *testing.T) {
 	// Provider names match case-insensitively after trimming, so common env-var
 	// habits (ANTHROPIC, Anthropic) work rather than failing as "unknown".
 	for _, p := range []string{"ANTHROPIC", "Anthropic", "  anthropic  "} {
-		x, err := Build(context.Background(), p, "test-key", "")
+		x, err := Build(context.Background(), p, "test-key", "", 0)
 		if err != nil {
 			t.Fatalf("Build(%q): %v", p, err)
 		}
@@ -63,7 +63,7 @@ func TestBuildProviderCaseInsensitive(t *testing.T) {
 			t.Errorf("Build(%q) = %T, want *anthropic.Extractor", p, x)
 		}
 	}
-	x, err := Build(context.Background(), "FIXTURE", "", "")
+	x, err := Build(context.Background(), "FIXTURE", "", "", 0)
 	if err != nil {
 		t.Fatalf("Build(FIXTURE): %v", err)
 	}
@@ -75,13 +75,13 @@ func TestBuildProviderCaseInsensitive(t *testing.T) {
 func TestBuildAnthropicRequiresKey(t *testing.T) {
 	// The explicit opt-in must fail loudly when the key is missing, not silently
 	// fall back to the fixture.
-	if _, err := Build(context.Background(), ProviderAnthropic, "", ""); err == nil {
+	if _, err := Build(context.Background(), ProviderAnthropic, "", "", 0); err == nil {
 		t.Fatal("=anthropic without key = nil error, want a startup error")
 	}
 }
 
 func TestBuildUnknownProviderErrors(t *testing.T) {
-	if _, err := Build(context.Background(), "gpt-x", "test-key", ""); err == nil {
+	if _, err := Build(context.Background(), "gpt-x", "test-key", "", 0); err == nil {
 		t.Fatal("unknown provider = nil error, want an error")
 	}
 }

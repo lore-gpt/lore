@@ -35,16 +35,22 @@ const (
 // The provider name is matched case-insensitively after trimming surrounding
 // whitespace, so "anthropic", "Anthropic", and "ANTHROPIC" are equivalent. It
 // returns an ext.Extractor for the caller to inject with core.WithExtractor.
-func Build(ctx context.Context, provider, apiKey, model string) (ext.Extractor, error) {
+//
+// maxTokens caps the provider's structured output; 0 keeps the provider default. It is logged because it
+// is half of a pair — the other half is the pass's event window — and a truncated pass is the one failure
+// where knowing both numbers is the whole diagnosis.
+func Build(ctx context.Context, provider, apiKey, model string, maxTokens int64) (ext.Extractor, error) {
 	switch strings.ToLower(strings.TrimSpace(provider)) {
 	case ProviderAnthropic:
-		x, err := anthropic.New(anthropic.Config{APIKey: apiKey, Model: model})
+		x, err := anthropic.New(anthropic.Config{APIKey: apiKey, Model: model, MaxTokens: maxTokens})
 		if err != nil {
 			// The most common cause is a missing key: surface it as a startup
 			// failure naming the variable to set, rather than a silent fallback.
 			return nil, fmt.Errorf("extraction: LORE_EXTRACTION_PROVIDER=anthropic requires ANTHROPIC_API_KEY: %w", err)
 		}
-		slog.InfoContext(ctx, "extraction provider: anthropic", slog.String("model", modelOrDefault(model)))
+		slog.InfoContext(ctx, "extraction provider: anthropic",
+			slog.String("model", modelOrDefault(model)),
+			slog.Int64("max_tokens", maxTokensOrDefault(maxTokens)))
 		return x, nil
 
 	case ProviderFixture:
@@ -67,4 +73,12 @@ func modelOrDefault(model string) string {
 		return anthropic.DefaultModel
 	}
 	return model
+}
+
+// maxTokensOrDefault reports the output ceiling that will be used, for logging.
+func maxTokensOrDefault(maxTokens int64) int64 {
+	if maxTokens <= 0 {
+		return anthropic.DefaultMaxTokens
+	}
+	return maxTokens
 }
