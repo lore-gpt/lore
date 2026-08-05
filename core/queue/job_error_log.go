@@ -14,13 +14,20 @@ import (
 type WorkerOption func(*workerOptions)
 
 type workerOptions struct {
-	logger *slog.Logger
+	logger    *slog.Logger
+	maxWindow int
 }
 
 // WithJobErrorLogger overrides the logger that failed jobs are reported on. Unset, they go to the
 // process default logger — which is where an operator watching the worker is already looking.
 func WithJobErrorLogger(l *slog.Logger) WorkerOption {
 	return func(o *workerOptions) { o.logger = l }
+}
+
+// WithExtractionMaxWindow overrides how many events one extraction pass distils. Zero (unset) keeps
+// jobs.DefaultDebounce's value, so a caller that does not configure it is unaffected.
+func WithExtractionMaxWindow(n int) WorkerOption {
+	return func(o *workerOptions) { o.maxWindow = n }
 }
 
 // jobErrorReporter reports a failed job attempt on the worker's own log.

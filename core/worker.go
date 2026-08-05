@@ -34,7 +34,8 @@ func NewWorker(ctx context.Context, cfg Config, opts ...Option) (*Worker, error)
 	if err != nil {
 		return nil, fmt.Errorf("open store: %w", err)
 	}
-	q, err := queue.NewWorker(st, e.extractor, e.adjudicator, e.embedder, e.workmem, e.metrics, e.tracer)
+	q, err := queue.NewWorker(st, e.extractor, e.adjudicator, e.embedder, e.workmem, e.metrics, e.tracer,
+		queue.WithExtractionMaxWindow(cfg.ExtractionMaxWindow))
 	if err != nil {
 		st.Close()
 		return nil, fmt.Errorf("build worker queue: %w", err)

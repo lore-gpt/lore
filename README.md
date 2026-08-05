@@ -254,6 +254,8 @@ Copy [`.env.example`](.env.example) to `.env` and set:
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | with tracing | — | OTLP/HTTP collector base URL; the standard OTel variable (`OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` overrides it for traces) |
 | `LORE_EXTRACTION_PROVIDER` | no | fixture | `anthropic` for real LLM extraction; unset/`fixture` keeps the offline fixture |
 | `LORE_EXTRACTION_MODEL` | no | — | Model override for the provider; unset uses its built-in default |
+| `LORE_EXTRACTION_MAX_TOKENS` | no | `16384` | Output ceiling for one extraction pass. A cap, not a spend: you are billed for tokens actually generated, so headroom is free |
+| `LORE_EXTRACTION_MAX_WINDOW` | no | `200` | Events one extraction pass distils. Pairs with the ceiling above — see below |
 | `ANTHROPIC_API_KEY` | with `anthropic` | — | Provider-native key (not `LORE_`-prefixed); the worker fails at startup without it |
 | `LORE_EMBEDDING_PROVIDER` | no | fixture | `openai` for a real vector space; unset/`fixture` keeps the offline fixture |
 | `LORE_EMBEDDING_BASE_URL` | no | OpenAI | Any OpenAI-compatible `/v1/embeddings` endpoint (OpenAI, a self-hosted TEI/Ollama/vLLM server) |
@@ -268,6 +270,16 @@ provide your own `ANTHROPIC_API_KEY` (provider-native, not `LORE_`-prefixed); th
 if the key is missing rather than silently falling back to the fixture. The offline fixture distils the payload
 keys `memory`, `content`, `note`, `claim`, and `entities` — the shapes the SDKs, the MCP server, and the
 quickstart send — while a real provider reads free-form payloads.
+
+**Window and ceiling.** `LORE_EXTRACTION_MAX_WINDOW` bounds how many events one pass distils, and
+`LORE_EXTRACTION_MAX_TOKENS` bounds how large its answer may be. They are one setting in two halves, and the
+right pair depends on how much text your events carry — which is why both are adjustable. You do not have to
+get it right: when an answer overruns the ceiling the pass halves its window and retries, commits what fits,
+and leaves the rest for the next pass, so a mismatch costs extra model calls rather than lost memories. The
+only case needing you is dense enough content that even a handful of events overruns the ceiling — the worker
+then stops that run's distillation and says so, naming the variable to raise. Watch
+`lore_extract_window_shrink_total`: a steady `retried` rate means your traffic wants a smaller window or a
+larger ceiling, and any `exhausted` means a run has stopped.
 
 **Embeddings.** Retrieval embeds each memory and each query. By default that runs on an offline, deterministic
 **fixture** embedder — reproducible, but not a semantic vector space. For real semantic recall, set

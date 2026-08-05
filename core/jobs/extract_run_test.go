@@ -3,16 +3,19 @@ package jobs_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/rivertype"
 
 	"github.com/lore-gpt/lore/core/ext"
 	"github.com/lore-gpt/lore/core/jobs"
+	"github.com/lore-gpt/lore/core/metrics"
 	"github.com/lore-gpt/lore/core/store/db"
 )
 
@@ -243,6 +246,213 @@ func TestExtractRunWorker_BoundsTheWindowAndDrainsTheRest(t *testing.T) {
 	if per.last.CoveredSeq != int64(window) {
 		t.Errorf("covered_seq = %d, want %d — advancing past undistilled events loses them silently",
 			per.last.CoveredSeq, window)
+	}
+}
+
+// truncatingExtractor truncates every window larger than fitsAt and succeeds at or below it, recording the
+// size of each window it was handed. Recording the sizes is the point: the shrink schedule is the
+// behaviour under test, and asserting only the final outcome would pass against a worker that gave up and
+// re-sent the same window forever.
+type truncatingExtractor struct {
+	fitsAt int
+	sizes  []int
+	err    error // when set, returned instead of a truncation — a failure the window cannot fix
+}
+
+func (e *truncatingExtractor) Extract(_ context.Context, in ext.ExtractInput) (ext.ExtractResult, error) {
+	e.sizes = append(e.sizes, len(in.Events))
+	if e.err != nil {
+		return ext.ExtractResult{}, e.err
+	}
+	if len(in.Events) > e.fitsAt {
+		return ext.ExtractResult{}, fmt.Errorf("%w: max_tokens=1", ext.ErrResponseTruncated)
+	}
+	return ext.ExtractResult{}, nil
+}
+
+func seqEvents(n int) []db.Event {
+	events := make([]db.Event, 0, n)
+	for i := 1; i <= n; i++ {
+		events = append(events, db.Event{Seq: int64(i), AgentID: "a", Payload: []byte(`{"memory":"keep"}`)})
+	}
+	return events
+}
+
+// TestExtractRunWorker_ShrinksTheWindowOnTruncationAndKeepsProgress is the regression lock for a
+// permanent stall.
+//
+// A truncated response is the one extractor failure a retry cannot fix: events are append-only and the
+// window is rebuilt from the same checkpoint, so every attempt sends byte-identical input and truncates
+// identically until River discards the job — leaving the run's checkpoint frozen and its distillation
+// stopped for good. Capping the window did not remove that, it only moved it: a real workload was measured
+// truncating at the 200-event cap, three identical attempts, job discarded, 470 of 514 events never
+// distilled.
+//
+// Two assertions carry the fix. The shrink schedule proves the input actually changed between attempts —
+// the mutant that returns the error instead of halving, or that re-sends the same size, dies here. And
+// covered_seq proves the shorter pass still moved the checkpoint: partial progress must be kept, or a dense
+// run makes no headway at all. The snooze is what brings the remainder back without spending an attempt.
+func TestExtractRunWorker_ShrinksTheWindowOnTruncationAndKeepsProgress(t *testing.T) {
+	const window, fitsAt = 200, 60
+	src := &fakeSource{
+		events:        seqEvents(window),
+		readiness:     ready(window),
+		tailReadiness: ready(window - 50), // the events the shrunk pass did not cover are still pending
+	}
+	spy := &truncatingExtractor{fitsAt: fitsAt}
+	per := &spyPersister{}
+	d := jobs.DefaultDebounce()
+	d.MaxWindow = window
+	reg := prometheus.NewRegistry()
+	m := metrics.New(reg)
+	w := jobs.NewExtractRunWorker(src, spy, per, d, jobs.WithExtractMetrics(m))
+
+	job := &river.Job[jobs.ExtractRunArgs]{Args: jobs.ExtractRunArgs{ProjectID: uuid.NewString(), RunID: uuid.NewString()}}
+	err := w.Work(context.Background(), job)
+
+	var snooze *river.JobSnoozeError
+	if !errors.As(err, &snooze) {
+		t.Fatalf("Work = %v, want a snooze so the undistilled remainder returns without burning an attempt", err)
+	}
+	// 200 truncates, 100 truncates, 50 fits (fitsAt=60). Each step must be strictly smaller, or the retry
+	// is the byte-identical one that caused the stall.
+	want := []int{200, 100, 50}
+	if len(spy.sizes) != len(want) {
+		t.Fatalf("extractor saw %v, want %v — the window must shrink between attempts", spy.sizes, want)
+	}
+	for i, n := range want {
+		if spy.sizes[i] != n {
+			t.Fatalf("extractor saw %v, want %v", spy.sizes, want)
+		}
+	}
+	if per.calls != 1 {
+		t.Fatalf("persisted %d times, want 1 — the pass that fit must commit", per.calls)
+	}
+	if per.last.CoveredSeq != 50 {
+		t.Errorf("covered_seq = %d, want 50 — the checkpoint must advance over exactly the events that were "+
+			"distilled: less loses the pass's progress, more skips events that never reached the model",
+			per.last.CoveredSeq)
+	}
+	// The counters must describe what the pass committed, not what it read. The 150 events it shrank away
+	// are still past the checkpoint and will be read again by the next pass, so counting the read here
+	// would count them twice and report 200 events reaching a model that only saw 50.
+	if got := counterValue(t, reg, "lore_extract_events_extracted_total", nil); got != 50 {
+		t.Errorf("extract_events_extracted = %v, want 50 — reporting the read window double-counts the "+
+			"events the next pass will read again", got)
+	}
+	if got := counterValue(t, reg, "lore_extract_events_ingested_total", nil); got != 50 {
+		t.Errorf("extract_events_ingested = %v, want 50 (the events this pass covered)", got)
+	}
+	if got := counterValue(t, reg, "lore_extract_window_shrink_total", map[string]string{"outcome": "retried"}); got != 2 {
+		t.Errorf("window_shrink{retried} = %v, want 2 — one per halving, so the rate is the operator's "+
+			"signal that the window and ceiling are mismatched", got)
+	}
+	if got := counterValue(t, reg, "lore_extract_window_shrink_total", map[string]string{"outcome": "exhausted"}); got != 0 {
+		t.Errorf("window_shrink{exhausted} = %v, want 0 — the pass recovered, so no run stopped", got)
+	}
+}
+
+// counterValue reads one counter out of a registry, optionally matching labels. Gathering rather than
+// reaching into the collector keeps this to the dependencies the repo already has, and matches how the
+// other metric assertions here read the registry. A metric that was never incremented reports 0 rather
+// than failing, so a test can assert "this did not happen".
+func counterValue(t *testing.T, reg *prometheus.Registry, name string, labels map[string]string) float64 {
+	t.Helper()
+	families, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("gather: %v", err)
+	}
+	for _, f := range families {
+		if f.GetName() != name {
+			continue
+		}
+		for _, m := range f.GetMetric() {
+			match := true
+			for _, lp := range m.GetLabel() {
+				if want, ok := labels[lp.GetName()]; ok && want != lp.GetValue() {
+					match = false
+				}
+			}
+			if match && len(m.GetLabel()) >= len(labels) {
+				return m.GetCounter().GetValue()
+			}
+		}
+	}
+	return 0
+}
+
+// TestExtractRunWorker_TruncationAtTheFloorCancelsInsteadOfRetrying covers the end of the schedule.
+//
+// Halving has to stop somewhere, and when it does the answer must be permanent: a plain error would send
+// the job back to River, which would re-run it from the top and re-walk the identical schedule on every
+// attempt before discarding it — the same wasted attempts the fix exists to remove, just more expensive.
+// So this asserts a JobCancel (no further attempts) and a bounded, strictly-decreasing schedule that
+// actually reaches the floor. A missing floor shows up here as a hang, not a failure, which is why the
+// schedule is asserted rather than just the error.
+func TestExtractRunWorker_TruncationAtTheFloorCancelsInsteadOfRetrying(t *testing.T) {
+	const window = 200
+	src := &fakeSource{events: seqEvents(window), readiness: ready(window)}
+	spy := &truncatingExtractor{fitsAt: 0} // nothing ever fits
+	per := &spyPersister{}
+	d := jobs.DefaultDebounce()
+	d.MaxWindow = window
+	w := jobs.NewExtractRunWorker(src, spy, per, d)
+
+	job := &river.Job[jobs.ExtractRunArgs]{Args: jobs.ExtractRunArgs{ProjectID: uuid.NewString(), RunID: uuid.NewString()}}
+	err := w.Work(context.Background(), job)
+
+	var cancel *river.JobCancelError
+	if !errors.As(err, &cancel) {
+		t.Fatalf("Work = %T %v, want a JobCancelError — more attempts would send the same events to the same ceiling", err, err)
+	}
+	if !errors.Is(err, ext.ErrResponseTruncated) {
+		t.Errorf("Work = %v, want the truncation cause preserved so the log says why the run stopped", err)
+	}
+	want := []int{200, 100, 50, 25, 12, 8}
+	if len(spy.sizes) != len(want) {
+		t.Fatalf("extractor saw %v, want %v — halving must reach the floor and stop there", spy.sizes, want)
+	}
+	for i, n := range want {
+		if spy.sizes[i] != n {
+			t.Fatalf("extractor saw %v, want %v", spy.sizes, want)
+		}
+	}
+	if per.calls != 0 {
+		t.Errorf("persisted %d times, want 0 — nothing was distilled, so the checkpoint must not move", per.calls)
+	}
+}
+
+// TestExtractRunWorker_ProviderFailureDoesNotShrinkTheWindow is the other half of the taxonomy.
+//
+// Shrinking is the right answer to truncation and the wrong one to an outage: the window is fine, the
+// provider is not, and waiting fixes it. A worker that shrank on any error would keep a shorter window
+// after a blip and — worse — could commit a partial prefix and advance the checkpoint on what is really a
+// transient failure. Exactly one call proves the error went straight back to River's backoff.
+func TestExtractRunWorker_ProviderFailureDoesNotShrinkTheWindow(t *testing.T) {
+	const window = 200
+	src := &fakeSource{events: seqEvents(window), readiness: ready(window)}
+	spy := &truncatingExtractor{err: ext.ErrExtractorUnavailable}
+	per := &spyPersister{}
+	d := jobs.DefaultDebounce()
+	d.MaxWindow = window
+	w := jobs.NewExtractRunWorker(src, spy, per, d)
+
+	job := &river.Job[jobs.ExtractRunArgs]{Args: jobs.ExtractRunArgs{ProjectID: uuid.NewString(), RunID: uuid.NewString()}}
+	err := w.Work(context.Background(), job)
+
+	if !errors.Is(err, ext.ErrExtractorUnavailable) {
+		t.Fatalf("Work = %v, want ErrExtractorUnavailable passed through for River to retry", err)
+	}
+	var cancel *river.JobCancelError
+	if errors.As(err, &cancel) {
+		t.Error("a provider outage was cancelled; it is retryable and must not end the run's distillation")
+	}
+	if len(spy.sizes) != 1 {
+		t.Fatalf("extractor called %d times with %v, want exactly 1 — an outage is not fixed by a smaller window",
+			len(spy.sizes), spy.sizes)
+	}
+	if per.calls != 0 {
+		t.Errorf("persisted %d times, want 0 — a failed pass must not advance the checkpoint", per.calls)
 	}
 }
 

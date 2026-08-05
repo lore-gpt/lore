@@ -38,12 +38,24 @@ import (
 // high-volume, structured extraction pass.
 const DefaultModel = string(anthropicsdk.ModelClaudeHaiku4_5)
 
-// defaultMaxTokens caps the structured output. Extraction returns compact JSON
-// over a bounded, gated window (the coalescing debounce keeps a pass small), so
-// this ceiling leaves comfortable headroom; cost accrues on tokens actually
-// generated, not on the ceiling, so a generous bound is free insurance against a
-// truncated pass (see the max_tokens handling in Extract).
-const defaultMaxTokens = 4096
+// DefaultMaxTokens caps the structured output.
+//
+// The ceiling and the window cap are one setting in two halves: a pass distils up to a window of events
+// into a single structured response, so the ceiling has to fit whatever that window produces. They were
+// first chosen independently — a 4096-token ceiling against a 200-event window, about 16 tokens of output
+// per event — and a real conversational workload duly overran it on every pass, three attempts in a row,
+// stopping that run's distillation for good.
+//
+// Measured against that workload: at 4096 every 200-event window truncated, and at 8192 the same windows
+// all passed untouched — so its densest pass needs somewhere between the two, and this leaves at least
+// double. It is still not claimed to fit every workload, because the number that would is a property of
+// someone else's traffic. What makes the pair safe is that a pass which overruns the ceiling shrinks its
+// window and retries (see the caller), not that this constant is big enough.
+//
+// Cost accrues on tokens actually generated, never on the ceiling, so headroom is free; the only thing a
+// higher bound buys is the absence of a truncated pass. Operators override it with
+// LORE_EXTRACTION_MAX_TOKENS.
+const DefaultMaxTokens = 16384
 
 // toolName is the single tool the model is forced to call; its input schema is
 // the extraction-result shape.
@@ -62,7 +74,7 @@ type Config struct {
 	// BaseURL overrides the API endpoint — for a gateway, a proxy, or a test
 	// server. Defaults to the SDK's production endpoint.
 	BaseURL string
-	// MaxTokens overrides the output ceiling. Defaults to defaultMaxTokens.
+	// MaxTokens overrides the output ceiling. Defaults to DefaultMaxTokens.
 	MaxTokens int64
 	// HTTPClient overrides the HTTP transport. Optional; injected by tests.
 	HTTPClient *http.Client
@@ -108,7 +120,7 @@ func New(cfg Config) (*Extractor, error) {
 	}
 	maxTokens := cfg.MaxTokens
 	if maxTokens <= 0 {
-		maxTokens = defaultMaxTokens
+		maxTokens = DefaultMaxTokens
 	}
 	return &Extractor{
 		client:    anthropicsdk.NewClient(opts...),
@@ -119,7 +131,9 @@ func New(cfg Config) (*Extractor, error) {
 
 // Extract distils one window of a run's events into candidate memories, claims,
 // and entities. A transient provider or transport failure returns
-// ext.ErrExtractorUnavailable (the coalesced job retries); a request the provider
+// ext.ErrExtractorUnavailable (the coalesced job retries); a window whose answer
+// overran the output ceiling returns ext.ErrResponseTruncated, which the caller
+// answers by shrinking the window rather than retrying it; a request the provider
 // rejects outright returns a non-retryable error. An empty window makes no API
 // call.
 func (e *Extractor) Extract(ctx context.Context, in ext.ExtractInput) (ext.ExtractResult, error) {
@@ -181,7 +195,11 @@ func buildParts(in ext.ExtractInput) (requestParts, error) {
 // path (the collected result carries no window), where the write path's out-of-window drop is the net.
 func (e *Extractor) decodeResult(msg *anthropicsdk.Message, events []ext.InputEvent) (ext.ExtractResult, error) {
 	if msg.StopReason == anthropicsdk.StopReasonMaxTokens {
-		return ext.ExtractResult{}, fmt.Errorf("%w: response truncated at max_tokens (%d)", ext.ErrExtractorUnavailable, e.maxTokens)
+		// ErrResponseTruncated, not ErrExtractorUnavailable: the provider answered fine, this window is
+		// simply too dense for the ceiling. Retrying it unchanged reproduces the truncation exactly, so the
+		// caller has to shrink the window (or the operator has to raise the ceiling) — see the sentinel's
+		// contract in core/ext/errors.go.
+		return ext.ExtractResult{}, fmt.Errorf("%w: max_tokens=%d", ext.ErrResponseTruncated, e.maxTokens)
 	}
 	raw, ok := toolInput(msg, toolName)
 	if !ok {

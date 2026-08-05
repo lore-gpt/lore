@@ -33,6 +33,14 @@ type Config struct {
 	// Extraction worker settings (used by `lore worker`; ignored by serve/migrate).
 	ExtractionProvider string // LORE_EXTRACTION_PROVIDER: "" (offline fixture) | "fixture" | "anthropic"
 	ExtractionModel    string // LORE_EXTRACTION_MODEL: optional model override for the provider
+	// ExtractionMaxTokens and ExtractionMaxWindow are the two halves of one setting: how many events a
+	// pass distils, and how much room its answer has. They are exposed because the right pair depends on
+	// how much text the traffic carries per event, which only the operator can know. A pass whose answer
+	// overruns the ceiling halves its window and retries, so a mismatched pair costs extra model calls
+	// rather than correctness — until the floor, where the run stops distilling and says so.
+	// Both 0 (unset/invalid) keep the built-in defaults.
+	ExtractionMaxTokens int64 // LORE_EXTRACTION_MAX_TOKENS: extraction output ceiling
+	ExtractionMaxWindow int   // LORE_EXTRACTION_MAX_WINDOW: events distilled by one pass
 	// AnthropicAPIKey is the provider's own key (BYOK), read from the ecosystem's
 	// native ANTHROPIC_API_KEY rather than a LORE_-prefixed name so an operator who
 	// already exports it needs no extra configuration.
@@ -79,9 +87,11 @@ func Load() (Config, error) {
 
 		RetrievalPartialTimeout: getenvDuration("LORE_RETRIEVAL_PARTIAL_TIMEOUT"),
 
-		ExtractionProvider: strings.TrimSpace(os.Getenv("LORE_EXTRACTION_PROVIDER")),
-		ExtractionModel:    strings.TrimSpace(os.Getenv("LORE_EXTRACTION_MODEL")),
-		AnthropicAPIKey:    strings.TrimSpace(os.Getenv("ANTHROPIC_API_KEY")),
+		ExtractionProvider:  strings.TrimSpace(os.Getenv("LORE_EXTRACTION_PROVIDER")),
+		ExtractionModel:     strings.TrimSpace(os.Getenv("LORE_EXTRACTION_MODEL")),
+		ExtractionMaxTokens: int64(getenvInt("LORE_EXTRACTION_MAX_TOKENS")),
+		ExtractionMaxWindow: getenvInt("LORE_EXTRACTION_MAX_WINDOW"),
+		AnthropicAPIKey:     strings.TrimSpace(os.Getenv("ANTHROPIC_API_KEY")),
 
 		EmbeddingProvider:       strings.TrimSpace(os.Getenv("LORE_EMBEDDING_PROVIDER")),
 		EmbeddingBaseURL:        strings.TrimSpace(os.Getenv("LORE_EMBEDDING_BASE_URL")),

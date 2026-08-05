@@ -89,6 +89,12 @@ type Debounce struct {
 	// until the job is discarded — leaving the run's checkpoint frozen and its distillation stopped
 	// for good. A cap converts that into more passes, which the tail drain already handles by
 	// snoozing while events remain, at no cost in attempts.
+	//
+	// A cap alone is a guess, though, and a guess about someone else's content: it bounds the number of
+	// events, while the ceiling bounds the size of what they distil into, and how much output an event
+	// produces is a property of the traffic. So the cap sets the normal pass size and the adaptive shrink
+	// (see distil) covers the case where it is still too many for the ceiling — which is what makes the
+	// pair safe on content nobody measured in advance.
 	MaxWindow int
 	// BatchPoll is how often an economy-mode pass re-checks its submitted batch for completion,
 	// snoozing between attempts until the provider finishes.
@@ -98,9 +104,10 @@ type Debounce struct {
 // DefaultDebounce is the production window: process after 2s idle or 20 accumulated events, distil at
 // most 200 events per pass, and poll a submitted economy batch every minute.
 //
-// 200 is deliberately well above MaxEvents (a steady stream never reaches it, so ordinary runs see no
-// extra passes) and well below where extraction output runs out of room — a measured stall took a
-// window of 511 real conversational events to reach the ceiling.
+// 200 is deliberately well above MaxEvents, so a steady stream never reaches it and ordinary runs see no
+// extra passes. It is NOT a size the ceiling is guaranteed to fit: dense conversational traffic has been
+// measured overrunning the output ceiling at exactly this window, which is why a pass shrinks and retries
+// rather than trusting the number (see distil).
 func DefaultDebounce() Debounce {
 	return Debounce{IdleWindow: 2 * time.Second, MaxEvents: 20, MaxWindow: 200, BatchPoll: 60 * time.Second}
 }
@@ -227,37 +234,49 @@ func (w *ExtractRunWorker) Work(ctx context.Context, job *river.Job[ExtractRunAr
 		return nil // readiness saw pending events but none remain past the checkpoint: nothing to do.
 	}
 
-	window, stateEvents, bySeq, gated := gate(ctx, job.Args.RunID, events)
+	g := gate(ctx, job.Args.RunID, events)
 	coveredSeq := events[len(events)-1].Seq // events are seq-ordered; the last is the highest read.
-	w.metrics.ExtractEventsIngested.Add(float64(len(events)))
-	w.metrics.ExtractEventsGated.Add(float64(gated))
-	w.metrics.ExtractEventsExtracted.Add(float64(len(window)))
-	span.SetAttributes(
-		attribute.Int("events.ingested", len(events)),
-		attribute.Int("events.gated", gated),
-		attribute.Int("events.extracted", len(window)),
-		attribute.String("mode", state.ExtractionMode),
-	)
+
+	// The pass announces itself BEFORE any model call, so a pass that then hangs or fails still left a line
+	// saying it started and how big it was. (Reporting only on success would make the slow and broken cases
+	// the silent ones — exactly the cases an operator is looking for.) A pass that goes on to shrink says so
+	// in its own warning, and "pass complete" reports what was actually committed.
 	slog.InfoContext(ctx, "extract_run window",
 		slog.String("run_id", job.Args.RunID),
 		slog.Int("events", len(events)),
-		slog.Int("gated", gated),
-		slog.Int("state", len(stateEvents)),
-		slog.Int("extracted", len(window)),
+		slog.Int("gated", g.gated),
+		slog.Int("state", len(g.stateEvents)),
+		slog.Int("extracted", len(g.window)),
 		slog.String("mode", state.ExtractionMode))
+
+	// The counters, unlike the line above, describe what the pass COMMITTED. They are recorded once it has
+	// settled, because a pass that shrank leaves the rest past the checkpoint for the next pass to read
+	// again — counting the read would count those events twice and claim they reached the model.
+	record := func(covered int, g gatedWindow) {
+		w.metrics.ExtractEventsIngested.Add(float64(covered))
+		w.metrics.ExtractEventsGated.Add(float64(g.gated))
+		w.metrics.ExtractEventsExtracted.Add(float64(len(g.window)))
+		span.SetAttributes(
+			attribute.Int("events.ingested", covered),
+			attribute.Int("events.gated", g.gated),
+			attribute.Int("events.extracted", len(g.window)),
+			attribute.String("mode", state.ExtractionMode),
+		)
+	}
 
 	// Economy mode: submit the window to the provider's batch interface and defer collection to a
 	// later attempt. An all-gated window (nothing to submit) falls through to advance the checkpoint
 	// synchronously below.
-	if state.ExtractionMode == modeEconomy && len(window) > 0 {
+	if state.ExtractionMode == modeEconomy && len(g.window) > 0 {
 		if batch, ok := w.extractor.(ext.BatchExtractor); ok {
+			record(len(events), g) // the batch takes the whole read window; nothing shrinks on this path
 			// Submit, then record the handle so a later attempt can collect it. These two steps are not
 			// atomic — one is a provider call, the other a DB write — so a crash between them orphans the
 			// submitted batch: its handle is never recorded, so it is never collected, and the retry
 			// resubmits the same append-only window. That is at-least-once submission with exactly-once
 			// persistence (the checkpoint advances only in the collect-time transaction), so the worst
 			// case is a wasted batch, never a duplicated memory or a skipped event.
-			handle, err := batch.SubmitBatch(ctx, ext.ExtractInput{ProjectID: job.Args.ProjectID, RunID: job.Args.RunID, Events: window})
+			handle, err := batch.SubmitBatch(ctx, ext.ExtractInput{ProjectID: job.Args.ProjectID, RunID: job.Args.RunID, Events: g.window})
 			if err != nil {
 				return fmt.Errorf("extract_run: submit batch: %w", err)
 			}
@@ -274,15 +293,87 @@ func (w *ExtractRunWorker) Work(ctx context.Context, job *river.Job[ExtractRunAr
 			slog.String("run_id", job.Args.RunID))
 	}
 
-	// Realtime (or the economy fallback): distil the window synchronously in this attempt.
-	var res ext.ExtractResult
-	if len(window) > 0 {
-		res, err = w.extractor.Extract(ctx, ext.ExtractInput{ProjectID: job.Args.ProjectID, RunID: job.Args.RunID, Events: window})
-		if err != nil {
-			return fmt.Errorf("extract_run: extract: %w", err)
-		}
+	// Realtime (or the economy fallback): distil the window synchronously in this attempt, halving it if
+	// the model's answer overruns its output ceiling.
+	pass, err := w.distil(ctx, job, events, g, coveredSeq)
+	if err != nil {
+		return err
 	}
-	return w.persistAndDrain(ctx, job, projectID, runID, state.CoveredSeq, coveredSeq, bySeq, stateEvents, res)
+	record(len(pass.gated.bySeq), pass.gated)
+	return w.persistAndDrain(ctx, job, projectID, runID, state.CoveredSeq, pass.coveredSeq, pass.gated.bySeq, pass.gated.stateEvents, pass.res)
+}
+
+// minExtractWindow is the floor the adaptive shrink stops halving at. Below a handful of events a
+// truncated response is no longer about window size — the content itself does not fit the ceiling — so
+// halving further would just spend attempts on the same verdict.
+const minExtractWindow = 8
+
+// extractPass is what one distillation produced and how far it entitles the checkpoint to advance. Both
+// the gated window and coveredSeq belong to the pass rather than to the read, because a shrunk pass covers
+// a prefix of what was read: it must not advance past that prefix, and it did not send the rest to the
+// model.
+type extractPass struct {
+	res        ext.ExtractResult
+	gated      gatedWindow
+	coveredSeq int64
+}
+
+// distil runs the synchronous extraction, halving the window and retrying whenever the model's response
+// hits its output ceiling.
+//
+// It exists because a truncated response is the one extractor failure that retrying cannot fix. Events are
+// append-only and the window is rebuilt from the same checkpoint, so a retry sends byte-identical input and
+// gets the same truncation; left to River, a run burns every attempt that way and is discarded with its
+// checkpoint frozen — distillation stops for that run permanently. Shrinking is the only thing that changes
+// the input, and it converges: each step halves, so the floor is reached in log2(window) steps.
+//
+// Progress is kept rather than restarted. A shrunk pass covers a prefix of the read events, persists that
+// prefix, and advances the checkpoint over it; the remainder stays past the checkpoint and the tail drain
+// snoozes to pick it up (a snooze costs no attempt). So a window that was too dense yields a shorter pass,
+// not a lost one, and a run always makes forward progress as long as some prefix fits.
+//
+// At the floor it gives up loudly and permanently — river.JobCancel, not a returned error, because more
+// attempts would send the same events to the same ceiling. That is the one case an operator must act on,
+// so the message says exactly which knob moves it.
+func (w *ExtractRunWorker) distil(ctx context.Context, job *river.Job[ExtractRunArgs], events []db.Event, g gatedWindow, coveredSeq int64) (extractPass, error) {
+	n := len(events)
+	for {
+		// An all-gated (or all-state) slice has nothing for the model, but its events were still read and
+		// accounted for, so the checkpoint advances over them and the pass is complete.
+		if len(g.window) == 0 {
+			return extractPass{gated: g, coveredSeq: coveredSeq}, nil
+		}
+
+		res, err := w.extractor.Extract(ctx, ext.ExtractInput{ProjectID: job.Args.ProjectID, RunID: job.Args.RunID, Events: g.window})
+		switch {
+		case err == nil:
+			return extractPass{res: res, gated: g, coveredSeq: coveredSeq}, nil
+		case !errors.Is(err, ext.ErrResponseTruncated):
+			// An unreachable provider or a malformed response: the window is not the problem, so retry it
+			// unchanged and let River's backoff do the waiting.
+			return extractPass{}, fmt.Errorf("extract_run: extract: %w", err)
+		case n <= minExtractWindow:
+			w.metrics.ExtractWindowShrink.WithLabelValues("exhausted").Inc()
+			slog.ErrorContext(ctx, "extract_run: window still truncates at the floor; this run has stopped distilling",
+				slog.String("run_id", job.Args.RunID),
+				slog.Int("events", n),
+				slog.Int64("covered_seq", coveredSeq),
+				slog.String("error", err.Error()))
+			return extractPass{}, river.JobCancel(fmt.Errorf(
+				"extract_run: %d events still exceed the extraction output ceiling; content too dense for the extraction budget — raise LORE_EXTRACTION_MAX_TOKENS (or lower LORE_EXTRACTION_MAX_WINDOW) and write to the run again to re-enqueue: %w",
+				n, err))
+		}
+
+		n = max(n/2, minExtractWindow)
+		g = gate(ctx, job.Args.RunID, events[:n])
+		coveredSeq = events[n-1].Seq
+		w.metrics.ExtractWindowShrink.WithLabelValues("retried").Inc()
+		slog.WarnContext(ctx, "extract_run: response truncated; halving the window and retrying",
+			slog.String("run_id", job.Args.RunID),
+			slog.Int("events", n),
+			slog.Int("extracted", len(g.window)),
+			slog.Int64("covered_seq", coveredSeq))
+	}
 }
 
 // collectBatch handles the economy collect phase: it polls the run's pending batch and, once the
@@ -300,6 +391,21 @@ func (w *ExtractRunWorker) collectBatch(ctx context.Context, job *river.Job[Extr
 	}
 
 	res, done, err := batch.CollectBatch(ctx, handle)
+	if errors.Is(err, ext.ErrResponseTruncated) {
+		// The realtime path answers truncation by halving the window, but there is nothing to halve here:
+		// the provider has already run this window at the old ceiling and stored the result, so collecting
+		// it again returns the same truncated answer. Retrying would spend every attempt on it, so stop
+		// after one — loudly, with the remedy — rather than discarding the job three attempts later.
+		w.metrics.ExtractWindowShrink.WithLabelValues("exhausted").Inc()
+		slog.ErrorContext(ctx, "extract_run: collected batch is truncated; this run has stopped distilling",
+			slog.String("run_id", job.Args.RunID),
+			slog.String("batch", handle),
+			slog.Int64("covered_seq", expectedCoveredSeq),
+			slog.String("error", err.Error()))
+		return river.JobCancel(fmt.Errorf(
+			"extract_run: collected batch %s exceeded the extraction output ceiling; raise LORE_EXTRACTION_MAX_TOKENS (or lower LORE_EXTRACTION_MAX_WINDOW), then clear this run's extraction_batch_id/extraction_batch_covered_seq so the window is resubmitted at the new ceiling: %w",
+			handle, err))
+	}
 	if err != nil {
 		return fmt.Errorf("extract_run: collect batch: %w", err)
 	}
@@ -466,30 +572,43 @@ func (w *ExtractRunWorker) routeStateFacts(ctx context.Context, projectID, runID
 	return claims
 }
 
+// gatedWindow is one slice of read events split for the pass: what the model sees, what is routed as
+// working-memory state, the index every candidate's provenance resolves against, and how many were
+// archived. It is a struct rather than four returns because a pass that shrinks re-gates a shorter slice,
+// and the four have to move together or the checkpoint would advance over events the pass never covered.
+type gatedWindow struct {
+	window      []ext.InputEvent
+	stateEvents []db.Event
+	bySeq       map[int64]db.Event
+	gated       int
+}
+
 // gate splits the read events three ways: kind:"state" events (routed to working memory, never the
-// model), archived machine chatter (kept raw, never the model), and the extraction window (survivors). It
-// returns the window, the state events, an index of every event read (so a candidate's provenance
-// resolves back to its source event), and the count gated out.
-func gate(ctx context.Context, runID string, events []db.Event) (window []ext.InputEvent, stateEvents []db.Event, bySeq map[int64]db.Event, gated int) {
-	window = make([]ext.InputEvent, 0, len(events))
-	bySeq = make(map[int64]db.Event, len(events))
+// model), archived machine chatter (kept raw, never the model), and the extraction window (survivors).
+// The index it returns covers every event in the slice, so a candidate's provenance resolves back to its
+// source event.
+func gate(ctx context.Context, runID string, events []db.Event) gatedWindow {
+	g := gatedWindow{
+		window: make([]ext.InputEvent, 0, len(events)),
+		bySeq:  make(map[int64]db.Event, len(events)),
+	}
 	for _, e := range events {
-		bySeq[e.Seq] = e
+		g.bySeq[e.Seq] = e
 		if isStateEvent(e.Payload) {
-			stateEvents = append(stateEvents, e) // routed to the hot lane or a durable claim, not the model.
+			g.stateEvents = append(g.stateEvents, e) // routed to the hot lane or a durable claim, not the model.
 			continue
 		}
 		if reason := gatedReason(e.Payload); reason != "" {
-			gated++
+			g.gated++
 			slog.DebugContext(ctx, "extract gate: event archived",
 				slog.String("run_id", runID),
 				slog.Int64("seq", e.Seq),
 				slog.String("gated_reason", reason))
 			continue
 		}
-		window = append(window, ext.InputEvent{Seq: e.Seq, AgentID: e.AgentID, Payload: json.RawMessage(e.Payload)})
+		g.window = append(g.window, ext.InputEvent{Seq: e.Seq, AgentID: e.AgentID, Payload: json.RawMessage(e.Payload)})
 	}
-	return window, stateEvents, bySeq, gated
+	return g
 }
 
 // resolveCandidates maps the extractor's candidates to writes, resolving each one's provenance from
