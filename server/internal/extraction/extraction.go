@@ -67,6 +67,42 @@ func Build(ctx context.Context, provider, apiKey, model string, maxTokens int64)
 	}
 }
 
+// FixtureIdentity is what Identity reports for the offline extractor. It is exported because refusing it is
+// a decision callers make (a measurement run against the fixture measures nothing real), and a caller should
+// not have to hardcode the spelling.
+const FixtureIdentity = ProviderFixture
+
+// UnknownIdentity is what Identity reports for a provider name Build would reject.
+const UnknownIdentity = "unknown"
+
+// Identity names the extractor a configuration selects, as "provider/model" — "anthropic/claude-haiku-4-5",
+// or bare "fixture" for the offline default, or "unknown" for a provider name Build would reject. It answers
+// "what is distilling this deployment's memories?" from configuration alone, constructing nothing: no client,
+// and in particular no API key.
+//
+// That last point is why this exists separately from Build. Extraction runs in the worker, but /healthz is
+// the server's surface and the only place an operator — or a harness recording what it measured — can ask
+// the question. Having the server call Build to answer it would put the provider key in a process that has
+// no use for it, widening a secret's blast radius for the sake of a reporting field. The server reads the
+// same two variables instead and reports what they select.
+//
+// The honest limit: this describes the configuration of the process reporting it, not an observation of the
+// worker. The scaffold gives both roles the same variables and a test pins that, so a compose install cannot
+// have them disagree; a hand-assembled deployment that configured them differently would be reading the
+// server's answer for the worker's work.
+func Identity(provider, model string) string {
+	switch strings.ToLower(strings.TrimSpace(provider)) {
+	case ProviderAnthropic:
+		return ProviderAnthropic + "/" + modelOrDefault(model)
+	case ProviderFixture, "":
+		return FixtureIdentity
+	default:
+		// Build fails the worker on this, so the deployment is already broken. Say so rather than invent a
+		// name; callers that gate on the identity treat "unknown" as a refusal.
+		return UnknownIdentity
+	}
+}
+
 // modelOrDefault reports the model that will be used, for logging.
 func modelOrDefault(model string) string {
 	if model == "" {

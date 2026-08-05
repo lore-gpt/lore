@@ -154,6 +154,44 @@ func TestHealthzReportsEmbedderID(t *testing.T) {
 	}
 }
 
+// TestHealthzReportsExtractionID checks that the extractor distilling this deployment's memories is named in
+// the body. This is the only place the question can be asked of a running stack — extraction happens in the
+// worker, which has no HTTP surface — so without it "which model wrote these memories?" has no answer at all.
+//
+// The empty case is asserted too, and asserted to stay empty rather than acquire a friendly placeholder: a
+// caller that gates on this (a measurement run refusing to score an unknown extractor) can only fail closed
+// if absence is reported as absence.
+func TestHealthzReportsExtractionID(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		id   string
+	}{
+		{"a configured provider is named", "anthropic/claude-haiku-4-5"},
+		{"the offline default is named", "fixture"},
+		{"an unset identity stays empty rather than becoming a placeholder", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ok := fakePinger{}
+			handler := New(Config{DB: ok, Queue: ok, Version: "v-test", ExtractionID: tc.id}).Handler()
+			rr := httptest.NewRecorder()
+			handler.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+
+			var got Health
+			if err := json.NewDecoder(rr.Body).Decode(&got); err != nil {
+				t.Fatalf("decode body: %v", err)
+			}
+			if got.Extraction != tc.id {
+				t.Errorf("extraction = %q, want %q", got.Extraction, tc.id)
+			}
+			// It is reported for visibility; a fixture or unnamed extractor must not fail the instance.
+			if rr.Code != http.StatusOK || got.Status != "ok" {
+				t.Errorf("healthz = %d/%q with extraction %q; the field must never affect status",
+					rr.Code, got.Status, tc.id)
+			}
+		})
+	}
+}
+
 // TestRoutePatternLabelIsBounded checks that the HTTP middleware labels requests by the chi route TEMPLATE
 // (bounded) — never the raw path, which would make an id an unbounded label.
 func TestRoutePatternLabelIsBounded(t *testing.T) {

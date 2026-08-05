@@ -39,6 +39,12 @@ type Config struct {
 	// ceiling: a pass whose answer overruns the ceiling halves this window and retries, so the two only
 	// have to be roughly right rather than exactly matched to the traffic.
 	ExtractionMaxWindow int
+	// ExtractionID is the provider/model identity distilling this deployment's memories, reported by
+	// /healthz (used by the server; ignored by the worker). It is passed in rather than read off the
+	// composed extractor because the server does not compose one — extraction runs in the worker — and
+	// building a provider here purely to name it would put the provider's API key in a process that never
+	// calls it. Empty is reported as an empty string, which a caller gating on the identity refuses.
+	ExtractionID string
 }
 
 // extensions holds the swappable extension-point implementations. Phase 0 wires
@@ -237,6 +243,7 @@ func NewServer(ctx context.Context, cfg Config, opts ...Option) (*Server, error)
 		Workmem:              e.workmem,
 		WorkmemMaxValueBytes: cfg.WorkmemMaxValueBytes,
 		EmbedderID:           e.embedder.ModelID(),
+		ExtractionID:         cfg.ExtractionID,
 		Metrics:              e.metrics,
 		Tracer:               e.tracer,
 	})

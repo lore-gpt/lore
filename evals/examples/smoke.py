@@ -57,6 +57,7 @@ from longmemeval import (
     download_split,
     load_questions,
     lore_embedder_blocker,
+    lore_extraction_blocker,
     run_variance_pipeline,
     run_variance_pipeline_batched,
     run_variance_reuse_ingest,
@@ -340,14 +341,16 @@ def _build_system(name: str, args: argparse.Namespace, poll_timeout: float) -> S
         lore = LoreAdapter(new_lore_client, poll_timeout=poll_timeout)
         # Record the retrieval-context budget so the fairness record makes each system's context size explicit
         # (a cross-system delta could otherwise reflect a budget asymmetry rather than memory quality).
-        extraction_model = os.environ.get("LORE_EXTRACTION_MODEL", "unknown")
-        embedding_model = _lore_embedding_model(base_url)
-        # Fail closed: a real run must know its embedder (read from /healthz) and must not measure the offline
-        # fixture — a score against a vector space no deployment uses would misreport the embedding model.
-        embed_blocker = lore_embedder_blocker(embedding_model)
-        if embed_blocker:
-            print(f"error: {embed_blocker}", file=sys.stderr)
-            raise SystemExit(2)
+        health = _lore_health(base_url)
+        extraction_model = _lore_extraction_identity(health)
+        embedding_model = _lore_embedding_model(base_url, health)
+        # Fail closed on both halves of the pipeline the score depends on: the model that WROTE the memories
+        # and the vector space they are recalled through. Neither may be unknown, and neither may be the
+        # offline fixture — canned output and a vector space no deployment uses do not measure the product.
+        for blocker in (lore_extraction_blocker(extraction_model), lore_embedder_blocker(embedding_model)):
+            if blocker:
+                print(f"error: {blocker}", file=sys.stderr)
+                raise SystemExit(2)
         config = f"retrieval token_budget={lore.token_budget}"
         return SystemUnderTest(
             lore, extraction_model, args.extraction_mode, config, embedding_model,
@@ -358,6 +361,16 @@ def _build_system(name: str, args: argparse.Namespace, poll_timeout: float) -> S
         from importlib.metadata import version
 
         from mem0 import Memory
+
+        from longmemeval import mem0_retrieval_blocker
+
+        # Fail closed before spending anything: Mem0's keyword and entity legs are optional dependencies
+        # that go quiet rather than loud, and a competitor scored on one leg of three would understate it
+        # in our favour. The probe runs once, here, rather than per question.
+        retrieval_blocker = mem0_retrieval_blocker(_mem0_degraded_legs())
+        if retrieval_blocker:
+            print(f"error: {retrieval_blocker}", file=sys.stderr)
+            raise SystemExit(2)
 
         # A bare Memory() cannot write on mem0ai 2.0.12: its default model is gpt-5-mini, and its default
         # params include temperature=0.1 / top_p=0.1 / max_tokens, which that model rejects with a 400.
@@ -397,25 +410,32 @@ def _build_system(name: str, args: argparse.Namespace, poll_timeout: float) -> S
     raise SystemExit(f"unknown system: {name!r} (expected lore or mem0)")
 
 
-def _lore_embedding_model(base_url: str) -> str:
-    """Read the composed embedder identity (model@dim) from the server's /healthz — the authoritative source,
-    since it reflects the server actually under test. If that read fails, fall back to composing from THIS
-    process's LORE_EMBEDDING_* env only when the server is local (the env plausibly matches the server we
-    launched); for a remote server, return 'unknown' rather than a confident guess that could misreport the
-    vector space and poison the provenance record. A provenance read must never abort the run."""
+def _lore_health(base_url: str) -> dict[str, object]:
+    """Read the server's /healthz once. Both provenance fields below come out of it, and one request is
+    enough for both — two reads could also disagree if the server were restarted between them. An empty
+    mapping means the read failed; a provenance read must never abort the run, so nothing raises here."""
     import json
-    import urllib.parse
     import urllib.request
 
     try:
         with urllib.request.urlopen(f"{base_url.rstrip('/')}/healthz", timeout=5) as resp:
             body = json.loads(resp.read().decode("utf-8"))
-        embedder = body.get("embedder")
-        if isinstance(embedder, str) and embedder:
-            return embedder
     except Exception:
-        # Best-effort provenance; a health read must never abort the eval.
-        pass
+        return {}
+    return body if isinstance(body, dict) else {}
+
+
+def _lore_embedding_model(base_url: str, health: dict[str, object]) -> str:
+    """The composed embedder identity (model@dim), from /healthz — the authoritative source, since it
+    reflects the server actually under test. If that read failed, fall back to composing from THIS process's
+    LORE_EMBEDDING_* env only when the server is local (the env plausibly matches the server we launched);
+    for a remote server, return 'unknown' rather than a confident guess that could misreport the vector space
+    and poison the provenance record."""
+    import urllib.parse
+
+    embedder = health.get("embedder")
+    if isinstance(embedder, str) and embedder:
+        return embedder
     # Health read failed (or an older server without the field). Trust this process's env only for a local
     # server — a remote server's embedder is unrelated to our env, so composing would write a provably-false
     # identity. Prefer an honest 'unknown' over a confident wrong answer.
@@ -428,6 +448,46 @@ def _lore_embedding_model(base_url: str) -> str:
     model = os.environ.get("LORE_EMBEDDING_MODEL", "unknown")
     dim = os.environ.get("LORE_EMBEDDING_DIM", "0")
     return f"{model}@{dim}"
+
+
+def _lore_extraction_identity(health: dict[str, object]) -> str:
+    """The extractor distilling this deployment's memories (provider/model, or 'fixture'), from /healthz.
+
+    Unlike the embedder there is deliberately NO environment fallback. Extraction is configured on the
+    worker, a different process in a different container, so this process's LORE_EXTRACTION_* says nothing
+    about it — and reading it here is exactly how the report came to carry a confident 'unknown' while a real
+    model was doing the work. The server is the only witness; if it does not say, we do not know."""
+    extraction = health.get("extraction")
+    return extraction if isinstance(extraction, str) and extraction else "unknown"
+
+
+def _mem0_degraded_legs() -> list[str]:
+    """Which of Mem0's retrieval legs are not actually running, as human-readable reasons.
+
+    Mem0's search is a hybrid — semantic, BM25 keyword, and an entity boost — and the two non-semantic legs
+    are optional dependencies that degrade to a no-op with a log line and no error. A bare install therefore
+    scores a competitor running on one leg of three, against Lore's full hybrid. That is an asymmetry in our
+    favour, which is the one direction a parity comparison must never lean, and it is invisible in the
+    result: the number simply comes out lower.
+
+    Probes are end-to-end rather than a package-presence check, because presence is not the same as working:
+    spaCy installs cleanly and then fails to import (its CLI module reaches for click, which current Typer no
+    longer supplies), and Mem0 reports that as "spaCy is not installed"."""
+    degraded: list[str] = []
+    try:
+        from fastembed import SparseTextEmbedding  # noqa: F401
+    except Exception as exc:
+        degraded.append(f"BM25 keyword search is off ({type(exc).__name__}: {exc})")
+    try:
+        from mem0.utils.entity_extraction import extract_entities
+    except Exception as exc:
+        # Mem0's internals moved. We cannot tell whether the leg is live, so we say so and block rather
+        # than assume: this probe needs updating for the installed version.
+        degraded.append(f"the entity leg could not be probed — this harness's probe needs updating ({exc})")
+    else:
+        if not extract_entities("The auth service was rolled forward to 2.4.0 on Friday."):
+            degraded.append("entity extraction returns nothing (spaCy missing, unimportable, or no model)")
+    return degraded
 
 
 if __name__ == "__main__":

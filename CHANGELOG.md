@@ -31,6 +31,15 @@ action on upgrade says so in its entry.
   carry, which is why they are yours to set — but a mismatch costs extra model calls rather than lost
   memories, because a pass that overruns the ceiling shrinks and retries. The ceiling is a cap, not a
   spend: you are billed for tokens actually generated.
+- **`/healthz` names the extractor.** A new `extraction` field reports the provider and model distilling a
+  deployment's memories — `anthropic/claude-haiku-4-5`, or bare `fixture` for the offline default. Until now
+  "which model wrote these memories?" had no answer you could ask a running stack: extraction happens in the
+  worker, which has no HTTP surface. The field describes the configuration the server was given rather than
+  an observation of the worker, so `LORE_EXTRACTION_PROVIDER` and `LORE_EXTRACTION_MODEL` now belong on
+  **both** roles; the scaffold does that for you, and a mismatch is the one way the field can mislead.
+  `ANTHROPIC_API_KEY` deliberately stays worker-only — naming the extractor does not require the key.
+  <br>**On upgrade:** a hand-written deployment that sets the extraction variables only on the worker will
+  report `fixture` on `/healthz` while distilling for real. Copy the two variables to the server.
 - `lore_extract_window_shrink_total` counts passes that overran the output ceiling, by outcome —
   `retried` (halved and distilled) or `exhausted` (still too dense at the floor, so that run has stopped
   distilling). A steady `retried` rate is the signal to re-size the pair above; any `exhausted` needs

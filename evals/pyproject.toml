@@ -22,7 +22,20 @@ dependencies = [
 # through fakes and never installs them. `pip install longmemeval-harness[competitors]` for a real run.
 [project.optional-dependencies]
 competitors = [
-  "mem0ai>=2.0,<3",
+  # Not ours and not Mem0's: spaCy's CLI module imports click directly, having relied on Typer to bring it
+  # in, and current Typer no longer depends on click at all. `import spacy` therefore raises ModuleNotFound
+  # on a clean install — which Mem0 catches and reports as "spaCy is not installed", so the entity leg goes
+  # quiet for a reason that has nothing to do with Mem0. Naming click here restores the import. Remove it
+  # when spaCy declares its own dependency.
+  "click>=8.1",
+  # Mem0's own extras, not decoration. Its retrieval is a three-leg hybrid — semantic, BM25 keyword, and an
+  # entity boost — and each of the two non-semantic legs degrades to a no-op when its optional dependency is
+  # missing: without `extras` (fastembed) the keyword search returns nothing, and without `nlp` (spaCy) the
+  # entity extractor returns an empty list and query lemmatisation falls through. Both degrade with a log
+  # line and no error, so a bare install measures a competitor running on one leg of three. Comparing that
+  # against Lore's full hybrid would flatter Lore by construction, which is the one thing a parity
+  # comparison must not do. The spaCy model itself is fetched by Mem0 on first use.
+  "mem0ai[extras,nlp]>=2.0,<3",
 ]
 
 [project.urls]

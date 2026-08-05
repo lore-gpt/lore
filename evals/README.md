@@ -94,6 +94,25 @@ Two things to know before running it:
 - **Raise `--lore-poll-timeout`.** The default 60s is not enough at LongMemEval scale — a 514-event question
   was measured taking 94-177s to distil, and one timeout fails the whole run.
 
+### What a real run refuses to do
+
+Four checks run before anything is spent. Each exists because the failure it catches is silent — the run
+completes, the report reads normally, and only the number is wrong:
+
+| Refusal | Why it is not obvious |
+| --- | --- |
+| The dataset revision is the unpinned placeholder | The score would not be reproducible, and a reference measured under one revision does not apply to another |
+| No per-question provisioning command for Lore | Questions share a project and recall each other's histories |
+| The embedder is unknown or the offline fixture | A vector space no deployment uses is not the one the score claims to be about |
+| The extractor is unknown or the offline fixture | The fixture returns canned output, so the run measures the fixture rather than extraction. This identity is read from the server's `/healthz` and never from the harness process's own environment — extraction runs in the worker, so this process's `LORE_EXTRACTION_*` says nothing about it |
+
+Mem0 has a refusal of its own. Its search is a hybrid — semantic, BM25 keyword, and an entity boost — and the
+two non-semantic legs are optional dependencies that degrade to a no-op with a log line and no error. A bare
+install therefore scores it on one leg of three against Lore's full hybrid: an asymmetry in our favour that is
+invisible in the result, and one the sanity floor cannot catch, because it yields a *plausibly* low number
+rather than an absurd one. `uv sync --extra competitors` installs what those legs need; the run probes them
+and refuses to start if either is dead.
+
 ## License
 
 Apache-2.0. The LongMemEval dataset is the property of its authors; see the upstream repository for its terms.

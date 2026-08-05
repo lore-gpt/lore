@@ -43,7 +43,13 @@ from .batch import (
     run_batch,
 )
 from .cache import CacheKey, JudgeCache, JudgeDecision, hash_answer
-from .guards import dataset_pin_blocker, lore_embedder_blocker, lore_isolation_blocker
+from .guards import (
+    dataset_pin_blocker,
+    lore_embedder_blocker,
+    lore_extraction_blocker,
+    lore_isolation_blocker,
+    mem0_retrieval_blocker,
+)
 from .judge import (
     DEFAULT_JUDGE_MODEL,
     PROMPT_HASH,
@@ -142,7 +148,9 @@ __all__ = [
     "hash_answer",
     "load_questions",
     "lore_embedder_blocker",
+    "lore_extraction_blocker",
     "lore_isolation_blocker",
+    "mem0_retrieval_blocker",
     "openai_judge",
     "parse_command",
     "parse_question",
