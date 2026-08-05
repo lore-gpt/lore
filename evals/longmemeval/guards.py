@@ -5,11 +5,17 @@ fixture paths are exempt by construction (the callers only consult these on the 
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 from .loader import PLACEHOLDER_REVISION
 
 # A composed embedder whose model@dim identity starts with this prefix is the offline, deterministic fixture:
 # fine for keyless dev, wrong for a measurement run whose whole point is a real vector space.
 FIXTURE_EMBEDDER_PREFIX = "fixture-embed-"
+
+# The server reports its extractor as provider/model; this is the whole identity the offline one goes by (it
+# has no model half), so an exact match is the right test rather than a prefix.
+FIXTURE_EXTRACTOR = "fixture"
 
 
 def dataset_pin_blocker(split: str, dataset_revision: str) -> str | None:
@@ -54,3 +60,53 @@ def lore_embedder_blocker(embedder: str) -> str | None:
             "model; a measurement run against the fixture is not representative"
         )
     return None
+
+
+def lore_extraction_blocker(extraction: str) -> str | None:
+    """A real Lore run must know, and not fake, the model that wrote the memories it is about to score.
+
+    This closes the gap its sibling above left open. The embedder was read from the server and guarded; the
+    extractor was read from the HARNESS process's environment, which knows nothing about the worker container
+    where extraction actually runs — so a real measurement reported its extractor as 'unknown' while a real
+    model did the work, and nothing objected. A score whose write path is unidentified cannot be reproduced
+    or compared, which is most of what a measurement is for.
+
+    Blocks on an identity the server did not give ('' or 'unknown', including a provider name the server
+    would refuse), and on the offline fixture — which distils canned output, so a run against it measures the
+    fixture rather than extraction."""
+    if not extraction or extraction == "unknown":
+        return (
+            "the extraction model could not be read from the server's /healthz — a real run must record "
+            "which model wrote the memories it scores; check that the server carries LORE_EXTRACTION_* and "
+            "is recent enough to report the field"
+        )
+    if extraction == FIXTURE_EXTRACTOR:
+        return (
+            f"the deployment is using the fixture extractor ({extraction}) — set LORE_EXTRACTION_PROVIDER "
+            "with its API key on BOTH the server and the worker; the fixture returns canned output, so a "
+            "run against it measures the fixture and not extraction"
+        )
+    return None
+
+
+def mem0_retrieval_blocker(degraded_legs: Sequence[str]) -> str | None:
+    """A competitor must be measured with the retrieval it ships, not with whatever a bare install left
+    running.
+
+    Mem0's search is a hybrid: semantic, BM25 keyword, and an entity boost. The two non-semantic legs are
+    optional dependencies that degrade to a no-op with a log line and no error, so a bare install scores it
+    on one leg of three while Lore runs its full hybrid. Nothing about the resulting number looks wrong — it
+    is simply lower — and a reference locked from it would make the gate trivially passable. The sanity floor
+    cannot see this: it catches a low number, but a plausibly-low one from a quietly halved competitor is
+    exactly the shape it lets through.
+
+    Blocks when any leg is reported degraded. `degraded_legs` carries one human-readable reason per dead
+    leg; an empty sequence means the competitor is whole."""
+    if not degraded_legs:
+        return None
+    reasons = "; ".join(degraded_legs)
+    return (
+        f"Mem0 is not running its full retrieval stack ({reasons}) — measuring it this way understates the "
+        "competitor and flatters Lore, so the comparison would not be a parity comparison. Install the "
+        "competitor extras (`uv sync --extra competitors`) and re-run"
+    )

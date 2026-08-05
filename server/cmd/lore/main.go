@@ -172,6 +172,10 @@ func serveCmd() *cobra.Command {
 				DatabaseURL:             cfg.DatabaseURL,
 				WorkmemMaxValueBytes:    cfg.WorkmemMaxValueBytes,
 				RetrievalPartialTimeout: cfg.RetrievalPartialTimeout,
+				// Named, not composed. Extraction runs in the worker, but /healthz is where a running
+				// deployment is asked what it is, so serve reports the identity the same two variables
+				// select. Identity builds nothing, so no provider key is needed in this process.
+				ExtractionID: extraction.Identity(cfg.ExtractionProvider, cfg.ExtractionModel),
 			}, core.WithWorkmem(wm), core.WithEmbedder(embedder),
 				core.WithMeterRegistry(tel.Metrics),
 				core.WithTracerProvider(tel.Tracer))

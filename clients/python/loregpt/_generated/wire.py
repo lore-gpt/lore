@@ -14,6 +14,7 @@ class Health(TypedDict):
     queue: str
     workmem: Literal['ok', 'degraded', 'disabled']
     embedder: str
+    extraction: str
 
 
 class CreateEventRequest(TypedDict):

@@ -17,6 +17,12 @@ type Health struct {
 	// "text-embedding-3-small@1536"). It is reported so an operator can confirm the server and worker share
 	// one vector space; it never affects Status.
 	Embedder string `json:"embedder"`
+	// Extraction is the provider/model identity distilling this deployment's memories (e.g. "fixture" or
+	// "anthropic/claude-haiku-4-5"). Unlike Embedder it is not something this process composed — extraction
+	// runs in the worker — but from the same configuration, which the scaffold gives to both roles. It is
+	// here because /healthz is the only place the question can be asked of a running deployment, and
+	// "which model wrote these memories?" has no answer at all otherwise. It never affects Status.
+	Extraction string `json:"extraction"`
 }
 
 // handleHealthz reports process version and dependency health. It returns 200
@@ -31,7 +37,8 @@ type Health struct {
 // /readyz (dependencies ok) when we add that deployment target.
 func (a *API) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	h := Health{Status: "ok", Version: a.version, DB: "ok", Queue: "ok", Workmem: a.workmem.Mode().String(), Embedder: a.embedderID}
+	h := Health{Status: "ok", Version: a.version, DB: "ok", Queue: "ok", Workmem: a.workmem.Mode().String(),
+		Embedder: a.embedderID, Extraction: a.extractionID}
 
 	if err := a.db.Ping(ctx); err != nil {
 		h.DB = "error"

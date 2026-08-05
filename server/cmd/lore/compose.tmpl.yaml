@@ -82,6 +82,13 @@ services:
       LORE_EMBEDDING_DIM: "${LORE_EMBEDDING_DIM:-}"
       LORE_EMBEDDING_SEND_DIMENSIONS: "${LORE_EMBEDDING_SEND_DIMENSIONS:-}"
       LORE_EMBEDDING_API_KEY: "${LORE_EMBEDDING_API_KEY:-}"
+      # Extraction runs in the worker, not here — these two are passed so /healthz can report
+      # which model is distilling this deployment's memories, which is otherwise unanswerable
+      # of a running stack. They must be the SAME values the worker gets below, or the answer
+      # describes a different deployment than the one doing the work. Deliberately NOT
+      # ANTHROPIC_API_KEY: serve builds no extractor, so it has no use for the key.
+      LORE_EXTRACTION_PROVIDER: "${LORE_EXTRACTION_PROVIDER:-}"
+      LORE_EXTRACTION_MODEL: "${LORE_EXTRACTION_MODEL:-}"
       # How long the dense retrieval leg may take to embed the query before the read
       # proceeds without it. Unset uses 2s, which fits a hosted embedding endpoint; a
       # dropped leg is reported in the pack's `degraded` field.

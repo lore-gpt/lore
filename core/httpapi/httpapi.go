@@ -73,6 +73,10 @@ type Config struct {
 	// EmbedderID is the composed embedder's model@dim identity, reported by /healthz so an operator can
 	// confirm the server and worker share one vector space. Empty is reported as an empty string.
 	EmbedderID string
+	// ExtractionID is the provider/model identity distilling this deployment's memories, reported by
+	// /healthz. Unlike EmbedderID it is not composed here — extraction runs in the worker — so the caller
+	// supplies what the deployment is configured for. Empty is reported as an empty string.
+	ExtractionID string
 	// Metrics is the Prometheus instrument set the HTTP middleware observes into. A nil value coerces to a
 	// no-op registry so the middleware runs unconditionally.
 	Metrics *metrics.Registry
@@ -93,6 +97,7 @@ type API struct {
 	workmem              workmem.Store
 	workmemMaxValueBytes int
 	embedderID           string
+	extractionID         string
 	metrics              *metrics.Registry
 	tracer               trace.TracerProvider
 }
@@ -123,6 +128,7 @@ func New(cfg Config) *API {
 		workmem:              wm,
 		workmemMaxValueBytes: cfg.WorkmemMaxValueBytes,
 		embedderID:           cfg.EmbedderID,
+		extractionID:         cfg.ExtractionID,
 		metrics:              m,
 		tracer:               tp,
 	}

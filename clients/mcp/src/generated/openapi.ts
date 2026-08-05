@@ -226,6 +226,11 @@ export interface components {
              * @example fixture-embed-v1@64
              */
             embedder: string;
+            /**
+             * @description The extractor distilling this deployment's memories, as provider/model — or bare "fixture" for the offline default. Reported here because extraction runs in the worker, which has no HTTP surface, so this is the only place a running deployment can be asked which model wrote its memories. It describes the configuration this server was given rather than an observation of the worker; the scaffold gives both roles the same variables. It never affects status, and an empty value means the deployment did not say.
+             * @example anthropic/claude-haiku-4-5
+             */
+            extraction: string;
         };
         CreateEventRequest: {
             /** Format: uuid */
