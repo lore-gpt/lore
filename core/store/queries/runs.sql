@@ -6,3 +6,10 @@
 INSERT INTO runs (project_id)
 VALUES (sqlc.arg(project_id))
 RETURNING id, started_at;
+
+-- name: GetRunProject :one
+-- lore:tenant-exempt: operator maintenance lookup, by run id, over the CLI's own database connection.
+-- There is no request and no authenticated key here to scope to — the run id IS the operator's input, and
+-- ids are unique across projects, so this resolves which tenant a run belongs to rather than assuming one.
+-- Nothing on a request path may use it: a handler already knows its project and must filter by it.
+SELECT project_id FROM runs WHERE id = sqlc.arg(run_id);

@@ -32,3 +32,18 @@ func (q *Queries) CreateRun(ctx context.Context, projectID pgtype.UUID) (CreateR
 	err := row.Scan(&i.ID, &i.StartedAt)
 	return i, err
 }
+
+const getRunProject = `-- name: GetRunProject :one
+SELECT project_id FROM runs WHERE id = $1
+`
+
+// lore:tenant-exempt: operator maintenance lookup, by run id, over the CLI's own database connection.
+// There is no request and no authenticated key here to scope to — the run id IS the operator's input, and
+// ids are unique across projects, so this resolves which tenant a run belongs to rather than assuming one.
+// Nothing on a request path may use it: a handler already knows its project and must filter by it.
+func (q *Queries) GetRunProject(ctx context.Context, runID pgtype.UUID) (pgtype.UUID, error) {
+	row := q.db.QueryRow(ctx, getRunProject, runID)
+	var project_id pgtype.UUID
+	err := row.Scan(&project_id)
+	return project_id, err
+}

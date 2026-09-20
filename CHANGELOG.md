@@ -16,6 +16,14 @@ action on upgrade says so in its entry.
 
 ### Added
 
+- **`lore runs stalled` and `lore runs requeue <run>`** — find and restart distillation that has stopped.
+  Extraction is enqueued by an event insert, so a pass that exhausts its attempts leaves the run parked:
+  the checkpoint stops advancing, and a conversation that has already ended never produces the event that
+  would queue another pass. `stalled` lists the runs in that state — events past the checkpoint and no pass
+  left to work them — with how many events and how long. `requeue` queues one more, starting from the
+  checkpoint so only the missed events are distilled; asking for a run that already has a pass queued or
+  running reports that and does nothing, rather than stacking a second one. Fix the cause before requeueing:
+  a window that overran the output ceiling will overrun it again, and the worker's log names the setting.
 - `lore keys list --project <id>` lists a project's API keys — id, name, non-secret prefix, creation
   time and revocation status. Never the keys themselves, which are unrecoverable by design. Until now
   the id printed once at creation was the only handle on a key, so losing it made `lore keys revoke`

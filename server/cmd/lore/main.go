@@ -45,7 +45,7 @@ func rootCmd() *cobra.Command {
 		SilenceUsage: true,
 	}
 	root.AddCommand(serveCmd(), workerCmd(), migrateCmd(), versionCmd(), healthCmd(), keysCmd(), modelsCmd(),
-		provisionCmd(), packCmd(), doctorCmd(), initCmd())
+		runsCmd(), provisionCmd(), packCmd(), doctorCmd(), initCmd())
 	return root
 }
 
