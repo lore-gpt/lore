@@ -44,6 +44,7 @@ from longmemeval import (
     Baseline,
     JudgeCache,
     Leaderboard,
+    MemorySystem,
     Provenance,
     Question,
     ResumeStore,
@@ -63,6 +64,12 @@ from longmemeval import (
     run_variance_reuse_ingest,
     run_variance_reuse_ingest_batched,
 )
+
+# What `--lore-poll-timeout 0` resolves to. Distillation of real LongMemEval content was measured at 94s, 177s
+# and 260s for the SAME question across three runs, and the economy path lands on a batch cadence rather than
+# a per-pass one; the former 60s default was a fixture-scale number that a real pass beats routinely, and
+# beating it aborted the run.
+DEFAULT_POLL_TIMEOUT_SECONDS = 600.0
 
 _FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "clean_room.json"
 
@@ -116,7 +123,21 @@ def main() -> None:
     parser.add_argument("--judge-model", default=DEFAULT_JUDGE_MODEL)
     parser.add_argument("--answerer-model", default=os.environ.get("LORE_ANSWERER_MODEL", DEFAULT_ANSWERER_MODEL))
     parser.add_argument("--extraction-mode", default="realtime", choices=["realtime", "economy"])
-    parser.add_argument("--lore-poll-timeout", type=float, default=0.0, help="0 = auto (60s realtime, 600s economy)")
+    parser.add_argument(
+        "--lore-poll-timeout",
+        type=float,
+        default=0.0,
+        help=f"how long one question may wait for distillation before it counts as stalled "
+        f"(0 = auto, {DEFAULT_POLL_TIMEOUT_SECONDS:.0f}s)",
+    )
+    parser.add_argument(
+        "--lore-run-dir",
+        default="",
+        help="ingest Lore's questions through a resumable checkpoint in this directory. Each finished "
+        "question's context is written as it lands, so an interrupted run resumes at the question it was "
+        "on, and a question whose distillation stalls is set aside and retried at the end instead of "
+        "ending the run. Off by default: without it the runner ingests in-process and writes nothing.",
+    )
     parser.add_argument(
         "--lore-provision-cmd",
         default=os.environ.get("LORE_PROVISION_CMD", ""),
@@ -188,7 +209,7 @@ def main() -> None:
         )
         judge_batch = OpenAIBatchProvider(openai, args.judge_model, name="judge", max_tokens=10)
 
-    poll_timeout = args.lore_poll_timeout or (600.0 if args.extraction_mode == "economy" else 60.0)
+    poll_timeout = args.lore_poll_timeout or DEFAULT_POLL_TIMEOUT_SECONDS
     reports = []
     for name in systems:
         sut = _build_system(name, args, poll_timeout)
@@ -211,7 +232,7 @@ def main() -> None:
         else:
             answer_trials = run_variance_reuse_ingest(
                 system, answer_questions, answerer, judge, cache, args.trials, stats=stats,
-                contexts=_mem0_contexts(name, args, answer_questions, sut),
+                contexts=_prebuilt_contexts(name, args, answer_questions, sut),
             )
         variance_answer = VarianceResult(VARIANCE_ANSWER, tuple(tuple(t) for t in answer_trials))
 
@@ -515,6 +536,64 @@ def _mem0_run_root(args: argparse.Namespace) -> Path:
         return Path(args.mem0_run_dir)
     stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%S")
     return Path(args.resume_dir) / f"mem0-run-{stamp}"
+
+
+def _prebuilt_contexts(
+    name: str, args: argparse.Namespace, questions: list[Question], sut: SystemUnderTest
+) -> dict[str, str] | None:
+    """Ingest ahead of the runner when the run asked for it, or None to let the runner ingest in-process.
+
+    Both paths hand `run_variance_reuse_ingest` the same thing it would have built itself: that protocol holds
+    ingestion fixed by definition, so where a context was produced does not change what it is.
+    """
+    if name == "mem0":
+        return _mem0_contexts(name, args, questions, sut)
+    if name == "lore":
+        return _lore_contexts(args, questions, sut)
+    return None
+
+
+def _lore_contexts(
+    args: argparse.Namespace, questions: list[Question], sut: SystemUnderTest
+) -> dict[str, str] | None:
+    """Ingest Lore's questions serially through a checkpoint, or return None when the run did not ask for one.
+
+    Serial is deliberate and unchanged: Lore's ingestion is server-side work through one deployment, so
+    putting questions in flight together would change queue depth and extraction scheduling. What the
+    checkpoint buys is the other half of what the Mem0 pool buys — an interrupted or stalled run costs the
+    questions it had not finished, not the ones it had.
+    """
+    if not args.lore_run_dir:
+        return None
+
+    from longmemeval import ContextCheckpoint, Heartbeat, build_lore_contexts
+
+    root = Path(args.lore_run_dir)
+    root.mkdir(parents=True, exist_ok=True)
+    checkpoint = ContextCheckpoint(root / "contexts.jsonl")
+    heartbeat = Heartbeat(root / "heartbeat.json", total=len(questions))
+    print(f"lore: ingesting {len(questions)} questions serially, checkpointed", file=sys.stderr)
+    print(f"      progress: {heartbeat.path}", file=sys.stderr)
+    print(
+        f"      resume:   {checkpoint.path} "
+        f"(re-running with --lore-run-dir {root} skips what is already finished)",
+        file=sys.stderr,
+        flush=True,
+    )
+    system = sut.system
+    assert isinstance(system, MemorySystem)
+    # What a resume is allowed to be: the same questions through the same configuration. The server's
+    # extraction prompt is not in here because the harness is never handed it — that one stays discipline.
+    fingerprint = {
+        "extraction_model": sut.extraction_model,
+        "extraction_mode": sut.extraction_mode,
+        "embedding_model": sut.embedding_model,
+        "split": args.split,
+        "questions": str(len(questions)),
+    }
+    return build_lore_contexts(
+        questions, system, checkpoint=checkpoint, heartbeat=heartbeat, fingerprint=fingerprint
+    )
 
 
 def _mem0_contexts(

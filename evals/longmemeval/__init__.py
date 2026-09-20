@@ -67,6 +67,7 @@ from .loader import (
     load_questions,
     parse_question,
 )
+from .lore_ingest import build_contexts as build_lore_contexts
 from .mem0_pool import Mem0PoolConfig
 from .mem0_pool import build_contexts as build_mem0_contexts
 from .progress import ContextCheckpoint, Heartbeat
@@ -146,6 +147,7 @@ __all__ = [
     "anthropic_answerer",
     "build_answer_prompt",
     "build_grading_prompt",
+    "build_lore_contexts",
     "build_mem0_contexts",
     "dataset_pin_blocker",
     "decide_baseline",
