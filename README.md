@@ -281,6 +281,16 @@ then stops that run's distillation and says so, naming the variable to raise. Wa
 `lore_extract_window_shrink_total`: a steady `retried` rate means your traffic wants a smaller window or a
 larger ceiling, and any `exhausted` means a run has stopped.
 
+**When a run has stopped.** A pass that gives up leaves its run where it was: the checkpoint stops moving, and
+because it is an event insert that enqueues a pass, a conversation that has already finished never gets
+another one. `lore runs stalled` lists exactly those runs — undistilled events, and nothing left to work them
+— with how far behind each is and for how long. Fix the cause first (the worker logged what the pass gave up
+on), then `lore runs requeue <run>` queues one more pass, which starts from the checkpoint and so covers only
+what was missed. Asking twice is safe: a run that already has a pass queued is left alone.
+
+Both read the database directly, so in a compose install they run inside the stack the same way `doctor`
+does: `docker compose run --rm --no-deps lore-server runs stalled`.
+
 **Embeddings.** Retrieval embeds each memory and each query. By default that runs on an offline, deterministic
 **fixture** embedder — reproducible, but not a semantic vector space. For real semantic recall, set
 `LORE_EMBEDDING_PROVIDER=openai` with a model and dimension pointing at any OpenAI-compatible endpoint. Set the
