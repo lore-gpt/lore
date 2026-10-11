@@ -83,7 +83,7 @@ print the API key on stdout — which `lore provision` does when run **without**
 ```bash
 uv run python -m examples.smoke --split s --n 50 --systems lore \
   --lore-provision-cmd 'docker compose -f /path/to/docker-compose.yml run --rm --no-deps lore-server provision --project {name}' \
-  --lore-poll-timeout 300
+  --lore-run-dir /tmp/eval/lore-n50
 ```
 
 Two things to know before running it:
@@ -91,8 +91,31 @@ Two things to know before running it:
 - **Use a throwaway database.** Every ingestion leaves a project behind and nothing reclaims them; that is
   deliberate (a cleanup path would be machinery for a measurement that runs on a disposable stack). Do not
   point a real deployment at this.
-- **Raise `--lore-poll-timeout`.** The default 60s is not enough at LongMemEval scale — a 514-event question
-  was measured taking 94-177s to distil, and one timeout fails the whole run.
+- **Pass `--lore-run-dir`.** It is what makes a long run survivable; see below. Without it an interruption
+  costs the whole run, and so does a single question whose distillation never catches up.
+
+`--lore-poll-timeout` bounds how long one question may wait for distillation before it counts as stalled.
+The default is 600s, which is a measured number rather than a round one: the same 514-event question was
+observed taking 94s, 177s and 260s across three runs, so a budget near the low end of that spread turns
+ordinary variance into a failure. The former 60s default was a fixture-scale number.
+
+### Lore's run is resumable too
+
+Lore ingests **serially** and that does not change: its work happens server-side in one deployment, so
+putting questions in flight together would change queue depth and extraction scheduling — measurement
+conditions, not just speed. What `--lore-run-dir` adds is everything around the work:
+
+- **Each finished question's context is written as it lands.** Re-running against the same directory costs
+  the questions that had not finished, not the ones that had.
+- **A stalled question does not end the run.** It is set aside, the rest carry on, and it gets one more
+  attempt — a fresh ingestion — at the end. If it still stalls the run fails and names it. A partial set
+  is never scored: an accuracy over fewer questions than it reports still looks comparable while its
+  denominator quietly changed.
+- **A resume under a different configuration is refused.** The extraction model and mode, the embedder, the
+  split and the question count are written beside the checkpoint and compared on every resume. What no check
+  here can see is the server's extraction **prompt** — the harness is never handed it — so a build whose
+  prompt changed needs a new directory. That part is discipline.
+- **`heartbeat.json` says whether it is still alive**, which question is in flight, and what has stalled.
 
 ### What a real run refuses to do
 
