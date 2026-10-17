@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -257,6 +258,7 @@ type truncatingExtractor struct {
 	fitsAt int
 	sizes  []int
 	err    error // when set, returned instead of a truncation — a failure the window cannot fix
+	cause  error // what a window larger than fitsAt returns; nil means ErrResponseTruncated
 }
 
 func (e *truncatingExtractor) Extract(_ context.Context, in ext.ExtractInput) (ext.ExtractResult, error) {
@@ -265,7 +267,11 @@ func (e *truncatingExtractor) Extract(_ context.Context, in ext.ExtractInput) (e
 		return ext.ExtractResult{}, e.err
 	}
 	if len(in.Events) > e.fitsAt {
-		return ext.ExtractResult{}, fmt.Errorf("%w: max_tokens=1", ext.ErrResponseTruncated)
+		cause := e.cause
+		if cause == nil {
+			cause = ext.ErrResponseTruncated
+		}
+		return ext.ExtractResult{}, fmt.Errorf("%w: test window of %d events", cause, len(in.Events))
 	}
 	return ext.ExtractResult{}, nil
 }
@@ -419,6 +425,89 @@ func TestExtractRunWorker_TruncationAtTheFloorCancelsInsteadOfRetrying(t *testin
 	}
 	if per.calls != 0 {
 		t.Errorf("persisted %d times, want 0 — nothing was distilled, so the checkpoint must not move", per.calls)
+	}
+}
+
+// TestExtractRunWorker_ShrinksTheWindowWhenTheModelDeclines pins a refusal to the same schedule as a
+// truncation. Reported as a transient failure, a declined window would be retried byte-identical until the
+// job was discarded with the checkpoint frozen — the stall the shrink schedule exists to prevent — so the
+// schedule must shrink, the part the model accepts must commit, and the refusal must be counted apart from
+// truncation: the two need different remedies, and an operator reading one counter cannot tell them apart.
+func TestExtractRunWorker_ShrinksTheWindowWhenTheModelDeclines(t *testing.T) {
+	const window, acceptedAt = 200, 60
+	src := &fakeSource{
+		events:        seqEvents(window),
+		readiness:     ready(window),
+		tailReadiness: ready(window - 50),
+	}
+	spy := &truncatingExtractor{fitsAt: acceptedAt, cause: ext.ErrResponseRefused}
+	per := &spyPersister{}
+	d := jobs.DefaultDebounce()
+	d.MaxWindow = window
+	reg := prometheus.NewRegistry()
+	w := jobs.NewExtractRunWorker(src, spy, per, d, jobs.WithExtractMetrics(metrics.New(reg)))
+
+	job := &river.Job[jobs.ExtractRunArgs]{Args: jobs.ExtractRunArgs{ProjectID: uuid.NewString(), RunID: uuid.NewString()}}
+	err := w.Work(context.Background(), job)
+
+	var snooze *river.JobSnoozeError
+	if !errors.As(err, &snooze) {
+		t.Fatalf("Work = %v, want a snooze so the undistilled remainder returns without burning an attempt", err)
+	}
+	want := []int{200, 100, 50}
+	if len(spy.sizes) != len(want) || spy.sizes[0] != want[0] || spy.sizes[1] != want[1] || spy.sizes[2] != want[2] {
+		t.Fatalf("extractor saw %v, want %v — a declined window must shrink between attempts", spy.sizes, want)
+	}
+	if per.calls != 1 || per.last.CoveredSeq != 50 {
+		t.Errorf("persisted %d time(s) through seq %d, want once through 50 — the accepted prefix commits",
+			per.calls, per.last.CoveredSeq)
+	}
+	if got := counterValue(t, reg, "lore_extract_refusals_total", map[string]string{"outcome": "retried"}); got != 2 {
+		t.Errorf("refusals{retried} = %v, want 2 — one per halving", got)
+	}
+	if got := counterValue(t, reg, "lore_extract_window_shrink_total", map[string]string{"outcome": "retried"}); got != 0 {
+		t.Errorf("window_shrink{retried} = %v, want 0 — a refusal is not an output-ceiling problem", got)
+	}
+}
+
+// TestExtractRunWorker_RefusalAtTheFloorCancelsWithItsOwnRemedy covers the end of a refusal's schedule. Like
+// truncation it must stop for good — more attempts send the same events to the same model — but the message
+// has to name the remedy that works: raising the output ceiling does nothing for a window the model
+// declines, switching the model does.
+func TestExtractRunWorker_RefusalAtTheFloorCancelsWithItsOwnRemedy(t *testing.T) {
+	const window = 200
+	src := &fakeSource{events: seqEvents(window), readiness: ready(window)}
+	spy := &truncatingExtractor{fitsAt: 0, cause: ext.ErrResponseRefused}
+	per := &spyPersister{}
+	d := jobs.DefaultDebounce()
+	d.MaxWindow = window
+	reg := prometheus.NewRegistry()
+	w := jobs.NewExtractRunWorker(src, spy, per, d, jobs.WithExtractMetrics(metrics.New(reg)))
+
+	job := &river.Job[jobs.ExtractRunArgs]{Args: jobs.ExtractRunArgs{ProjectID: uuid.NewString(), RunID: uuid.NewString()}}
+	err := w.Work(context.Background(), job)
+
+	var cancel *river.JobCancelError
+	if !errors.As(err, &cancel) {
+		t.Fatalf("Work = %T %v, want a JobCancelError — retrying would send the same events to the same model", err, err)
+	}
+	if !errors.Is(err, ext.ErrResponseRefused) {
+		t.Errorf("Work = %v, want the refusal preserved as the cause", err)
+	}
+	if !strings.Contains(err.Error(), "LORE_EXTRACTION_MODEL") || strings.Contains(err.Error(), "LORE_EXTRACTION_MAX_TOKENS") {
+		t.Errorf("Work = %v, want the remedy for a refusal (another model), not the one for truncation", err)
+	}
+	if want := []int{200, 100, 50, 25, 12, 8}; len(spy.sizes) != len(want) || spy.sizes[len(want)-1] != 8 {
+		t.Fatalf("extractor saw %v, want %v — halving must reach the floor and stop there", spy.sizes, want)
+	}
+	if per.calls != 0 {
+		t.Errorf("persisted %d times, want 0 — nothing was distilled", per.calls)
+	}
+	if got := counterValue(t, reg, "lore_extract_refusals_total", map[string]string{"outcome": "exhausted"}); got != 1 {
+		t.Errorf("refusals{exhausted} = %v, want 1", got)
+	}
+	if got := counterValue(t, reg, "lore_extract_window_shrink_total", map[string]string{"outcome": "exhausted"}); got != 0 {
+		t.Errorf("window_shrink{exhausted} = %v, want 0", got)
 	}
 }
 
@@ -976,6 +1065,41 @@ func TestExtractRunWorker_EconomyFallsBackWithoutBatchCapability(t *testing.T) {
 	}
 	if per.batchCalls != 0 {
 		t.Error("a non-batch extractor cannot submit a batch")
+	}
+}
+
+// TestExtractRunWorker_CollectedRefusalOrTruncationCancels covers the batch path, where neither failure can
+// shrink anything: the provider has already answered this window, and collecting again returns the same
+// answer. Each must stop after one collect — cancelled, cause preserved, checkpoint untouched — and say
+// which remedy applies.
+func TestExtractRunWorker_CollectedRefusalOrTruncationCancels(t *testing.T) {
+	for _, tc := range []struct {
+		cause  error
+		remedy string
+	}{
+		{ext.ErrResponseTruncated, "LORE_EXTRACTION_MAX_TOKENS"},
+		{ext.ErrResponseRefused, "LORE_EXTRACTION_MODEL"},
+	} {
+		t.Run(tc.cause.Error(), func(t *testing.T) {
+			src := &fakeSource{state: pendingBatchState("batch_7", 5)}
+			batch := &spyBatchExtractor{collectErr: fmt.Errorf("%w: collected", tc.cause)}
+			per := &spyPersister{}
+			w := jobs.NewExtractRunWorker(src, batch, per, jobs.DefaultDebounce())
+			job := &river.Job[jobs.ExtractRunArgs]{Args: jobs.ExtractRunArgs{ProjectID: uuid.NewString(), RunID: uuid.NewString()}}
+
+			err := w.Work(context.Background(), job)
+			var cancel *river.JobCancelError
+			if !errors.As(err, &cancel) || !errors.Is(err, tc.cause) {
+				t.Fatalf("Work = %v, want a JobCancelError carrying %v", err, tc.cause)
+			}
+			if !strings.Contains(err.Error(), tc.remedy) {
+				t.Errorf("Work = %v, want it to name %s", err, tc.remedy)
+			}
+			if batch.collectCalls != 1 || per.calls != 0 {
+				t.Errorf("collected %d time(s), persisted %d time(s); want one collect and no persist",
+					batch.collectCalls, per.calls)
+			}
+		})
 	}
 }
 

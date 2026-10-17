@@ -25,6 +25,8 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"regexp"
+	"strconv"
 	"time"
 
 	anthropicsdk "github.com/anthropics/anthropic-sdk-go"
@@ -148,7 +150,7 @@ func (e *Extractor) Extract(ctx context.Context, in ext.ExtractInput) (ext.Extra
 	msg, err := e.client.Messages.New(ctx, anthropicsdk.MessageNewParams{
 		Model:       e.model,
 		MaxTokens:   e.maxTokens,
-		Temperature: param.NewOpt(0.0), // extraction should be as deterministic as the model allows
+		Temperature: samplingTemperature(e.model),
 		System:      parts.system,
 		Tools:       parts.tools,
 		ToolChoice:  parts.toolChoice,
@@ -188,6 +190,36 @@ func buildParts(in ext.ExtractInput) (requestParts, error) {
 	}, nil
 }
 
+// samplingTemperature is the temperature every extraction request carries: 0 — extraction should be as
+// deterministic as the model allows — for a model that takes the parameter, and none at all for one that
+// has deprecated it. The latter is not a preference: such a model answers any temperature with a 400, so
+// sending 0 would fail every pass. Without it the model samples at its default, so two passes over the same
+// window can distil differently; a measurement on such a model needs more than one ingestion to say
+// anything.
+func samplingTemperature(model anthropicsdk.Model) param.Opt[float64] {
+	if takesTemperature(string(model)) {
+		return param.NewOpt(0.0)
+	}
+	return param.Opt[float64]{}
+}
+
+// modelGeneration reads the generation from a Claude model id: claude-haiku-4-5 is 4, claude-haiku-5-5 is
+// 5, claude-3-5-haiku-latest is 3.
+var modelGeneration = regexp.MustCompile(`^claude-(?:[a-z]+-)?(\d+)`)
+
+// takesTemperature reports whether a model accepts the temperature parameter. Claude models from generation
+// 5 on have deprecated it; earlier ones take it. An id that does not follow the pattern — a proxy alias, a
+// model this code predates in some other shape — is assumed to take it, which is how every model was
+// treated before this check existed.
+func takesTemperature(model string) bool {
+	m := modelGeneration.FindStringSubmatch(model)
+	if m == nil {
+		return true
+	}
+	generation, err := strconv.Atoi(m[1])
+	return err != nil || generation < 5
+}
+
 // decodeResult turns a completed message into an ExtractResult. It rejects a max_tokens-truncated
 // response as a transient miss — the tool input is valid JSON but only partial, and persisting it as
 // complete would advance the checkpoint past silently-dropped candidates — and requires the forced
@@ -200,6 +232,12 @@ func (e *Extractor) decodeResult(msg *anthropicsdk.Message, events []ext.InputEv
 		// caller has to shrink the window (or the operator has to raise the ceiling) — see the sentinel's
 		// contract in core/ext/errors.go.
 		return ext.ExtractResult{}, fmt.Errorf("%w: max_tokens=%d", ext.ErrResponseTruncated, e.maxTokens)
+	}
+	if msg.StopReason == anthropicsdk.StopReasonRefusal {
+		// ErrResponseRefused, for the same reason: the provider answered, by declining this window, and the
+		// same window would be declined again. Reported as unavailable it would be retried unchanged until
+		// the job was discarded; the caller shrinks it instead.
+		return ext.ExtractResult{}, fmt.Errorf("%w: model %s", ext.ErrResponseRefused, e.model)
 	}
 	raw, ok := toolInput(msg, toolName)
 	if !ok {
@@ -232,7 +270,7 @@ func (e *Extractor) SubmitBatch(ctx context.Context, in ext.ExtractInput) (strin
 			Params: anthropicsdk.MessageBatchNewParamsRequestParams{
 				Model:       e.model,
 				MaxTokens:   e.maxTokens,
-				Temperature: param.NewOpt(0.0),
+				Temperature: samplingTemperature(e.model),
 				System:      parts.system,
 				Tools:       parts.tools,
 				ToolChoice:  parts.toolChoice,

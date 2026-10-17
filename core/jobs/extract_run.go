@@ -350,9 +350,11 @@ type extractPass struct {
 }
 
 // distil runs the synchronous extraction, halving the window and retrying whenever the model's response
-// hits its output ceiling.
+// hits its output ceiling or declines the window.
 //
-// It exists because a truncated response is the one extractor failure that retrying cannot fix. Events are
+// It exists because a truncated response is the one extractor failure that retrying cannot fix — and a
+// declined one is the other: whatever the model refuses is in these events, and the same events are
+// refused again. The schedule below treats both alike; only the remedy named at the floor differs. Events are
 // append-only and the window is rebuilt from the same checkpoint, so a retry sends byte-identical input and
 // gets the same truncation; left to River, a run burns every attempt that way and is discarded with its
 // checkpoint frozen — distillation stops for that run permanently. Shrinking is the only thing that changes
@@ -376,13 +378,24 @@ func (w *ExtractRunWorker) distil(ctx context.Context, job *river.Job[ExtractRun
 		}
 
 		res, err := w.extractor.Extract(ctx, ext.ExtractInput{ProjectID: job.Args.ProjectID, RunID: job.Args.RunID, Events: g.window})
+		refused := errors.Is(err, ext.ErrResponseRefused)
 		switch {
 		case err == nil:
 			return extractPass{res: res, gated: g, coveredSeq: coveredSeq}, nil
-		case !errors.Is(err, ext.ErrResponseTruncated):
+		case !refused && !errors.Is(err, ext.ErrResponseTruncated):
 			// An unreachable provider or a malformed response: the window is not the problem, so retry it
 			// unchanged and let River's backoff do the waiting.
 			return extractPass{}, fmt.Errorf("extract_run: extract: %w", err)
+		case refused && n <= minExtractWindow:
+			w.metrics.ExtractRefusals.WithLabelValues("exhausted").Inc()
+			slog.ErrorContext(ctx, "extract_run: model still declines the window at the floor; this run has stopped distilling",
+				slog.String("run_id", job.Args.RunID),
+				slog.Int("events", n),
+				slog.Int64("covered_seq", coveredSeq),
+				slog.String("error", err.Error()))
+			return extractPass{}, river.JobCancel(fmt.Errorf(
+				"extract_run: the extraction model declines %d events of this run even at the smallest window — no setting of this model changes that; switch LORE_EXTRACTION_MODEL and run `lore runs requeue` to distil them: %w",
+				n, err))
 		case n <= minExtractWindow:
 			w.metrics.ExtractWindowShrink.WithLabelValues("exhausted").Inc()
 			slog.ErrorContext(ctx, "extract_run: window still truncates at the floor; this run has stopped distilling",
@@ -398,8 +411,14 @@ func (w *ExtractRunWorker) distil(ctx context.Context, job *river.Job[ExtractRun
 		n = max(n/2, minExtractWindow)
 		g = gate(ctx, job.Args.RunID, events[:n])
 		coveredSeq = events[n-1].Seq
-		w.metrics.ExtractWindowShrink.WithLabelValues("retried").Inc()
-		slog.WarnContext(ctx, "extract_run: response truncated; halving the window and retrying",
+		msg := "extract_run: response truncated; halving the window and retrying"
+		if refused {
+			w.metrics.ExtractRefusals.WithLabelValues("retried").Inc()
+			msg = "extract_run: model declined the window; halving it and retrying"
+		} else {
+			w.metrics.ExtractWindowShrink.WithLabelValues("retried").Inc()
+		}
+		slog.WarnContext(ctx, msg,
 			slog.String("run_id", job.Args.RunID),
 			slog.Int("events", n),
 			slog.Int("extracted", len(g.window)),
@@ -435,6 +454,20 @@ func (w *ExtractRunWorker) collectBatch(ctx context.Context, job *river.Job[Extr
 			slog.String("error", err.Error()))
 		return river.JobCancel(fmt.Errorf(
 			"extract_run: collected batch %s exceeded the extraction output ceiling; raise LORE_EXTRACTION_MAX_TOKENS (or lower LORE_EXTRACTION_MAX_WINDOW), then clear this run's extraction_batch_id/extraction_batch_covered_seq so the window is resubmitted at the new ceiling: %w",
+			handle, err))
+	}
+	if errors.Is(err, ext.ErrResponseRefused) {
+		// Declined rather than truncated, with the same constraint: the provider has already answered this
+		// window, so collecting again returns the same refusal. Stop after one, naming the remedy — a model
+		// that does not decline it.
+		w.metrics.ExtractRefusals.WithLabelValues("exhausted").Inc()
+		slog.ErrorContext(ctx, "extract_run: collected batch was declined by the model; this run has stopped distilling",
+			slog.String("run_id", job.Args.RunID),
+			slog.String("batch", handle),
+			slog.Int64("covered_seq", expectedCoveredSeq),
+			slog.String("error", err.Error()))
+		return river.JobCancel(fmt.Errorf(
+			"extract_run: the extraction model declined collected batch %s; switch LORE_EXTRACTION_MODEL, then clear this run's extraction_batch_id/extraction_batch_covered_seq so the window is resubmitted: %w",
 			handle, err))
 	}
 	if err != nil {

@@ -281,6 +281,13 @@ then stops that run's distillation and says so, naming the variable to raise. Wa
 `lore_extract_window_shrink_total`: a steady `retried` rate means your traffic wants a smaller window or a
 larger ceiling, and any `exhausted` means a run has stopped.
 
+**Newer models.** Claude models from generation 5 on deprecate the temperature parameter and reject any value
+of it, so the worker sends none to them — extraction on such a model is not deterministic, and two passes over
+the same window can distil differently — while earlier models still get 0. A model can also decline a window
+outright. That is handled like an overrun ceiling: the pass halves the window, distils the part the model
+accepts, and if even the smallest window is declined it stops that run's distillation and names the remedy —
+another `LORE_EXTRACTION_MODEL`, then `lore runs requeue`. `lore_extract_refusals_total` counts both outcomes.
+
 **When a run has stopped.** A pass that gives up leaves its run where it was: the checkpoint stops moving, and
 because it is an event insert that enqueues a pass, a conversation that has already finished never gets
 another one. `lore runs stalled` lists exactly those runs — undistilled events, and nothing left to work them
