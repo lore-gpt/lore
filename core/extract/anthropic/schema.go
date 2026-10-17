@@ -17,10 +17,15 @@ import (
 //     build is slow". The number is the memory — a recalled fact stripped of its quantity, date, version or
 //     limit cannot answer the question it was stored for.
 //   - A model asked for durable facts will happily write down durable facts it already knew. Those are its
-//     prior, not this team's memory, and they crowd out the run's own content in a budgeted pack.
+//     prior, not this run's memory, and they crowd out the run's own content in a budgeted pack. But the
+//     line sits at what nobody here asked for: an answer someone asked for, a recommendation, a list given
+//     to a participant is the run's content even when its subject is general. Dropping those with the
+//     background loses exactly what a later question about the conversation asks — what was recommended,
+//     which item came seventh — so they are kept, attributed, and a list is kept whole and in order.
 //   - When a value changes mid-window, both versions look like facts. Recording the stale one as if it
-//     still held is worse than recording nothing, so the newer value is named as the one in effect and
-//     claims are pointed at as the shape that supersedes deterministically.
+//     still held is worse than recording nothing, so the change is recorded as a change — both values, the
+//     newer named as the one in effect — which keeps the history a later "what was it before?" needs
+//     without letting the old value pass for the current one.
 //
 // The time rule sits inside the no-invention rule rather than beside it, because the two pull against each
 // other until one says where a date may come from. People write "today" and "yesterday", and a memory
@@ -37,15 +42,19 @@ const systemPrompt = `You extract durable, reusable memory from the event log of
 
 Return your result ONLY by calling the record_extraction tool. Do not write prose.
 
-Record only what is true of this run and its participants: what they decided, built, chose, planned, and said about themselves, what state things are in, what happened. General knowledge is not memory. If a statement would sit unchanged in a textbook, a reference manual, or a piece of general advice — how a technology works, what a practice is for, why an approach is sound — leave it out, however much of the window it fills and however confidently a participant stated it. The test: if it could have been written before this run started, it is not this run's memory.
+Record what is true of this run and its participants: what they decided, built, chose, planned, and said about themselves, what state things are in, what happened — and what was given in it. What one participant gave another here is this run's memory, attributed to whoever gave it: a recommendation ("the assistant recommended a pilsner to go with the seco de cordero"), an answer to a question someone asked, a choice offered, a plan, a figure, a source. A list that was given is one memory holding its items in the order given and numbered as given, so a later question about its third or seventh item can be answered: "the assistant listed seven work-from-home jobs: 1. virtual assistant, 2. online tutor, … 7. transcriptionist".
 
-Apply that test to each statement, never to a whole exchange. Someone asking for advice usually states a fact of their own while asking: "our users table has 12.4 million rows — what is the safest way to add a NOT NULL column to it?" is a general question wrapped around a specific fact. Drop the answer; keep the 12.4 million rows. Discarding the exchange because most of it is general is how the few facts worth keeping get lost.
+General knowledge nobody asked for is not memory. Background volunteered to the room — how a technology works, what a practice is for, why an approach is sound — stays out however much of the window it fills and however confidently it was stated. The test: if it could have been written before this run started, and nobody here asked for it, it is not this run's memory.
+
+Apply that test to each statement, never to a whole exchange. Someone asking for advice usually states a fact of their own while asking: "our users table has 12.4 million rows — what is the safest way to add a NOT NULL column to it?" keeps the 12.4 million rows, and the advice given in reply is kept as advice given — attributed, and stated as the recommendation rather than as a lesson in how databases work. Discarding the exchange because most of it is general is how the facts worth keeping get lost.
+
+Every exchange leaves a trace. When someone asked for something and was given it, what was asked and what was given form an episodic memory even if nothing else in the exchange is durable, so a later question about whether that conversation happened has an answer. That memory is the trace; do not add a separate summary of the same exchange.
 
 Keep the specifics. The exact detail is usually the whole value of a memory, so carry it across as stated rather than summarising it away: quantities and their units, dates, times and durations, versions, prices, limits and thresholds, and identifiers such as names, paths, and URLs. "The nightly build takes 40 minutes" is worth recording; "the nightly build is slow" is not. When an event states a specific value, that value belongs in the memory's content or the claim's value, never a general description of it.
 
 Never invent a specific the events do not state. Copy values across as they were stated. An event's occurred_at states its date, so a relative word in that event is stated too: "today" is the event's own date, "yesterday" the day before it, "last week" the week before it. Write the date the word refers to (YYYY-MM-DD, or "around YYYY-MM" when the event is only approximate, as in "a few months ago") in place of the word: a reader weeks later cannot resolve "today", and something that happened before the event that mentions it ("I started two weeks ago") must say when it happened. Where nothing fixes a date — the event carries no occurred_at, or it says "Friday" and its occurred_at cannot tell which Friday — copy the words as stated: the memory says "Friday". A calendar date you guessed is a fabrication, and a confident wrong specific does more damage than a vague true one.
 
-When a later event changes a value an earlier one established, the later value is the one in effect: record it, and do not also record the superseded one as if it still held. If one event puts a service on 2.3 and a later one moves it to 2.4, the version to record is 2.4.
+When a later event changes a value an earlier one established, record the change with both values and name the newer one as the one in effect: "the auth service was rolled forward from 2.3 to 2.4", "the user moved the old sneakers from under the bed to a shoe rack". The earlier value is history, not an error, but never record it as if it still held.
 
 Produce three kinds of output:
 

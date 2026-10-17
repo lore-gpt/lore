@@ -131,6 +131,10 @@ var fabricatedDate = regexp.MustCompile(`\d{4}-\d{2}-\d{2}`)
 //   - Against the revision before the general-knowledge rule was made per-statement, "leaves out general
 //     knowledge" fails on the last pair alone: asked a direct question, the extractor recorded the textbook
 //     answer as though being asked had made it this run's content.
+//   - The line has since moved, deliberately. Dropping everything a participant was given in reply also
+//     dropped what a later question about the conversation asks for — what was recommended, what a list
+//     held — so an answer someone asked for is now kept as advice given ("keeps the specifics" asserts the
+//     recommendation), and only the lesson around it — how the database works — stays out.
 //
 // And one thing this window does NOT catch, said plainly so a later reader does not over-trust it. What
 // motivated the per-statement rule was measured on real data: a fact stated in passing while asking for
@@ -204,6 +208,9 @@ func TestSmokeLiveExtractionRecordsThisRunsFacts(t *testing.T) {
 			// the statement drops this with the answer that follows it — measured happening on real data,
 			// where a row count, a price and a piece of hardware all vanished this way.
 			{"the row count stated inside a general question", []string{"12.4", "12,400,000", "12400000"}},
+			// The reply was asked for, so the advice it gave is this run's content: a later "what did the
+			// researcher suggest for the users table?" needs it. Either half of the recommendation counts.
+			{"the advice given in reply to the row-count question", []string{"backfill", "nullable"}},
 		} {
 			found := false
 			for _, form := range want.forms {
@@ -223,9 +230,10 @@ func TestSmokeLiveExtractionRecordsThisRunsFacts(t *testing.T) {
 		// nothing the platform, release-manager or coder agents said touches any of these.
 		for _, marker := range []string{"hnsw", "proximity graph", "nearest neighb", "connection pool",
 			"forking a backend", "backoff", "idempoten", "expand and contract", "expand-contract",
-			// From the answer to the row-count question: the advice must go even though the fact it
-			// answers must stay.
-			"access exclusive", "backfill", "catalogue"} {
+			// From the answer to the row-count question: the recommendation it gave stays (asserted
+			// above), but the lesson around it — how Postgres used to add the column and why it no longer
+			// rewrites the table — is background the question did not ask for.
+			"access exclusive", "catalogue"} {
 			if strings.Contains(got, marker) {
 				t.Errorf("the pass recorded background material (%q) — it would have been just as true "+
 					"before this run started, and in a budgeted pack it displaces the run's own facts", marker)
@@ -243,6 +251,98 @@ func TestSmokeLiveExtractionRecordsThisRunsFacts(t *testing.T) {
 				t.Errorf("claim %s/%s carries event_time %s; no event in this window states a date, so any "+
 					"timestamp here is invented", c.Entity, c.Predicate, c.EventTime.Format(time.RFC3339))
 			}
+		}
+	})
+}
+
+// givenWindow is a person asking an assistant for options and getting a numbered list wrapped in general
+// advice — the shape in which "keep what was given, drop the background" is hardest to get both halves of.
+var givenWindow = []ext.InputEvent{
+	{Seq: 1, AgentID: "user", Payload: json.RawMessage(
+		`{"message":"I've been doing bookkeeping for ten years and want to work from home now. What kinds of remote jobs could I look at?"}`)},
+	{Seq: 2, AgentID: "assistant", Payload: json.RawMessage(
+		`{"message":"Remote work has become far more common, and plenty of roles suit someone with your background. Here are some options: 1. Virtual assistant 2. Online tutor 3. Remote bookkeeper 4. Customer service representative 5. Data entry clerk 6. Content writer 7. Transcriptionist. In general, working from home rewards self-discipline: a dedicated workspace and fixed working hours help keep work and home life apart, and regular breaks prevent burnout."}`)},
+	{Seq: 3, AgentID: "user", Payload: json.RawMessage(
+		`{"message":"Thanks! I'll start by applying for remote bookkeeper roles."}`)},
+}
+
+// TestSmokeLiveExtractionKeepsWhatWasGiven pins the other half of the general-knowledge rule: what a
+// participant was given when they asked is this run's memory. A list must survive whole and in order — a
+// later question asks which item came seventh, and a list split across memories or reordered cannot say —
+// while the generic advice around it stays out, and the asker's own choice is kept.
+//
+// Unlike the relative-time smoke, this one separates the instructions: measured against the previous ones,
+// "keeps the list whole and in order" fails — the list went out with the answer it sat in — and so does the
+// row-count advice in "keeps the specifics" above. Under the current instructions both pass, and the
+// background-dropping subtests pass under either.
+//
+//	ANTHROPIC_API_KEY=sk-... go test ./core/extract/anthropic -run TestSmokeLiveExtractionKeepsWhatWasGiven -v
+func TestSmokeLiveExtractionKeepsWhatWasGiven(t *testing.T) {
+	key := os.Getenv("ANTHROPIC_API_KEY")
+	if key == "" {
+		t.Skip("ANTHROPIC_API_KEY not set; skipping live given-content smoke")
+	}
+
+	e, err := New(Config{APIKey: key})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	res, err := e.Extract(ctx, ext.ExtractInput{ProjectID: "smoke", RunID: "smoke", Events: givenWindow})
+	if err != nil {
+		t.Fatalf("live Extract: %v", err)
+	}
+
+	var memories []string
+	for _, m := range res.Memories {
+		memories = append(memories, strings.ToLower(m.Content))
+	}
+	all := strings.Join(memories, "\n")
+	t.Cleanup(func() {
+		if t.Failed() {
+			t.Logf("memories: %q", memories)
+		}
+	})
+
+	t.Run("keeps the list whole and in order", func(t *testing.T) {
+		items := []string{"virtual assistant", "online tutor", "bookkeeper", "customer service", "data entry",
+			"content writer", "transcriptionist"}
+		whole := false
+		for _, m := range memories {
+			at, ordered := 0, true
+			for _, item := range items {
+				i := strings.Index(m[at:], item)
+				if i < 0 {
+					ordered = false
+					break
+				}
+				at += i + len(item)
+			}
+			if ordered {
+				whole = true
+				break
+			}
+		}
+		if !whole {
+			t.Errorf("no single memory holds the seven listed jobs in the order given (%q)", items)
+		}
+	})
+
+	t.Run("leaves out the generic advice", func(t *testing.T) {
+		for _, marker := range []string{"self-discipline", "dedicated workspace", "fixed working hours", "burnout"} {
+			if strings.Contains(all, marker) {
+				t.Errorf("the pass recorded generic advice nobody asked for (%q)", marker)
+			}
+		}
+	})
+
+	t.Run("keeps the asker's choice", func(t *testing.T) {
+		planned := strings.Contains(all, "apply") || strings.Contains(all, "start")
+		if !strings.Contains(all, "bookkeep") || !planned {
+			t.Errorf("the user's plan to apply for remote bookkeeper roles survived nowhere")
 		}
 	})
 }
