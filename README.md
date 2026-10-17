@@ -279,7 +279,9 @@ and leaves the rest for the next pass, so a mismatch costs extra model calls rat
 only case needing you is dense enough content that even a handful of events overruns the ceiling — the worker
 then stops that run's distillation and says so, naming the variable to raise. Watch
 `lore_extract_window_shrink_total`: a steady `retried` rate means your traffic wants a smaller window or a
-larger ceiling, and any `exhausted` means a run has stopped.
+larger ceiling, and any `exhausted` means a run has stopped. Events whose payload names a `session_id` are
+distilled a whole session at a time where the window allows: a pass that would end inside a session still
+being written, or cut off by the window, stops at that session's start and leaves it for the next pass.
 
 **Newer models.** Claude models from generation 5 on deprecate the temperature parameter and reject any value
 of it, so the worker sends none to them — extraction on such a model is not deterministic, and two passes over

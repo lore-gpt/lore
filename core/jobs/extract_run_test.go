@@ -623,6 +623,77 @@ func TestExtractRunWorker_GatesThenExtracts(t *testing.T) {
 	}
 }
 
+// sessionWindow is events 1..len(sessions), each tagged with the session at its index.
+func sessionWindow(sessions ...string) []db.Event {
+	events := make([]db.Event, len(sessions))
+	for i, s := range sessions {
+		events[i] = db.Event{Seq: int64(i + 1), AgentID: "a",
+			Payload: []byte(`{"memory":"keep","session_id":"` + s + `"}`)}
+	}
+	return events
+}
+
+// TestExtractRunWorker_PassesKeepSessionsWhole follows the session cut through the worker: what reaches the
+// model, how far the checkpoint moves, and whether the rest comes back. A pass that kept the trailing
+// session would split a conversation across two passes that cannot see each other; one that cut but still
+// advanced the checkpoint past the cut would lose that session outright.
+func TestExtractRunWorker_PassesKeepSessionsWhole(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		events     []db.Event
+		debounce   jobs.Debounce
+		readiness  db.RunExtractionReadinessRow
+		wantSeen   int
+		wantSnooze bool
+	}{
+		{
+			name:       "a capped read leaves its trailing session for the next pass",
+			events:     sessionWindow("a", "a", "a", "a", "b", "b", "b", "b", "c", "c", "c", "c"),
+			debounce:   jobs.Debounce{IdleWindow: 2 * time.Second, MaxEvents: 20, MaxWindow: 10},
+			readiness:  ready(12),
+			wantSeen:   8,
+			wantSnooze: true,
+		},
+		{
+			name:      "an idle run that fits the window is distilled whole",
+			events:    sessionWindow("a", "a", "a", "a", "b", "b", "b"),
+			debounce:  jobs.Debounce{IdleWindow: 2 * time.Second, MaxEvents: 20, MaxWindow: 10},
+			readiness: ready(7),
+			wantSeen:  7,
+		},
+		{
+			name:       "a run still being written keeps its newest session for later",
+			events:     sessionWindow("a", "a", "a", "a", "b", "b"),
+			debounce:   jobs.Debounce{IdleWindow: 2 * time.Second, MaxEvents: 5, MaxWindow: 10},
+			readiness:  db.RunExtractionReadinessRow{EventCount: 6, IdleSeconds: 0.1},
+			wantSeen:   4,
+			wantSnooze: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			src := &fakeSource{events: tc.events, readiness: tc.readiness, tailReadiness: ready(int64(len(tc.events) - tc.wantSeen))}
+			spy := &spyExtractor{}
+			per := &spyPersister{}
+			w := jobs.NewExtractRunWorker(src, spy, per, tc.debounce)
+
+			job := &river.Job[jobs.ExtractRunArgs]{Args: jobs.ExtractRunArgs{ProjectID: uuid.NewString(), RunID: uuid.NewString()}}
+			err := w.Work(context.Background(), job)
+
+			var snooze *river.JobSnoozeError
+			if got := errors.As(err, &snooze); got != tc.wantSnooze {
+				t.Fatalf("Work = %v, snoozed %v, want %v", err, got, tc.wantSnooze)
+			}
+			if len(spy.got.Events) != tc.wantSeen {
+				t.Errorf("the model saw %d events, want %d", len(spy.got.Events), tc.wantSeen)
+			}
+			if per.last.CoveredSeq != int64(tc.wantSeen) {
+				t.Errorf("covered_seq = %d, want %d — the checkpoint must stop where the pass stopped",
+					per.last.CoveredSeq, tc.wantSeen)
+			}
+		})
+	}
+}
+
 // TestExtractRunWorker_DatesWhatItExtracts follows an event's time through the pass: the extractor is shown
 // it, and every memory distilled from the event is written with it — the stated time when the payload carries
 // one, the receipt time when it does not — so a memory is dated by its source, never by the model.

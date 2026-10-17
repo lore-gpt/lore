@@ -264,6 +264,13 @@ func (w *ExtractRunWorker) Work(ctx context.Context, job *river.Job[ExtractRunAr
 	if len(events) == 0 {
 		return nil // readiness saw pending events but none remain past the checkpoint: nothing to do.
 	}
+	read := len(events)
+	// The window may end inside a conversation that has not finished arriving — the read hit the cap, or
+	// the run is not idle yet. Keep that conversation for the next pass rather than splitting it.
+	stillArriving := read == w.debounce.MaxWindow || ready.IdleSeconds < w.debounce.IdleWindow.Seconds()
+	if cut := sessionCut(events, stillArriving); cut > 0 {
+		events = events[:cut]
+	}
 
 	g := gate(ctx, job.Args.RunID, events)
 	coveredSeq := events[len(events)-1].Seq // events are seq-ordered; the last is the highest read.
@@ -275,6 +282,7 @@ func (w *ExtractRunWorker) Work(ctx context.Context, job *river.Job[ExtractRunAr
 	slog.InfoContext(ctx, "extract_run window",
 		slog.String("run_id", job.Args.RunID),
 		slog.Int("events", len(events)),
+		slog.Int("read", read),
 		slog.Int("gated", g.gated),
 		slog.Int("state", len(g.stateEvents)),
 		slog.Int("extracted", len(g.window)),
@@ -675,6 +683,43 @@ func gate(ctx context.Context, runID string, events []db.Event) gatedWindow {
 		})
 	}
 	return g
+}
+
+// sessionCut returns where a pass should end so that it does not split a conversation it could hold whole:
+// the index of the first event of the window's last session, when that session may continue past the window
+// and an earlier session precedes it. 0 keeps the window as read — when the events carry no session_id
+// (payload "session_id"), when the window is a single session (too long for one pass, so the cap splits it
+// as before), or when nothing more is arriving, so the last session is complete.
+//
+// A conversation split across passes is distilled in two halves that cannot see each other: the second
+// half's "that recipe you gave me" refers to something the model reading it never saw. Keeping sessions
+// whole also makes a pass boundary a property of the events rather than of how far ingestion had got when
+// the pass started, so two ingestions of the same history are cut in the same places.
+func sessionCut(events []db.Event, stillArriving bool) int {
+	if !stillArriving || len(events) < 2 {
+		return 0
+	}
+	last := sessionOf(events[len(events)-1])
+	if last == "" {
+		return 0
+	}
+	for i := len(events) - 1; i > 0; i-- {
+		if sessionOf(events[i-1]) != last {
+			return i
+		}
+	}
+	return 0
+}
+
+// sessionOf is an event's payload "session_id", or "" when it carries none.
+func sessionOf(e db.Event) string {
+	var p struct {
+		SessionID string `json:"session_id"`
+	}
+	if json.Unmarshal(e.Payload, &p) != nil {
+		return ""
+	}
+	return p.SessionID
 }
 
 // occurredAt is when an event happened, as the extractor is shown it and as a memory distilled from the event
