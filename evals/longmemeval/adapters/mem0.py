@@ -10,6 +10,7 @@ network."""
 
 from __future__ import annotations
 
+import uuid
 from collections.abc import Sequence
 from typing import Any, Protocol
 
@@ -38,7 +39,6 @@ class Mem0Adapter(MemorySystem):
         self._client = client
         self.top_k = top_k  # retrieval breadth — recorded in the fairness record
         self.config_label = config_label
-        self._ingest_count = 0
         self._user_id: str | None = None
 
     @property
@@ -46,10 +46,14 @@ class Mem0Adapter(MemorySystem):
         return "mem0"
 
     def ingest(self, sessions: Sequence[Session]) -> None:
-        # A fresh user_id per ingest isolates this history's memory from any prior ingestion (the pipeline-
-        # variance protocol re-ingests the same question repeatedly — each pass must start clean).
-        self._ingest_count += 1
-        self._user_id = f"lme-{self._ingest_count}"
+        # A fresh user_id per ingest isolates this history's memory from every other ingestion in the store.
+        # The pipeline-variance protocol re-ingests the same question repeatedly, and a resumed run re-ingests
+        # its unfinished questions into worker stores that already hold the finished ones. A per-process
+        # counter was not enough: it restarts at 1 in every process, so a resumed worker wrote its first
+        # question into the scope of the first question its store had already finished — two histories
+        # searched as one — and a question cut short left partial memories under the scope its retry reused.
+        # A random scope cannot collide with either.
+        self._user_id = f"lme-{uuid.uuid4().hex}"
         for session in sessions:
             # One add per session, in dataset order (the same order the Lore adapter ingests in — keeping the
             # two adapters' ingestion order identical keeps the comparison a parity comparison). Mem0 extracts
