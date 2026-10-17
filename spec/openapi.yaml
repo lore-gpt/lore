@@ -500,14 +500,18 @@ components:
           type: string
           description: >-
             The extractor distilling this deployment's memories, as
-            provider/model — or bare "fixture" for the offline default. Reported
+            provider/model/prompt-<digest> — or bare "fixture" for the offline
+            default. The digest (twelve hex characters of a SHA-256) names the
+            extraction instructions without publishing them, so two builds on the
+            same model with different instructions report differently. Reported
             here because extraction runs in the worker, which has no HTTP
             surface, so this is the only place a running deployment can be asked
-            which model wrote its memories. It describes the configuration this
-            server was given rather than an observation of the worker; the
-            scaffold gives both roles the same variables. It never affects
-            status, and an empty value means the deployment did not say.
-          example: anthropic/claude-haiku-4-5
+            which model, under which instructions, wrote its memories. It
+            describes the configuration this server was given rather than an
+            observation of the worker; the scaffold gives both roles the same
+            variables. It never affects status, and an empty value means the
+            deployment did not say.
+          example: anthropic/claude-haiku-4-5/prompt-1a2b3c4d5e6f
     CreateEventRequest:
       type: object
       required:

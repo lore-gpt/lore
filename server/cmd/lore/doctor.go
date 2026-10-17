@@ -15,6 +15,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/lore-gpt/lore/server/internal/embedding"
+	"github.com/lore-gpt/lore/server/internal/extraction"
 )
 
 // doctorComposeInvocation is how to run this command against a compose stack. It is quoted verbatim in the
@@ -112,6 +113,21 @@ func doctorCmd() *cobra.Command {
 					"with LORE_EMBEDDING_MODEL and LORE_EMBEDDING_DIM for semantic recall\n", modelID)
 			default:
 				check(fmt.Sprintf("embedding provider: %s", modelID), nil)
+			}
+
+			// Extraction: the same identity /healthz reports — provider, model and prompt digest — so an
+			// operator can confirm which instructions distil this deployment's memories. Warn (not fail) on
+			// the offline fixture, as for embeddings; fail on a provider the worker would refuse to build.
+			extractionProvider := strings.TrimSpace(os.Getenv("LORE_EXTRACTION_PROVIDER"))
+			switch id := extraction.Identity(extractionProvider, strings.TrimSpace(os.Getenv("LORE_EXTRACTION_MODEL"))); id {
+			case extraction.FixtureIdentity:
+				_, _ = fmt.Fprintln(out, "! extraction: offline fixture — set LORE_EXTRACTION_PROVIDER=anthropic "+
+					"with ANTHROPIC_API_KEY for real extraction")
+			case extraction.UnknownIdentity:
+				check("extraction", fmt.Errorf("LORE_EXTRACTION_PROVIDER %q is not a provider the worker can build",
+					extractionProvider))
+			default:
+				check("extraction: "+id, nil)
 			}
 
 			if failed {

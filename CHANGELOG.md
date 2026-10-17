@@ -55,6 +55,14 @@ action on upgrade says so in its entry.
 
 ### Changed
 
+- **`/healthz` names the extraction prompt, not only the model.** The `extraction` field now reads
+  `anthropic/claude-haiku-4-5/prompt-1a2b3c4d5e6f`: provider, model, and a twelve-character digest of what the
+  extractor asks the model — its instructions, the tool it is forced to call, and the way a window of events
+  is laid out for it. Two builds on the same model with different instructions distil different memories,
+  and until now they reported the same name. The digest identifies the prompt without publishing it, and
+  moves whenever any of those three changes. `lore doctor` prints the same identity, warns when extraction is
+  the offline fixture, and fails when the provider is one the worker would refuse to start with.
+  <br>**On upgrade:** anything that parses the field as exactly `provider/model` must allow the third part.
 - **Extraction records the run, not the model's general knowledge.** A pass used to distil textbook material
   an agent happened to restate — how a technology works, what a practice is for — as readily as the team's
   own facts: on a window where most of the content was background, more than half the memories it produced

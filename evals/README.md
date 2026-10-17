@@ -39,9 +39,9 @@ socket-plug, not a harness change.
   Overall, per-type, and abstention accuracy are reported separately (abstention measures calibration, not
   recall, so it is never folded into the overall number).
 - **Reproducibility chain** — every report embeds the dataset repo + pinned revision, the judge model + prompt
-  hash, the answerer + extraction models, the extraction mode and the system's version/configuration (the
-  fairness record — a score is only defensible next to how the system was driven), `n`, and the timestamp. Two
-  runs are comparable only when the whole chain matches.
+  hash, the answerer model, the extractor (provider, model and prompt digest), the extraction mode and the
+  system's version/configuration (the fairness record — a score is only defensible next to how the system was
+  driven), `n`, and the timestamp. Two runs are comparable only when the whole chain matches.
 
 ## Dataset
 
@@ -142,10 +142,12 @@ conditions, not just speed. What `--lore-run-dir` adds is everything around the 
   attempt — a fresh ingestion — at the end. If it still stalls the run fails and names it. A partial set
   is never scored: an accuracy over fewer questions than it reports still looks comparable while its
   denominator quietly changed.
-- **A resume under a different configuration is refused.** The extraction model and mode, the embedder, the
+- **A resume under a different configuration is refused.** The extractor and its mode, the embedder, the
   split, the subset and the question count are written beside the checkpoint and compared on every resume.
-  What no check here can see is the server's extraction **prompt** — the harness is never handed it — so a
-  build whose prompt changed needs a new directory. That part is discipline.
+  The extractor is the identity the server reports on `/healthz` — provider, model and a digest of the
+  extraction prompt — so a build whose instructions changed is refused too, without the harness ever being
+  handed the prompt. A server that predates the digest names only provider and model; against one of those,
+  a changed prompt still needs a new directory.
 - **`heartbeat.json` says whether it is still alive**, which question is in flight, and what has stalled.
 
 ### What a real run refuses to do
