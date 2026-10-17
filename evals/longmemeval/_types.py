@@ -89,3 +89,7 @@ class Provenance:
     # The command template that provisioned each isolated scope, recorded verbatim so a later reader can
     # reproduce the run. It carries no secret — the key it prints is never stored anywhere.
     provision_command: str = ""
+    # The named question subset the run measured, as name@digest (see longmemeval.subsets); empty for a run that
+    # chose its questions by count. Part of the universe key: the same n over different questions is a different
+    # measurement.
+    subset: str = ""

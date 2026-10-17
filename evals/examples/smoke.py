@@ -17,8 +17,8 @@ Real runs read keys from the environment:
   ANTHROPIC_API_KEY              the shared Claude answerer
 
     uv run python -m examples.smoke --dry-run
-    uv run python -m examples.smoke --split s --n 50 --systems lore --trials 3
-    uv run python -m examples.smoke --split s --n 500 --systems lore,mem0 --trials 3 --batch --pipeline
+    uv run python -m examples.smoke --split s --subset dev --systems lore --trials 3
+    uv run python -m examples.smoke --split s --subset dev --systems lore,mem0 --trials 3 --batch --pipeline
 """
 
 from __future__ import annotations
@@ -64,6 +64,9 @@ from longmemeval import (
     run_variance_reuse_ingest,
     run_variance_reuse_ingest_batched,
 )
+from longmemeval.baseline import baseline_path
+from longmemeval.guards import run_dir_blocker, subset_seal_blocker
+from longmemeval.subsets import SUBSET_NAMES, Subset, load_subset, select
 
 # What `--lore-poll-timeout 0` resolves to. Distillation of real LongMemEval content was measured at 94s, 177s
 # and 260s for the SAME question across three runs, and the economy path lands on a batch cadence rather than
@@ -78,6 +81,29 @@ def _load(split: str, cache_dir: Path) -> list[Question]:
     if split == "fixture":
         return load_questions(_FIXTURE)
     return load_questions(download_split(split, cache_dir / "hf"))
+
+
+def _subset_for(args: argparse.Namespace) -> Subset | None:
+    """The named subset a run measures, or None for a run that chooses its questions by count.
+
+    Split s is chosen only by subset. Drawing it by count hands back the first n questions in a fixed order, and
+    past the first 50 that order runs straight into the development and verdict sets — so a count could read a
+    sealed subset without anyone asking to."""
+    if args.split == "s":
+        if not args.subset:
+            raise SystemExit(f"error: split s needs --subset (one of {', '.join(SUBSET_NAMES)})")
+        if args.n is not None:
+            raise SystemExit("error: --n does not apply to split s — its questions come from --subset")
+        subset = load_subset(args.subset)
+        if subset.split != "s" or subset.dataset_revision != DATASET_REVISION:
+            raise SystemExit(
+                f"error: subset {subset.name!r} was built for {subset.split}@{subset.dataset_revision}, "
+                f"not s@{DATASET_REVISION}"
+            )
+        return subset
+    if args.subset:
+        raise SystemExit("error: --subset applies to split s only")
+    return None
 
 
 def _estimate(systems: list[str], answer_qs: list[Question], pipeline_qs: list[Question], trials: int) -> None:
@@ -107,8 +133,26 @@ def _now() -> str:
 def main() -> None:
     parser = argparse.ArgumentParser(description="LongMemEval harness against real memory systems")
     parser.add_argument("--split", default="fixture", choices=["fixture", "s", "m", "oracle"])
-    parser.add_argument("--n", type=int, default=50, help="questions for the gated answer-variance")
-    parser.add_argument("--pipeline-n", type=int, default=50, help="fixed subset for the non-gated pipeline-variance")
+    parser.add_argument(
+        "--subset",
+        choices=SUBSET_NAMES,
+        default="",
+        help="named question subset for split s (required there): dev for development, gate-* for a verdict",
+    )
+    parser.add_argument(
+        "--unseal-gate",
+        action="store_true",
+        help="read a sealed gate-* subset; it is read once, for a verdict, and the read lands in the report",
+    )
+    parser.add_argument(
+        "--n", type=int, default=None, help="questions by count, for the fixture/m/oracle splits (default 50)"
+    )
+    parser.add_argument(
+        "--pipeline-n",
+        type=int,
+        default=50,
+        help="questions for the non-gated pipeline-variance on a count-chosen split (split s reuses its --subset)",
+    )
     parser.add_argument("--systems", default="lore", help="comma-separated: lore,mem0")
     parser.add_argument("--trials", type=int, default=3)
     parser.add_argument("--batch", action="store_true", help="use the Batch API for the answerer + judge")
@@ -181,9 +225,27 @@ def main() -> None:
             print(f"error: {pin_blocker}", file=sys.stderr)
             raise SystemExit(2)
 
+    subset = _subset_for(args)
+    if subset is not None and not args.dry_run:
+        seal_blocker = subset_seal_blocker(subset.name, args.unseal_gate)
+        if seal_blocker:
+            print(f"error: {seal_blocker}", file=sys.stderr)
+            raise SystemExit(2)
+    if not args.dry_run:
+        dir_blocker = run_dir_blocker(args.batch, args.lore_run_dir)
+        if dir_blocker:
+            print(f"error: {dir_blocker}", file=sys.stderr)
+            raise SystemExit(2)
+    args.subset_key = subset.key if subset is not None else ""
+
     all_questions = _load(args.split, Path(args.cache_dir))
-    answer_questions = deterministic_subset(all_questions, args.n)
-    pipeline_questions = deterministic_subset(all_questions, args.pipeline_n) if args.pipeline else []
+    if subset is not None:
+        answer_questions = select(all_questions, subset)
+        # The pipeline variance re-ingests the same questions; drawing it by count would reach outside the subset.
+        pipeline_questions = answer_questions if args.pipeline else []
+    else:
+        answer_questions = deterministic_subset(all_questions, args.n if args.n is not None else 50)
+        pipeline_questions = deterministic_subset(all_questions, args.pipeline_n) if args.pipeline else []
 
     if args.dry_run:
         _estimate(systems, answer_questions, pipeline_questions, args.trials)
@@ -265,10 +327,12 @@ def main() -> None:
             embedding_model=sut.embedding_model,
             isolation=sut.isolation,
             provision_command=sut.provision_command,
+            subset=args.subset_key,
         )
         report = SystemReport(name, provenance, variance_answer, cache.hit_rate, stats, variance_pipeline)
         stamp = provenance.generated_at.replace(":", "").replace("-", "")
-        out_path = Path(args.report_dir) / f"{name}.{args.split}.n{len(answer_questions)}.{stamp}.json"
+        label = subset.name if subset is not None else f"n{len(answer_questions)}"
+        out_path = Path(args.report_dir) / f"{name}.{args.split}.{label}.{stamp}.json"
         report.write(out_path)
         if args.quiet:
             # Public-CI mode: the accuracy stays in the gitignored artifact; the logs carry only the stability
@@ -282,14 +346,14 @@ def main() -> None:
         reports.append(report)
 
     # Baseline gate: lock Mem0's reference for this universe (once), then gate Lore one-sided against it.
-    _apply_baseline_gate(reports, Path(args.baseline_dir) / "mem0.json", quiet=args.quiet, now=_now())
+    _apply_baseline_gate(reports, Path(args.baseline_dir), quiet=args.quiet, now=_now())
 
     # The leaderboard shows accuracy, so it is only for a local/private run — never the public --quiet path.
     if len(reports) > 1 and not args.quiet:
         print(Leaderboard(tuple(reports)).markdown())
 
 
-def _apply_baseline_gate(reports: list[SystemReport], baseline_path: Path, *, quiet: bool, now: str) -> None:
+def _apply_baseline_gate(reports: list[SystemReport], baseline_dir: Path, *, quiet: bool, now: str) -> None:
     """Persist Mem0's locked reference (once per universe, sanity-checked) and gate Lore one-sided against it,
     printing each system's outcome. Accuracy numbers are withheld under --quiet (the public CI path): only the
     PASS/FAIL and lock status show — the reference stays in the gitignored baseline file, never the logs."""
@@ -300,16 +364,20 @@ def _apply_baseline_gate(reports: list[SystemReport], baseline_path: Path, *, qu
             return None
         return report.variance_answer.overall().mean, Universe.of(report.provenance, VARIANCE_ANSWER)
 
-    to_save, outcomes = decide_baseline(
-        mem0=measured("mem0"), lore=measured("lore"), existing=Baseline.load(baseline_path), now=now
-    )
+    mem0, lore = measured("mem0"), measured("lore")
+    # One reference file per universe: the reference that applies is the one stored under the measured universe.
+    keyed = mem0 if mem0 is not None else lore
+    if keyed is None:
+        return
+    path = baseline_path(baseline_dir, keyed[1])
+    to_save, outcomes = decide_baseline(mem0=mem0, lore=lore, existing=Baseline.load(path), now=now)
     if to_save is not None:
-        to_save.save(baseline_path)
+        to_save.save(path)
 
     for o in outcomes:
         acc = "" if quiet else f" (accuracy {o.accuracy:.3f})"
         if o.kind == "locked":
-            print(f"mem0: baseline reference locked for this universe -> {baseline_path}{acc}")
+            print(f"mem0: baseline reference locked for this universe -> {path}{acc}")
         elif o.kind == "already_locked":
             print("mem0: reference already locked for this universe (left unchanged)")
         elif o.kind == "not_locked_sanity":
@@ -325,7 +393,7 @@ def _apply_baseline_gate(reports: list[SystemReport], baseline_path: Path, *, qu
         elif o.kind == "no_baseline":
             print(
                 "lore: no Mem0 baseline locked for this universe — measure mem0 first "
-                "(same dataset revision, judge, answerer, n)"
+                "(same dataset revision, split, question subset, judge and answerer)"
             )
 
 
@@ -590,6 +658,7 @@ def _lore_contexts(
         "embedding_model": sut.embedding_model,
         "split": args.split,
         "questions": str(len(questions)),
+        "subset": args.subset_key,
     }
     return build_lore_contexts(
         questions, system, checkpoint=checkpoint, heartbeat=heartbeat, fingerprint=fingerprint
@@ -631,7 +700,6 @@ def _mem0_contexts(
         is_reasoning_model=True,
         top_k=args.mem0_top_k,
         split=args.split,
-        n=args.n,
         cache_dir=Path(args.cache_dir),
     )
     return build_mem0_contexts(

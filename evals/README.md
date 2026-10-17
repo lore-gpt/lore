@@ -68,6 +68,33 @@ plus Mem0's OpenAI-backed extraction) is **secret-gated** and **staged**. Instal
 deployment (`LORE_BASE_URL`); costs are estimated before the run via `--dry-run`. Result artifacts (scores,
 model outputs) are gitignored — a standalone number is not published until a measurement-gated decision.
 
+### Which questions: named subsets
+
+The `s` split is measured by **named subset**, never by count: `--subset` is required there and `--n` is refused.
+The subsets divide the split's 500 questions into disjoint parts with distinct jobs:
+
+| Subset | Questions | Job |
+| --- | --- | --- |
+| `gate-v1` | 50 | the questions every earlier n=50 measurement used — kept so those runs stay reproducible |
+| `dev` | 70 | development: measure, change, measure again, as often as needed |
+| `gate-v2` | 50 | read once, for a verdict, after development is finished |
+| `holdout` | 330 | untouched |
+
+Selection is mechanical: within each question type, questions are taken in `question_id` order (the ids are hashes,
+so the order is effectively random but reproducible) with per-type counts fixed in `longmemeval/subsets.py`. The
+verdict sets share the split's own type proportions; `dev` raises the two smallest types so a change to them is
+visible. The lists live in `subsets/*.json` (ids and types only) and `python -m examples.make_subsets --check`
+proves they are still what the rule produces.
+
+Subsets named `gate-*` are **sealed**: a real run refuses them unless `--unseal-gate` is passed, and the subset's
+name lands in the report's provenance as the record of the read. Development tooling compares answers against
+gold question by question, and a verdict set looked at that way stops measuring the system.
+
+The subset is part of the measurement universe (with the split, dataset revision, judge, answerer, n and protocol),
+so a Mem0 reference locked on `dev` can never grade a run on `gate-v2`. Each universe keeps its own reference file
+under `baseline/`. The answerer is pinned to a dated model snapshot for the same reason: an alias can resolve to a
+different model between two measurements taken weeks apart.
+
 ### Isolating each question
 
 LongMemEval asks whether a system can answer from **one** user's history. Lore scopes distilled recall to a
@@ -81,10 +108,14 @@ command that creates one for your deployment; `{name}` is substituted per ingest
 print the API key on stdout — which `lore provision` does when run **without** `--out`:
 
 ```bash
-uv run python -m examples.smoke --split s --n 50 --systems lore \
+uv run python -m examples.smoke --split s --subset dev --systems lore \
   --lore-provision-cmd 'docker compose -f /path/to/docker-compose.yml run --rm --no-deps lore-server provision --project {name}' \
-  --lore-run-dir /tmp/eval/lore-n50
+  --lore-run-dir /tmp/eval/lore-dev-1
 ```
+
+Each turn reaches Lore as a structured event: the dated text both systems read (`[2023/05/21 (Sun) 14:49] user:
+...`) plus `role`, `session_id` and `occurred_at` — machine-readable copies of what that text already says,
+never information the compared system lacks.
 
 Two things to know before running it:
 
@@ -112,14 +143,14 @@ conditions, not just speed. What `--lore-run-dir` adds is everything around the 
   is never scored: an accuracy over fewer questions than it reports still looks comparable while its
   denominator quietly changed.
 - **A resume under a different configuration is refused.** The extraction model and mode, the embedder, the
-  split and the question count are written beside the checkpoint and compared on every resume. What no check
-  here can see is the server's extraction **prompt** — the harness is never handed it — so a build whose
-  prompt changed needs a new directory. That part is discipline.
+  split, the subset and the question count are written beside the checkpoint and compared on every resume.
+  What no check here can see is the server's extraction **prompt** — the harness is never handed it — so a
+  build whose prompt changed needs a new directory. That part is discipline.
 - **`heartbeat.json` says whether it is still alive**, which question is in flight, and what has stalled.
 
 ### What a real run refuses to do
 
-Four checks run before anything is spent. Each exists because the failure it catches is silent — the run
+Six checks run before anything is spent. Each exists because the failure it catches is silent — the run
 completes, the report reads normally, and only the number is wrong:
 
 | Refusal | Why it is not obvious |
@@ -128,6 +159,34 @@ completes, the report reads normally, and only the number is wrong:
 | No per-question provisioning command for Lore | Questions share a project and recall each other's histories |
 | The embedder is unknown or the offline fixture | A vector space no deployment uses is not the one the score claims to be about |
 | The extractor is unknown or the offline fixture | The fixture returns canned output, so the run measures the fixture rather than extraction. This identity is read from the server's `/healthz` and never from the harness process's own environment — extraction runs in the worker, so this process's `LORE_EXTRACTION_*` says nothing about it |
+| A sealed `gate-*` subset without `--unseal-gate` | Development reads a verdict set early, and the verdict then measures the tuning |
+| `--batch` together with `--lore-run-dir` | The batch path never consults the checkpoint, so the run looks resumable and is not |
+
+### A verdict from more than one ingestion
+
+A Lore run ingests every question through an LLM extractor, and the memories differ from one ingestion to the next:
+on the same ten questions, two ingestions of identical code disagreed on four of them. The answer-variance protocol
+cannot see that — it holds ingestion fixed — so read a verdict from at least two independent ingestions, each with
+its own `--lore-run-dir`, run one after the other, and combine them:
+
+```bash
+uv run python -m examples.aggregate reports/lore.s.dev.<A>.json reports/lore.s.dev.<B>.json
+```
+
+The gate is applied to the mean and the range is printed beside it. Reports from different systems or universes
+are refused rather than averaged.
+
+### Diagnosing a development run
+
+```bash
+uv run python -m examples.devloop reports/lore.s.dev.<A>.json --run-dir /tmp/eval/lore-dev-1
+```
+
+It reads only what the run wrote and separates wrong answers by where the evidence was: **not in context** (it was
+never distilled, or never retrieved) or **in context** (it was in front of the answerer and the answer was still
+wrong) — two failures with opposite fixes. It also reports how much of the returned context is anchored in time.
+The gold-answer check is a heuristic: it probes only short answers and matches numbers on word boundaries. It
+refuses sealed subsets.
 
 ### Mem0 takes hours, and the run is built to survive that
 
@@ -138,7 +197,7 @@ the constraint — single-digit dollars — wall clock is.
 `--mem0-workers N` ingests N questions at once, in separate **processes**:
 
 ```bash
-uv run python -m examples.smoke --split s --n 50 --systems mem0 --trials 3 --mem0-workers 4
+uv run python -m examples.smoke --split s --subset dev --systems mem0 --trials 3 --mem0-workers 4
 ```
 
 Three things about that, in the order they matter:

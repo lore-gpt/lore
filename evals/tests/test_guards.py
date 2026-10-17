@@ -61,3 +61,19 @@ def test_mem0_retrieval_blocker_blocks_any_dead_leg() -> None:
     assert one is not None
     assert "fastembed" in one  # the reason survives into the message, so the fix is obvious
     assert mem0_retrieval_blocker(["a", "b"]) is not None
+
+
+def test_a_sealed_subset_needs_an_explicit_unseal() -> None:
+    from longmemeval.guards import subset_seal_blocker
+
+    assert subset_seal_blocker("gate-v2", unsealed=False) is not None
+    assert subset_seal_blocker("gate-v2", unsealed=True) is None
+    assert subset_seal_blocker("dev", unsealed=False) is None
+
+
+def test_batch_with_a_run_dir_is_refused_rather_than_quietly_unresumable() -> None:
+    from longmemeval.guards import run_dir_blocker
+
+    assert run_dir_blocker(batch=True, lore_run_dir="C:/tmp/run") is not None
+    assert run_dir_blocker(batch=True, lore_run_dir="") is None
+    assert run_dir_blocker(batch=False, lore_run_dir="C:/tmp/run") is None

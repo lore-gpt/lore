@@ -14,9 +14,11 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from anthropic import Anthropic
 
-# The answerer model is configured per run (the report records whichever is used); this default is a symbolic
-# placeholder for local dev — the smoke/full runs set it explicitly.
-DEFAULT_ANSWERER_MODEL = "claude-haiku-4-5"
+# The answerer is part of the measuring instrument, so it is pinned to a dated snapshot rather than an alias. An
+# alias can resolve to a different model between two measurements taken weeks apart — a development baseline and a
+# verdict, say — and every score would move with it while every report still named the same model. The report and
+# the measurement universe record whichever model a run used; changing this changes the universe.
+DEFAULT_ANSWERER_MODEL = "claude-haiku-4-5-20251001"
 
 # Answer generation is bounded; a LongMemEval answer is short. Shared by the sync and batch answerers.
 ANSWER_MAX_TOKENS = 512

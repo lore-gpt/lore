@@ -2,7 +2,7 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from longmemeval import Baseline, GateOutcome, Provenance, Universe, decide_baseline, sanity_ok
-from longmemeval.baseline import GATE_MARGIN, PUBLISHED_MEM0_BAND, SANITY_FLOOR
+from longmemeval.baseline import GATE_MARGIN, PUBLISHED_MEM0_BAND, SANITY_FLOOR, baseline_path
 
 
 def _kinds(outcomes: Sequence[GateOutcome]) -> dict[str, str]:
@@ -56,7 +56,7 @@ def test_universe_from_provenance_carries_the_key_fields() -> None:
         extraction_model="haiku",
         generated_at="t",
     )
-    assert Universe.of(prov, "variance_answer") == _universe()
+    assert Universe.of(prov, "variance_answer") == _universe(split="s")
 
 
 def test_isolation_is_part_of_the_universe_key() -> None:
@@ -135,3 +135,33 @@ def test_decide_fails_lore_below_band_and_flags_a_different_universe() -> None:
     # A lore run in a different universe (here, a different n) has no applicable baseline.
     _, out_none = decide_baseline(mem0=None, lore=(0.95, _universe(n=10)), existing=existing, now="t")
     assert _kinds(out_none)["lore"] == "no_baseline"
+
+
+def test_the_question_subset_is_part_of_the_universe() -> None:
+    """Same size, different questions: before the subset was in the key these two were indistinguishable, so a
+    reference locked on one set would have graded a run on another."""
+    assert _universe(split="s", subset="dev@aaaa") != _universe(split="s", subset="gate-v2@bbbb")
+    assert _universe(split="s").digest() != _universe(split="m").digest()
+
+
+def test_each_universe_has_its_own_reference_file(tmp_path: Path) -> None:
+    dev, gate = _universe(subset="dev@aaaa"), _universe(subset="gate-v2@bbbb")
+    assert baseline_path(tmp_path, dev) != baseline_path(tmp_path, gate)
+    Baseline(0.80, dev, "t").save(baseline_path(tmp_path, dev))
+    Baseline(0.75, gate, "t").save(baseline_path(tmp_path, gate))
+    # Locking the second did not overwrite the first: both references survive side by side.
+    reloaded = Baseline.load(baseline_path(tmp_path, dev))
+    assert reloaded is not None and reloaded.reference_accuracy == 0.80
+
+
+def test_a_reference_saved_before_subsets_existed_still_loads_and_matches_no_new_run(tmp_path: Path) -> None:
+    old = tmp_path / "mem0.json"
+    old.write_text(
+        '{"measured_at": "t", "reference_accuracy": 0.8, "universe": {"answerer_model": "claude", '
+        '"dataset_revision": "3f1a9c0", "judge_model": "gpt-4o-2024-08-06", "judge_prompt_hash": "deadbeef", '
+        '"n": 50, "protocol": "variance_answer"}}',
+        "utf-8",
+    )
+    loaded = Baseline.load(old)
+    assert loaded is not None
+    assert not loaded.applies_to(_universe(split="s", subset="gate-v1@cafe"))

@@ -13,8 +13,11 @@ name: evals-nightly
 # call-count cost reach the logs — never the accuracy. The score stays in the gitignored report on the runner
 # and is NOT uploaded as an artifact. Publishing a number is a separate, measurement-gated decision.
 #
-# COST GUARDRAIL: the schedule runs a SMALL rotation (n=50, no pipeline-variance). The full n=500 + pipeline
-# run is manual only (workflow_dispatch with full=true).
+# COST GUARDRAIL: the schedule runs a SMALL rotation (split s's `dev` subset, no pipeline-variance). The full run
+# (pipeline-variance, and n=500 on split m) is manual only (workflow_dispatch with full=true).
+#
+# Split s is measured by named subset, and this workflow reads only `dev`: a sealed `gate-*` subset is read once,
+# deliberately, for a verdict — never on a schedule — and `holdout` stays untouched.
 
 on:
   schedule:
@@ -27,10 +30,10 @@ on:
         type: choice
         options: ["s", "m"]
       n:
-        description: "questions for the gated answer-variance"
+        description: "split m: questions for the gated answer-variance (split s always runs its dev subset)"
         default: "50"
       full:
-        description: "full run (n=500 + pipeline-variance)"
+        description: "full run (pipeline-variance; n=500 on split m)"
         default: false
         type: boolean
       extraction_mode:
@@ -68,7 +71,8 @@ jobs:
           N: ${{ (inputs.full && '500') || inputs.n || '50' }}
           MODE: ${{ inputs.extraction_mode || 'realtime' }}
           PIPELINE: ${{ (inputs.full && '--pipeline') || '' }}
-        run: >
-          uv run python -m examples.smoke
-          --split "$SPLIT" --n "$N" --systems lore,mem0 --trials 3 --batch --quiet
-          --extraction-mode "$MODE" $PIPELINE
+        # Split s is chosen by named subset, split m by count.
+        run: |
+          if [ "$SPLIT" = "s" ]; then pick=(--subset dev); else pick=(--n "$N"); fi
+          uv run python -m examples.smoke --split "$SPLIT" "${pick[@]}" --systems lore,mem0 --trials 3 --batch \
+            --quiet --extraction-mode "$MODE" $PIPELINE

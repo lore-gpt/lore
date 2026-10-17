@@ -14,11 +14,12 @@ as the Mem0 adapter's fresh user_id."""
 from __future__ import annotations
 
 import math
+import re
 import time
 from collections.abc import Callable, Sequence
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
-from .._types import Session
+from .._types import Session, Turn
 from .base import MemorySystem
 
 if TYPE_CHECKING:
@@ -27,13 +28,40 @@ if TYPE_CHECKING:
 # A settled-memory probe query; its results are ignored — only covered_seq is read.
 _PROBE_QUERY = "distillation probe"
 
+# The dataset stamps each session like "2023/05/21 (Sun) 14:49"; the weekday is optional and ignored.
+_SESSION_DATE = re.compile(r"^\s*(\d{4})/(\d{2})/(\d{2})(?:\s*\([A-Za-z]{3}\))?\s+(\d{2}):(\d{2})")
+
+
+def occurred_at(session_date: str) -> str | None:
+    """The session timestamp as RFC 3339 ("2023-05-21T14:49:00Z"), or None when it cannot be read. The dataset
+    gives no zone; UTC is a labelling convention here, and what a memory needs from it is the calendar date."""
+    m = _SESSION_DATE.match(session_date)
+    if m is None:
+        return None
+    year, month, day, hour, minute = m.groups()
+    return f"{year}-{month}-{day}T{hour}:{minute}:00Z"
+
+
+def _turn_payload(session: Session, turn: Turn, when: str | None) -> dict[str, Any]:
+    """One turn as a Lore event payload. The content keeps the session timestamp as a text prefix, so Lore and the
+    system it is compared against read exactly the same words; the structured fields are machine-readable copies of
+    what that text already says — who spoke, in which session, and when — never information the other system lacks.
+    """
+    prefix = f"[{session.date}] " if session.date else ""
+    payload: dict[str, Any] = {"content": f"{prefix}{turn.role}: {turn.content}", "role": turn.role}
+    if session.session_id:
+        payload["session_id"] = session.session_id
+    if when is not None:
+        payload["occurred_at"] = when
+    return payload
+
 
 class LoreLike(Protocol):
     """The slice of the Lore client the adapter uses. The real loregpt.LoreClient satisfies it structurally
     (wired in the smoke script); tests implement it with a fake, so no server is needed to test the flow."""
 
     def create_run(self) -> RunResult: ...
-    def write(self, *, run_id: str, agent_id: str, content: str) -> WriteResult: ...
+    def write(self, *, run_id: str, agent_id: str, payload: dict[str, Any]) -> WriteResult: ...
     def pack(self, *, run_id: str, query: str, min_seq: int, token_budget: int) -> PackResult: ...
 
 
@@ -83,14 +111,10 @@ class LoreAdapter(MemorySystem):
         self._run_id = run.run_id
         last_seq = 0
         for session in sessions:
+            when = occurred_at(session.date)
             for turn in session.turns:
-                # Carry the session timestamp in the content so temporal-reasoning questions have the dates to
-                # reason over (Lore assigns its own insert-order seq; the wall-clock lives in the text).
-                prefix = f"[{session.date}] " if session.date else ""
                 result = self._client.write(
-                    run_id=self._run_id,
-                    agent_id=turn.role,
-                    content=f"{prefix}{turn.role}: {turn.content}",
+                    run_id=self._run_id, agent_id=turn.role, payload=_turn_payload(session, turn, when)
                 )
                 last_seq = result.seq
         self._last_seq = last_seq
