@@ -149,10 +149,11 @@ type Result struct {
 
 // memItem is one distilled memory being assembled into a section.
 type memItem struct {
-	id      pgtype.UUID
-	content string
-	kind    string
-	score   float64
+	id         pgtype.UUID
+	content    string
+	kind       string
+	occurredAt pgtype.Timestamptz
+	score      float64
 }
 
 // rawEvent is one not-yet-distilled event rendered into the raw tail.
@@ -426,7 +427,9 @@ func (p *Pack) rawTail(ctx context.Context, q *db.Queries, projectID, runID pgty
 func bucketByKind(results []retrieval.HybridResult) map[string][]memItem {
 	buckets := make(map[string][]memItem)
 	for _, r := range results {
-		buckets[r.Kind] = append(buckets[r.Kind], memItem{id: r.ID, content: r.Content, kind: r.Kind, score: r.Score})
+		buckets[r.Kind] = append(buckets[r.Kind], memItem{
+			id: r.ID, content: r.Content, kind: r.Kind, occurredAt: r.OccurredAt, score: r.Score,
+		})
 	}
 	return buckets
 }
@@ -475,7 +478,8 @@ func render(coveredSeq, freshness int64, working []workmem.Entry, distilled map[
 		fmt.Fprintf(&b, "\n## %s\n", sectionTitle(sec))
 		for _, m := range items {
 			sources = append(sources, Source{ID: m.id, Kind: m.kind, Score: m.score, Section: sec})
-			fmt.Fprintf(&b, "[%d] %s  [memory %s · relevance %.4f]\n", len(sources), flatten(m.content), uuidStr(m.id), m.score)
+			fmt.Fprintf(&b, "[%d] %s%s  [memory %s · relevance %.4f]\n",
+				len(sources), datePrefix(m.occurredAt), flatten(m.content), uuidStr(m.id), m.score)
 		}
 	}
 
@@ -548,6 +552,17 @@ func sectionTitle(sec string) string {
 	default:
 		return sec
 	}
+}
+
+// datePrefix renders when a memory's source event happened, as "(2006-01-02) " in UTC, ahead of its content.
+// A memory's text rarely says when, and the words that stand in for a date — "today", "recently" — mean
+// nothing to a reader weeks later; the prefix gives every dated line an absolute anchor. An undated memory
+// renders exactly as before.
+func datePrefix(t pgtype.Timestamptz) string {
+	if !t.Valid {
+		return ""
+	}
+	return "(" + t.Time.UTC().Format("2006-01-02") + ") "
 }
 
 // flatten collapses newlines to spaces so an unverified value cannot forge a section header or line structure

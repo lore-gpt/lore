@@ -136,11 +136,15 @@ type ExtractInput struct {
 }
 
 // InputEvent is a single event offered to the extractor: its per-run Seq (for ordering and
-// provenance), the writing agent, and the opaque JSON payload.
+// provenance), the writing agent, when it happened, and the opaque JSON payload.
 type InputEvent struct {
 	Seq     int64
 	AgentID string
-	Payload json.RawMessage
+	// OccurredAt is when the event happened: the payload's own "occurred_at" when that is a valid RFC 3339
+	// timestamp, otherwise when the server received the event. It is what a memory distilled from the
+	// event is dated by. Zero only for an event built without either.
+	OccurredAt time.Time
+	Payload    json.RawMessage
 }
 
 // ExtractResult is everything one pass distilled. Any slice may be empty.

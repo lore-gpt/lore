@@ -446,7 +446,7 @@ func (h *Hybrid) denseLeg(ctx context.Context, tx pgx.Tx, projectID pgtype.UUID,
 	}
 	cands := make([]candidate, len(results))
 	for i, r := range results {
-		cands[i] = candidate{id: r.ID, content: r.Content, kind: r.Kind}
+		cands[i] = candidate{id: r.ID, content: r.Content, kind: r.Kind, occurredAt: r.OccurredAt}
 	}
 	return cands, path, nil
 }
@@ -486,7 +486,7 @@ func (lexicalLeg) retrieve(ctx context.Context, tx pgx.Tx, projectID pgtype.UUID
 	}
 	cands := make([]candidate, len(rows))
 	for i, r := range rows {
-		cands[i] = candidate{id: r.ID, content: r.Content, kind: r.Kind}
+		cands[i] = candidate{id: r.ID, content: r.Content, kind: r.Kind, occurredAt: r.OccurredAt}
 	}
 	return cands, nil
 }

@@ -37,9 +37,10 @@ const (
 // candidate is one memory a leg surfaced. The leg's own score is deliberately dropped here: RRF consumes
 // only the candidate's RANK (its position in the leg's best-first list), never the leg's raw score.
 type candidate struct {
-	id      pgtype.UUID
-	content string
-	kind    string
+	id         pgtype.UUID
+	content    string
+	kind       string
+	occurredAt pgtype.Timestamptz
 }
 
 // HybridResult is one fused memory with its reciprocal-rank-fusion score. Order is by descending Score;
@@ -49,7 +50,9 @@ type HybridResult struct {
 	ID      pgtype.UUID
 	Content string
 	Kind    string
-	Score   float64
+	// OccurredAt is when the event the memory was distilled from happened; not Valid when it has no date.
+	OccurredAt pgtype.Timestamptz
+	Score      float64
 }
 
 // QuantizeScore rounds a fused score to the comparison grid (see scoreQuantum). It is the ONE place scores are
@@ -67,15 +70,16 @@ func QuantizeScore(f float64) int64 { return int64(math.Round(f / scoreQuantum))
 // rank counts and the repeat does not advance the rank counter, so a duplicate can never inflate a score.
 func fuse(perLeg map[string][]candidate, k int) []HybridResult {
 	type accum struct {
-		content string
-		kind    string
-		score   float64
+		content    string
+		kind       string
+		occurredAt pgtype.Timestamptz
+		score      float64
 	}
 	scores := make(map[pgtype.UUID]*accum)
 
-	// Fold the legs in a fixed (sorted) name order so the first-seen content/kind for an id is chosen
+	// Fold the legs in a fixed (sorted) name order so the first-seen content/kind/date for an id is chosen
 	// deterministically. The RRF sum is order-independent regardless; this only pins which identical copy of
-	// a row's content is retained.
+	// a row's fields is retained.
 	names := make([]string, 0, len(perLeg))
 	for name := range perLeg {
 		names = append(names, name)
@@ -91,7 +95,7 @@ func fuse(perLeg map[string][]candidate, k int) []HybridResult {
 			seen[c.id] = struct{}{}
 			a := scores[c.id]
 			if a == nil {
-				a = &accum{content: c.content, kind: c.kind}
+				a = &accum{content: c.content, kind: c.kind, occurredAt: c.occurredAt}
 				scores[c.id] = a
 			}
 			a.score += 1.0 / float64(k+rank+1)
@@ -101,7 +105,7 @@ func fuse(perLeg map[string][]candidate, k int) []HybridResult {
 
 	out := make([]HybridResult, 0, len(scores))
 	for id, a := range scores {
-		out = append(out, HybridResult{ID: id, Content: a.content, Kind: a.kind, Score: a.score})
+		out = append(out, HybridResult{ID: id, Content: a.content, Kind: a.kind, OccurredAt: a.occurredAt, Score: a.score})
 	}
 	sort.Slice(out, func(i, j int) bool {
 		qi, qj := QuantizeScore(out[i].Score), QuantizeScore(out[j].Score)

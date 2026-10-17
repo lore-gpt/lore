@@ -534,6 +534,56 @@ func TestExtractRunWorker_GatesThenExtracts(t *testing.T) {
 	}
 }
 
+// TestExtractRunWorker_DatesWhatItExtracts follows an event's time through the pass: the extractor is shown
+// it, and every memory distilled from the event is written with it — the stated time when the payload carries
+// one, the receipt time when it does not — so a memory is dated by its source, never by the model.
+func TestExtractRunWorker_DatesWhatItExtracts(t *testing.T) {
+	stated := time.Date(2023, time.May, 21, 14, 49, 0, 0, time.UTC)
+	received := time.Date(2026, time.October, 17, 21, 0, 0, 0, time.UTC)
+	src := &fakeSource{
+		events: []db.Event{
+			{Seq: 1, AgentID: "a", Payload: []byte(`{"content":"one","occurred_at":"2023-05-21T14:49:00Z"}`),
+				CreatedAt: pgtype.Timestamptz{Time: received, Valid: true}},
+			{Seq: 2, AgentID: "a", Payload: []byte(`{"content":"two"}`),
+				CreatedAt: pgtype.Timestamptz{Time: received, Valid: true}},
+		},
+		readiness: ready(2),
+	}
+	spy := &spyExtractor{result: ext.ExtractResult{Memories: []ext.CandidateMemory{
+		{Kind: "episodic", Content: "from the stated event", SourceSeq: 1},
+		{Kind: "episodic", Content: "from the received event", SourceSeq: 2},
+	}}}
+	per := &spyPersister{}
+	w := jobs.NewExtractRunWorker(src, spy, per, jobs.DefaultDebounce())
+
+	job := &river.Job[jobs.ExtractRunArgs]{Args: jobs.ExtractRunArgs{ProjectID: uuid.NewString(), RunID: uuid.NewString()}}
+	if err := w.Work(context.Background(), job); err != nil {
+		t.Fatalf("Work: %v", err)
+	}
+
+	if len(spy.got.Events) != 2 {
+		t.Fatalf("extraction window = %d events, want 2", len(spy.got.Events))
+	}
+	if got := spy.got.Events[0].OccurredAt; !got.Equal(stated) {
+		t.Errorf("window[0].OccurredAt = %v, want the stated %v", got, stated)
+	}
+	if got := spy.got.Events[1].OccurredAt; !got.Equal(received) {
+		t.Errorf("window[1].OccurredAt = %v, want the receipt time %v", got, received)
+	}
+	if len(per.last.Memories) != 2 {
+		t.Fatalf("persisted memories = %d, want 2", len(per.last.Memories))
+	}
+	for _, m := range per.last.Memories {
+		want := received
+		if m.SourceSeq == 1 {
+			want = stated
+		}
+		if !m.OccurredAt.Equal(want) {
+			t.Errorf("memory from seq %d OccurredAt = %v, want %v", m.SourceSeq, m.OccurredAt, want)
+		}
+	}
+}
+
 func TestExtractRunWorker_Debounces(t *testing.T) {
 	debounce := jobs.Debounce{IdleWindow: 2 * time.Second, MaxEvents: 20}
 	cases := []struct {

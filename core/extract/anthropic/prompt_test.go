@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"regexp"
 	"testing"
+	"time"
 
 	"github.com/anthropics/anthropic-sdk-go/packages/param"
 
@@ -67,6 +68,11 @@ func TestPromptDigestMovesWithEachInput(t *testing.T) {
 		}},
 		{"the probe window's agent changed", func() (string, error) {
 			return digestOf(systemPrompt, extractionTool, window(func(ev *ext.InputEvent) { ev.AgentID = "other" }))
+		}},
+		{"the probe window's time changed", func() (string, error) {
+			return digestOf(systemPrompt, extractionTool, window(func(ev *ext.InputEvent) {
+				ev.OccurredAt = ev.OccurredAt.Add(24 * time.Hour)
+			}))
 		}},
 		{"the probe window's payload changed", func() (string, error) {
 			return digestOf(systemPrompt, extractionTool, window(func(ev *ext.InputEvent) {

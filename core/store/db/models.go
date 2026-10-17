@@ -107,6 +107,7 @@ type Memory struct {
 	ScopeKeys      []string           `json:"scope_keys"`
 	ContentHash    []byte             `json:"content_hash"`
 	ContextHash    []byte             `json:"context_hash"`
+	OccurredAt     pgtype.Timestamptz `json:"occurred_at"`
 }
 
 type MemoryScope struct {

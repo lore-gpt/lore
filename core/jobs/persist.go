@@ -108,6 +108,9 @@ type MemoryWrite struct {
 	SourceEventID  pgtype.UUID
 	CreatedByAgent string
 	SourceSeq      int64
+	// OccurredAt is when the source event happened (zero when unknown, stored as NULL). It is resolved from
+	// the event, never from model output.
+	OccurredAt time.Time
 }
 
 // EntityWrite is one entity mention to register (get-or-create by name within the project).

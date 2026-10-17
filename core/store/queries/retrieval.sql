@@ -31,7 +31,7 @@ SELECT count(*) FROM (
 -- correct for a small set, and correct in the window before the index is built. Same filter shape as the
 -- count. (The index-backed path is a dynamically-built query because the vector(D) typmod cannot be a bind
 -- parameter — see core/retrieval.)
-SELECT m.id, m.content, m.kind, (e.vec <=> sqlc.arg(query_vec)::vector)::float8 AS distance
+SELECT m.id, m.content, m.kind, m.occurred_at, (e.vec <=> sqlc.arg(query_vec)::vector)::float8 AS distance
 FROM memories m
 JOIN embeddings e ON e.project_id = m.project_id AND e.memory_id = m.id
 WHERE m.project_id = sqlc.arg(project_id) AND e.project_id = sqlc.arg(project_id)
@@ -53,7 +53,7 @@ LIMIT sqlc.arg(max_results)::int;
 -- matches nothing, so the leg contributes no candidates rather than every row. Same filter shape as the
 -- dense leg: the tenant is the project partition, scope_keys && is the compiled-ACL overlap (empty =
 -- project-wide), quarantine-tier excluded unless asked. The id tie-break makes equal-rank order stable.
-SELECT m.id, m.content, m.kind,
+SELECT m.id, m.content, m.kind, m.occurred_at,
        ts_rank_cd(to_tsvector('english', m.content), websearch_to_tsquery('english', sqlc.arg(query_text)::text))::float8 AS rank
 FROM memories m
 WHERE m.project_id = sqlc.arg(project_id)

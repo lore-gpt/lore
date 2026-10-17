@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"hash"
 	"sync"
+	"time"
 
 	anthropicsdk "github.com/anthropics/anthropic-sdk-go"
 
@@ -69,7 +70,8 @@ func writePart(h hash.Hash, part string) {
 // It sets every field of ext.InputEvent: a field left at its zero value could be encoded differently, or not
 // at all, without this rendering noticing, so a test fails when a new field is left unset here.
 var probeWindow = []ext.InputEvent{{
-	Seq:     1,
-	AgentID: "probe",
-	Payload: json.RawMessage(`{"content":"probe"}`),
+	Seq:        1,
+	AgentID:    "probe",
+	OccurredAt: time.Date(2024, time.January, 2, 3, 4, 5, 0, time.UTC),
+	Payload:    json.RawMessage(`{"content":"probe"}`),
 }}

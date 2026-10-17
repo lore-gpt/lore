@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5/pgtype"
@@ -310,5 +311,30 @@ func TestRenderWorkingFactsAreNeverSources(t *testing.T) {
 		if s.Section == sectionWorking {
 			t.Errorf("a working entry reached the source list: %+v", s)
 		}
+	}
+}
+
+// TestRenderDatesDatedMemoriesOnly pins the date prefix: a dated memory's line opens with its source event's
+// date in UTC, and an undated one renders exactly as it always has, so a deployment's older memories read the
+// same after the upgrade. The fixture's time is past midnight at UTC+3 but still the previous day in UTC — a
+// render in local time would print the wrong date.
+func TestRenderDatesDatedMemoriesOnly(t *testing.T) {
+	plus3 := time.FixedZone("UTC+3", 3*60*60)
+	distilled := map[string][]memItem{
+		sectionEpisodic: {
+			{id: mkID(1), content: "started learning ukulele today", kind: sectionEpisodic, score: 0.02,
+				occurredAt: pgtype.Timestamptz{Time: time.Date(2023, time.May, 22, 1, 30, 0, 0, plus3), Valid: true}},
+			{id: mkID(2), content: "an older undated memory", kind: sectionEpisodic, score: 0.01},
+		},
+	}
+	text, sources := render(0, 0, nil, distilled, nil)
+	if !strings.Contains(text, "\n[1] (2023-05-21) started learning ukulele today  [memory ") {
+		t.Errorf("dated memory is not prefixed with its UTC date:\n%s", text)
+	}
+	if !strings.Contains(text, "\n[2] an older undated memory  [memory ") {
+		t.Errorf("undated memory does not render as before:\n%s", text)
+	}
+	if len(sources) != 2 {
+		t.Errorf("sources = %d, want 2 — the prefix must not change what is cited", len(sources))
 	}
 }

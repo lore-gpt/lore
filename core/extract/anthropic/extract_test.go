@@ -223,6 +223,35 @@ func TestExtractRequestShape(t *testing.T) {
 	}
 }
 
+// TestEventsCarryWhenTheyHappened: the model is shown each event's time as RFC 3339 in UTC, so a relative
+// word in the content ("today") has a date to be read against, and an event whose time is unknown carries no
+// field at all rather than a year-one timestamp the model would take at face value.
+func TestEventsCarryWhenTheyHappened(t *testing.T) {
+	plus3 := time.FixedZone("UTC+3", 3*60*60)
+	text, err := marshalEvents([]ext.InputEvent{
+		{Seq: 1, AgentID: "a", OccurredAt: time.Date(2023, time.May, 21, 14, 49, 0, 0, plus3), Payload: json.RawMessage(`{}`)},
+		{Seq: 2, AgentID: "b", Payload: json.RawMessage(`{}`)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wire struct {
+		Events []map[string]any `json:"events"`
+	}
+	if err := json.Unmarshal([]byte(text), &wire); err != nil {
+		t.Fatalf("decode %s: %v", text, err)
+	}
+	if len(wire.Events) != 2 {
+		t.Fatalf("events = %v, want two", wire.Events)
+	}
+	if got := wire.Events[0]["occurred_at"]; got != "2023-05-21T11:49:00Z" {
+		t.Errorf("first event occurred_at = %v, want 2023-05-21T11:49:00Z (UTC)", got)
+	}
+	if got, present := wire.Events[1]["occurred_at"]; present {
+		t.Errorf("an event with no known time carries occurred_at = %v; it should carry none", got)
+	}
+}
+
 func TestExtractTransientErrorUnavailable(t *testing.T) {
 	srv, _ := fakeMessages(t, http.StatusServiceUnavailable,
 		`{"type":"error","error":{"type":"overloaded_error","message":"overloaded"}}`)

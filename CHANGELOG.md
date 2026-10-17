@@ -16,6 +16,18 @@ action on upgrade says so in its entry.
 
 ### Added
 
+- **Memories carry when they happened.** A memory's text says what is true and rarely says when, and the
+  words that most often stand in for a date — "today", "recently" — mean nothing once they are read weeks
+  later. Each memory now records when the event it was distilled from happened, and a context pack opens
+  every dated line with it: `[1] (2023-05-21) started learning the ukulele  [memory … · relevance …]`. The
+  time comes from the event, never from the model: an event payload may carry `occurred_at` (RFC 3339) — a
+  client replaying history knows when each event originally happened — and without one the event is dated
+  by when the server received it; a malformed value is ignored rather than rejected. A near-duplicate merge
+  moves the date along with the content and provenance it replaces; an exact restatement keeps the original.
+  The extractor is shown each event's time too, so the prompt digest on `/healthz` changes with this release.
+  <br>**On upgrade:** migration `0020` adds a nullable `memories.occurred_at`. Memories distilled before it
+  have no date and render exactly as before; anything that parses pack lines as `[n] content` should allow
+  the optional `(YYYY-MM-DD) ` after the marker.
 - **`lore runs stalled` and `lore runs requeue <run>`** — find and restart distillation that has stopped.
   Extraction is enqueued by an event insert, so a pass that exhausts its attempts leaves the run parked:
   the checkpoint stops advancing, and a conversation that has already ended never produces the event that

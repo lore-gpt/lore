@@ -57,12 +57,14 @@ type Filters struct {
 	IncludeQuarantine bool
 }
 
-// Result is one retrieved memory with its cosine distance to the query.
+// Result is one retrieved memory with its cosine distance to the query. OccurredAt is when the event it was
+// distilled from happened; not Valid when the memory has no date.
 type Result struct {
-	ID       pgtype.UUID
-	Content  string
-	Kind     string
-	Distance float64
+	ID         pgtype.UUID
+	Content    string
+	Kind       string
+	OccurredAt pgtype.Timestamptz
+	Distance   float64
 }
 
 // Retriever runs the filtered approximate-nearest-neighbour read over a project's embeddings. crossover is
@@ -165,7 +167,7 @@ func (r *Retriever) exact(ctx context.Context, q *db.Queries, projectID pgtype.U
 	}
 	results := make([]Result, len(rows))
 	for i, row := range rows {
-		results[i] = Result{ID: row.ID, Content: row.Content, Kind: row.Kind, Distance: row.Distance}
+		results[i] = Result{ID: row.ID, Content: row.Content, Kind: row.Kind, OccurredAt: row.OccurredAt, Distance: row.Distance}
 	}
 	return results, nil
 }
@@ -185,7 +187,7 @@ func (r *Retriever) indexScan(ctx context.Context, tx pgx.Tx, projectID pgtype.U
 	var results []Result
 	for rows.Next() {
 		var res Result
-		if err := rows.Scan(&res.ID, &res.Content, &res.Kind, &res.Distance); err != nil {
+		if err := rows.Scan(&res.ID, &res.Content, &res.Kind, &res.OccurredAt, &res.Distance); err != nil {
 			return nil, fmt.Errorf("scan retrieval row: %w", err)
 		}
 		results = append(results, res)
@@ -203,7 +205,7 @@ func (r *Retriever) indexScan(ctx context.Context, tx pgx.Tx, projectID pgtype.U
 // validated int in [1,maxVectorDim]; every other value is a bind parameter ($1 project_id … $6 query_vec).
 func indexQuery(dim int) string {
 	return fmt.Sprintf(`
-SELECT m.id, m.content, m.kind, (e.vec::vector(%d) <=> $6)::float8 AS distance
+SELECT m.id, m.content, m.kind, m.occurred_at, (e.vec::vector(%d) <=> $6)::float8 AS distance
 FROM memories m
 JOIN embeddings e ON e.project_id = m.project_id AND e.memory_id = m.id
 WHERE m.project_id = $1 AND e.project_id = $1

@@ -9,9 +9,10 @@
 -- review_status 'auto_approved', version 1, valid_from now(), empty entities/scope_keys — the
 -- single-schema basic behaviour the OSS build always writes. context_hash is the entity-bucket key (the
 -- content-less twin of content_hash) the near-duplicate probe groups on; NULL only for a path that opts
--- out of dedup.
-INSERT INTO memories (project_id, kind, content, source_event_id, created_by_agent, content_hash, context_hash)
-VALUES ($1, $2, $3, $4, $5, $6, $7)
+-- out of dedup. occurred_at is when the source event happened (the caller resolves it from the event, never
+-- from model output); NULL when there is no source event to date it by.
+INSERT INTO memories (project_id, kind, content, source_event_id, created_by_agent, content_hash, context_hash, occurred_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 RETURNING id;
 
 -- name: FindActiveMemoryByContentHash :one
@@ -53,14 +54,14 @@ SELECT content FROM memories WHERE project_id = $1 AND id = $2 FOR UPDATE;
 -- Overwrite a live memory's content when the consolidation path merges a NEAR-duplicate (embedding
 -- similarity above the merge threshold, not an exact restatement) into it: the incoming write supersedes
 -- the stored one (arrival-order last-write-wins — the same policy claims and working memory use), so the
--- live content, its exact fingerprint, and its provenance become the incoming memory's, and the version is
--- bumped, returning the new version. The caller has already locked and read the prior content via
+-- live content, its exact fingerprint, its provenance, and the time its source event happened become the
+-- incoming memory's, and the version is bumped, returning the new version. The caller has already locked and read the prior content via
 -- ReadMemoryContentForUpdate in the same transaction, snapshots it into memory_versions, and re-stores the
 -- incoming embedding. context_hash is unchanged in value (a near-duplicate is in the same entity bucket by
 -- construction) but is set from the incoming memory too, so the whole row is written from one source.
 -- Project-scoped.
 UPDATE memories
 SET content = $3, content_hash = $4, context_hash = $5, source_event_id = $6, created_by_agent = $7,
-    version = version + 1
+    occurred_at = $8, version = version + 1
 WHERE project_id = $1 AND id = $2
 RETURNING version;

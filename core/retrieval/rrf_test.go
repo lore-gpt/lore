@@ -3,6 +3,7 @@ package retrieval
 import (
 	"math"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
 )
@@ -147,5 +148,35 @@ func TestQuantizeScore(t *testing.T) {
 	}
 	if QuantizeScore(0.0100) == QuantizeScore(0.0102) {
 		t.Errorf("scores two quanta apart must differ")
+	}
+}
+
+// TestFuseKeepsEachMemorysDate proves fusion carries occurred_at through to the result — for a memory one leg
+// found and for one both legs found — and leaves an undated memory undated. The pack dates its lines from
+// this field, so a fusion that dropped it would strip every date while ranking exactly as before.
+func TestFuseKeepsEachMemorysDate(t *testing.T) {
+	dated := pgtype.Timestamptz{Time: time.Date(2023, time.May, 21, 0, 0, 0, 0, time.UTC), Valid: true}
+	lexDated := pgtype.Timestamptz{Time: time.Date(2023, time.June, 2, 0, 0, 0, 0, time.UTC), Valid: true}
+	idBoth, idLexOnly, idUndated := mkID(1), mkID(2), mkID(3)
+	got := fuse(map[string][]candidate{
+		"dense":   {{id: idBoth, occurredAt: dated}, {id: idUndated}},
+		"lexical": {{id: idLexOnly, occurredAt: lexDated}, {id: idBoth, occurredAt: dated}},
+	}, rrfK)
+	for _, tc := range []struct {
+		name string
+		id   pgtype.UUID
+		want pgtype.Timestamptz
+	}{
+		{"found by both legs", idBoth, dated},
+		{"found by the lexical leg alone", idLexOnly, lexDated},
+		{"undated", idUndated, pgtype.Timestamptz{}},
+	} {
+		i := indexOf(got, tc.id)
+		if i < 0 {
+			t.Fatalf("%s: memory missing from %+v", tc.name, got)
+		}
+		if got[i].OccurredAt != tc.want {
+			t.Errorf("%s: OccurredAt = %+v, want %+v", tc.name, got[i].OccurredAt, tc.want)
+		}
 	}
 }
