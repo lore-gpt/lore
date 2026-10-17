@@ -247,6 +247,80 @@ func TestSmokeLiveExtractionRecordsThisRunsFacts(t *testing.T) {
 	})
 }
 
+// TestSmokeLiveExtractionResolvesRelativeTime pins relative time against a live model: an event's
+// occurred_at fixes what "today" and "yesterday" mean in it, so the memories carry the dates those words
+// refer to instead of the words themselves — a memory saying "started today" is misread by anyone who reads
+// it on a later day. It is the counterpart of "invents no calendar date" above, whose window carries no
+// occurred_at and so must produce no date at all: together they pin where a date may come from.
+//
+// Honest about what it proves: measured against the prompt before the time rule was written, it passes as
+// well — once events carry occurred_at, the model resolves words this plain on its own. So it guards the
+// behaviour, and the field that makes it possible, rather than demonstrating the rule's gain. The rule's job
+// is to stop the no-invention rule from calling such a date a fabrication; this window is too easy to show
+// the difference.
+//
+//	ANTHROPIC_API_KEY=sk-... go test ./core/extract/anthropic -run TestSmokeLiveExtractionResolvesRelativeTime -v
+func TestSmokeLiveExtractionResolvesRelativeTime(t *testing.T) {
+	key := os.Getenv("ANTHROPIC_API_KEY")
+	if key == "" {
+		t.Skip("ANTHROPIC_API_KEY not set; skipping live relative-time smoke")
+	}
+
+	e, err := New(Config{APIKey: key})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	sunday := time.Date(2023, time.May, 21, 14, 49, 0, 0, time.UTC)
+	res, err := e.Extract(ctx, ext.ExtractInput{
+		ProjectID: "smoke",
+		RunID:     "smoke",
+		Events: []ext.InputEvent{
+			{Seq: 1, AgentID: "user", OccurredAt: sunday, Payload: json.RawMessage(
+				`{"message":"I started learning the ukulele today, finally!"}`)},
+			{Seq: 2, AgentID: "user", OccurredAt: sunday.Add(4 * time.Minute), Payload: json.RawMessage(
+				`{"message":"Also, yesterday I finished reading The Nightingale by Kristin Hannah."}`)},
+		},
+	})
+	if err != nil {
+		t.Fatalf("live Extract: %v", err)
+	}
+
+	var memories []string
+	for _, m := range res.Memories {
+		memories = append(memories, strings.ToLower(m.Content))
+	}
+	t.Cleanup(func() {
+		if t.Failed() {
+			t.Logf("memories: %q", memories)
+		}
+	})
+	for _, want := range []struct {
+		subject, date string
+	}{
+		{"ukulele", "2023-05-21"},
+		{"nightingale", "2023-05-20"},
+	} {
+		dated := false
+		for _, m := range memories {
+			if strings.Contains(m, want.subject) && strings.Contains(m, want.date) {
+				dated = true
+			}
+		}
+		if !dated {
+			t.Errorf("no memory about %q carries the date %s that the event's occurred_at fixes", want.subject, want.date)
+		}
+	}
+	for _, m := range memories {
+		if regexp.MustCompile(`\b(today|yesterday)\b`).MatchString(m) {
+			t.Errorf("memory keeps a relative word its event's occurred_at resolves: %q", m)
+		}
+	}
+}
+
 // TestSmokeLiveBatchExtraction exercises the real Batch API end to end: submit a window, poll until
 // the batch ends, then collect and decode the result. Skipped unless ANTHROPIC_API_KEY is set. A
 // batch can take minutes, so run it deliberately with a generous test timeout:
