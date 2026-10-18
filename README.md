@@ -253,7 +253,7 @@ Copy [`.env.example`](.env.example) to `.env` and set:
 | `LORE_OTEL_ENABLED` | no | `false` | Export OpenTelemetry traces over OTLP (also needs an endpoint below) |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | with tracing | — | OTLP/HTTP collector base URL; the standard OTel variable (`OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` overrides it for traces) |
 | `LORE_EXTRACTION_PROVIDER` | no | fixture | `anthropic` for real LLM extraction; unset/`fixture` keeps the offline fixture. Extraction runs in `worker`, but set it for **both** roles: `serve` reads it only to report which extractor the deployment uses on `/healthz`, and a server left unset reports the fixture while the worker uses a real model |
-| `LORE_EXTRACTION_MODEL` | no | — | Model override for the provider; unset uses its built-in default. Set it for **both** roles, as above |
+| `LORE_EXTRACTION_MODEL` | no | — | Model override for the provider; unset uses its built-in default, `claude-haiku-5-5` (not deterministic — see *Newer models* below; `claude-haiku-4-5` is deterministic). Set it for **both** roles, as above |
 | `LORE_EXTRACTION_MAX_TOKENS` | no | `16384` | Output ceiling for one extraction pass. A cap, not a spend: you are billed for tokens actually generated, so headroom is free |
 | `LORE_EXTRACTION_MAX_WINDOW` | no | `200` | Events one extraction pass distils. Pairs with the ceiling above — see below |
 | `ANTHROPIC_API_KEY` | with `anthropic` | — | Provider-native key (not `LORE_`-prefixed); the worker fails at startup without it. The **worker only** — `serve` builds no extractor, so it has no use for the key |

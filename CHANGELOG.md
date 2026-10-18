@@ -82,6 +82,14 @@ action on upgrade says so in its entry.
 
 ### Changed
 
+- **The default extraction model is now `claude-haiku-5-5`.** Measured against the previous default on the same
+  instructions it kept more of what a later question asks for — what a participant was given, facts mentioned
+  in passing — at roughly a tenth of the cost. It belongs to the generation that takes no temperature, so its
+  extraction is not deterministic: two passes over the same window can distil differently, and a measurement
+  on it needs more than one ingestion to say anything.
+  <br>**On upgrade:** a deployment that leaves `LORE_EXTRACTION_MODEL` unset switches models, and its `/healthz`
+  identity changes with it. Set `LORE_EXTRACTION_MODEL=claude-haiku-4-5` (on both roles) to keep the previous,
+  deterministic default.
 - **`/healthz` names the extraction prompt, not only the model.** The `extraction` field now reads
   `anthropic/claude-haiku-4-5/prompt-1a2b3c4d5e6f`: provider, model, and a twelve-character digest of what the
   extractor asks the model — its instructions, the tool it is forced to call, and the way a window of events

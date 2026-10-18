@@ -195,10 +195,10 @@ func TestExtractRequestShape(t *testing.T) {
 	if req.Model != DefaultModel {
 		t.Errorf("model = %q, want %q", req.Model, DefaultModel)
 	}
-	// Deterministic extraction: temperature must be pinned to 0, not merely defaulted
-	// away. A regression that drops the line would otherwise pass unnoticed.
-	if req.Temperature == nil || *req.Temperature != 0.0 {
-		t.Errorf("temperature = %v, want 0.0", req.Temperature)
+	// The default model refuses any temperature with a 400, so none may be sent; the models that
+	// take one still get 0 (TestRequestsCarryTemperatureOnlyWhereTheModelTakesIt pins both sides).
+	if req.Temperature != nil {
+		t.Errorf("temperature = %v sent to the default model, which rejects the parameter", *req.Temperature)
 	}
 	if req.MaxTokens != DefaultMaxTokens {
 		t.Errorf("max_tokens = %d, want %d", req.MaxTokens, DefaultMaxTokens)
