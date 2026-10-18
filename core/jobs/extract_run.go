@@ -102,14 +102,18 @@ type Debounce struct {
 }
 
 // DefaultDebounce is the production window: process after 2s idle or 20 accumulated events, distil at
-// most 200 events per pass, and poll a submitted economy batch every minute.
+// most 60 events per pass, and poll a submitted economy batch every minute.
 //
-// 200 is deliberately well above MaxEvents, so a steady stream never reaches it and ordinary runs see no
-// extra passes. It is NOT a size the ceiling is guaranteed to fit: dense conversational traffic has been
-// measured overrunning the output ceiling at exactly this window, which is why a pass shrinks and retries
-// rather than trusting the number (see distil).
+// 60 is a quality setting, not a ceiling setting. A pass asked to distil a long window keeps whatever the
+// model happens to notice in it, and what it notices varies: measured on conversational histories, two
+// ingestions of the same history at 200 events per pass disagreed on what they recalled about three times
+// as often as two at 60, while recalling about as much on average. A smaller window gives each event more of the
+// model's attention, so the facts that matter are kept reliably rather than by luck — at the price of more
+// passes and more memories per history. It is still not a size the ceiling is guaranteed to fit, which is
+// why a pass shrinks and retries rather than trusting the number (see distil). Steady streams usually
+// trigger on MaxEvents first and never reach it.
 func DefaultDebounce() Debounce {
-	return Debounce{IdleWindow: 2 * time.Second, MaxEvents: 20, MaxWindow: 200, BatchPoll: 60 * time.Second}
+	return Debounce{IdleWindow: 2 * time.Second, MaxEvents: 20, MaxWindow: 60, BatchPoll: 60 * time.Second}
 }
 
 // ExtractRunWorker processes ExtractRunArgs: it debounces the run, reads the events past its

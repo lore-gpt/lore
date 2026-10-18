@@ -82,6 +82,13 @@ action on upgrade says so in its entry.
 
 ### Changed
 
+- **An extraction pass distils at most 60 events by default (was 200).** What a pass keeps from a long window
+  varies with what the model happens to notice in it: measured on conversational histories, two ingestions of
+  the same history at 200 events per pass disagreed on what they recalled about three times as often as two at 60,
+  while recalling about as much on average. The smaller default makes recall something you can count on rather
+  than a matter of luck, at the price of more model calls and more memories per history.
+  <br>**On upgrade:** extraction makes more, smaller calls; `LORE_EXTRACTION_MAX_WINDOW=200` restores the
+  previous window.
 - **The default extraction model is now `claude-haiku-5-5`.** Measured against the previous default on the same
   instructions it kept more of what a later question asks for — what a participant was given, facts mentioned
   in passing — at roughly a tenth of the cost. It belongs to the generation that takes no temperature, so its
@@ -150,7 +157,7 @@ action on upgrade says so in its entry.
   window whose extraction output exceeded the model's response ceiling. That failed the pass, every retry
   rebuilt the identical window and failed identically, and the job was discarded with the checkpoint
   frozen: the run stopped distilling permanently, and its `covered_seq` never advanced again. Passes are
-  now capped (200 events by default), and a pass whose answer still overruns the ceiling halves its window
+  now capped (60 events by default), and a pass whose answer still overruns the ceiling halves its window
   and retries until it fits — committing what fits and leaving the rest for the next pass, so a dense run
   makes progress instead of stopping. The remainder is drained by the pass that follows.
   <br>The cap alone was not enough, and measuring said so: a real conversational workload overran the
