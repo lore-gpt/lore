@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -15,6 +16,7 @@ import (
 	tracenoop "go.opentelemetry.io/otel/trace/noop"
 
 	"github.com/lore-gpt/lore/core/ext"
+	"github.com/lore-gpt/lore/core/jobs"
 	"github.com/lore-gpt/lore/core/metrics"
 	"github.com/lore-gpt/lore/core/queue"
 	"github.com/lore-gpt/lore/core/store"
@@ -168,7 +170,7 @@ func TestFailedJobIsReportedOnTheWorkerLog(t *testing.T) {
 
 	rec := failures[0]
 	if rec.Level != slog.LevelWarn {
-		t.Errorf("first failure logged at %v, want WARN (attempt 1 of 3 is retryable)", rec.Level)
+		t.Errorf("first failure logged at %v, want WARN (attempt 1 of several is retryable)", rec.Level)
 	}
 	attrs := recordAttrs(rec)
 	if attrs["job_kind"] != "extract_run" {
@@ -179,8 +181,10 @@ func TestFailedJobIsReportedOnTheWorkerLog(t *testing.T) {
 	if !strings.Contains(attrs["error"], "sentinel-extractor-failure") {
 		t.Errorf("error = %q, want it to carry the underlying failure", attrs["error"])
 	}
-	if attrs["attempt"] != "1" || attrs["max_attempts"] != "3" {
-		t.Errorf("attempt/max_attempts = %s/%s, want 1/3", attrs["attempt"], attrs["max_attempts"])
+	// The budget is read from the job's own insert options, so the log is held to what the job actually carries.
+	budget := strconv.Itoa((jobs.ExtractRunArgs{}).InsertOpts().MaxAttempts)
+	if attrs["attempt"] != "1" || attrs["max_attempts"] != budget {
+		t.Errorf("attempt/max_attempts = %s/%s, want 1/%s", attrs["attempt"], attrs["max_attempts"], budget)
 	}
 }
 
