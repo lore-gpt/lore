@@ -55,6 +55,19 @@ def test_each_ingest_uses_a_fresh_user_id_for_isolation() -> None:
     assert first_uid != second_uid  # re-ingest (pipeline variance) starts a clean memory scope
 
 
+def test_scopes_never_collide_across_processes_sharing_a_store() -> None:
+    """A resumed run gives each worker the store it used before, in a new process. The scope used to be a
+    per-process counter, so the resumed worker's first question landed in the scope of the first question
+    that store had already finished — two histories searched as one. Two adapters over one store stand in
+    for the two processes: their scopes must never meet."""
+    store = FakeMem0()
+    before, after = Mem0Adapter(store), Mem0Adapter(store)
+    for adapter in (before, before, after, after):
+        adapter.ingest(_sessions())
+    scopes = {user_id for _, user_id in store.adds}
+    assert len(scopes) == 4, f"four ingestions into one store shared a scope: {sorted(scopes)}"
+
+
 def test_retrieve_uses_2x_filters_and_top_k_and_orders_by_created_at() -> None:
     results = [
         {"memory": "later fact", "created_at": "2023-06-01T00:00:00Z"},
