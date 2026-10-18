@@ -16,7 +16,9 @@ import (
 // TestSmokeLiveExtraction exercises the real Anthropic Messages API end to end.
 // It is skipped unless ANTHROPIC_API_KEY is set, so CI stays offline and
 // deterministic; the offline tests in extract_test.go cover the adapter's logic.
-// Run it deliberately:
+// Every live smoke in this file runs against LORE_EXTRACTION_MODEL when it is set —
+// the same variable the deployment reads — so a candidate model can be held to the
+// same contracts before it is configured anywhere. Run it deliberately:
 //
 //	ANTHROPIC_API_KEY=sk-... go test ./core/extract/anthropic -run TestSmokeLiveExtraction -v
 func TestSmokeLiveExtraction(t *testing.T) {
@@ -25,7 +27,7 @@ func TestSmokeLiveExtraction(t *testing.T) {
 		t.Skip("ANTHROPIC_API_KEY not set; skipping live extraction smoke")
 	}
 
-	e, err := New(Config{APIKey: key})
+	e, err := New(Config{APIKey: key, Model: os.Getenv("LORE_EXTRACTION_MODEL")})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -152,7 +154,7 @@ func TestSmokeLiveExtractionRecordsThisRunsFacts(t *testing.T) {
 		t.Skip("ANTHROPIC_API_KEY not set; skipping live extraction quality smoke")
 	}
 
-	e, err := New(Config{APIKey: key})
+	e, err := New(Config{APIKey: key, Model: os.Getenv("LORE_EXTRACTION_MODEL")})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -283,7 +285,7 @@ func TestSmokeLiveExtractionKeepsWhatWasGiven(t *testing.T) {
 		t.Skip("ANTHROPIC_API_KEY not set; skipping live given-content smoke")
 	}
 
-	e, err := New(Config{APIKey: key})
+	e, err := New(Config{APIKey: key, Model: os.Getenv("LORE_EXTRACTION_MODEL")})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -366,7 +368,7 @@ func TestSmokeLiveExtractionResolvesRelativeTime(t *testing.T) {
 		t.Skip("ANTHROPIC_API_KEY not set; skipping live relative-time smoke")
 	}
 
-	e, err := New(Config{APIKey: key})
+	e, err := New(Config{APIKey: key, Model: os.Getenv("LORE_EXTRACTION_MODEL")})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -432,7 +434,7 @@ func TestSmokeLiveBatchExtraction(t *testing.T) {
 		t.Skip("ANTHROPIC_API_KEY not set; skipping live batch extraction smoke")
 	}
 
-	e, err := New(Config{APIKey: key})
+	e, err := New(Config{APIKey: key, Model: os.Getenv("LORE_EXTRACTION_MODEL")})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}

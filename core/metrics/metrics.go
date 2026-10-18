@@ -85,6 +85,7 @@ type Registry struct {
 	ExtractEventsExtracted prometheus.Counter
 	ExtractStateRouted     *prometheus.CounterVec // [lane]
 	ExtractWindowShrink    *prometheus.CounterVec // [outcome]
+	ExtractRefusals        *prometheus.CounterVec // [outcome]
 	// (ensure_index build outcomes are covered by lore_queue_jobs_total{kind="ensure_index"} + the queue-depth
 	// gauge, from the shared worker middleware — no dedicated counter is needed.)
 
@@ -201,6 +202,10 @@ func New(reg prometheus.Registerer) *Registry {
 		ExtractWindowShrink: f.NewCounterVec(prometheus.CounterOpts{
 			Name: "lore_extract_window_shrink_total",
 			Help: "Extraction windows that overran the model's output ceiling, by outcome: retried (halved and distilled) or exhausted (still truncating at the floor, so the run stopped distilling). A steady retried rate means the content is denser than the configured window and ceiling; any exhausted needs a higher LORE_EXTRACTION_MAX_TOKENS.",
+		}, []string{"outcome"}),
+		ExtractRefusals: f.NewCounterVec(prometheus.CounterOpts{
+			Name: "lore_extract_refusals_total",
+			Help: "Extraction windows the model declined to process, by outcome: retried (halved, and the part it accepted distilled) or exhausted (still declined at the floor, so the run stopped distilling). Any exhausted means the run holds content this model will not process; the remedy is another LORE_EXTRACTION_MODEL, then lore runs requeue.",
 		}, []string{"outcome"}),
 
 		QueueJobs: f.NewCounterVec(prometheus.CounterOpts{

@@ -16,6 +16,14 @@ action on upgrade says so in its entry.
 
 ### Added
 
+- **Extraction runs on newer Claude models.** Models from generation 5 on deprecate `temperature` and answer
+  any value of it with a 400, so the extractor used to fail every pass on them. It now sends temperature 0
+  only to a model that takes it and none to one that does not — extraction on the latter samples at the
+  model's default, so it is no longer deterministic. A model that declines a window used to be retried
+  unchanged until the job was discarded with the run's checkpoint frozen; a refusal is now handled like an
+  overrun ceiling — the window is halved, the part the model accepts is distilled, and a window still declined
+  at the floor stops that run's distillation with the remedy named (another `LORE_EXTRACTION_MODEL`, then
+  `lore runs requeue`). `lore_extract_refusals_total` counts refusals by outcome.
 - **Memories carry when they happened.** A memory's text says what is true and rarely says when, and the
   words that most often stand in for a date — "today", "recently" — mean nothing once they are read weeks
   later. Each memory now records when the event it was distilled from happened, and a context pack opens
