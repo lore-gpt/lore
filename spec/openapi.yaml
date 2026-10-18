@@ -544,7 +544,10 @@ components:
             replaying history — and the memories distilled from the event are dated
             by it; without one they are dated by when the server received the
             event. A value that is not a valid RFC 3339 timestamp is ignored, never
-            rejected.
+            rejected. A payload may carry `session_id` too, naming the conversation
+            or session the event belongs to: extraction keeps a session within one
+            pass where it fits, rather than splitting it across two that cannot see
+            each other.
           example:
             kind: state
             entity: auth-service

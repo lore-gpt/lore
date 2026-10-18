@@ -16,6 +16,13 @@ action on upgrade says so in its entry.
 
 ### Added
 
+- **Extraction keeps conversations whole.** A pass used to end wherever its window ran out — at the event
+  cap, or wherever ingestion had got to when it started — which could split one conversation across two
+  passes: the second half was distilled without the first, so "that recipe you gave me" pointed at something
+  the model never saw, and two ingestions of the same history were cut in different places. Events may now
+  carry `session_id` in their payload, and a pass that would end inside a session that is still arriving, or
+  that the cap cut off, stops at that session's start and leaves it whole for the next pass. A session longer
+  than the window is still split by the cap, and events without a session are windowed as before.
 - **Extraction runs on newer Claude models.** Models from generation 5 on deprecate `temperature` and answer
   any value of it with a 400, so the extractor used to fail every pass on them. It now sends temperature 0
   only to a model that takes it and none to one that does not — extraction on the latter samples at the
