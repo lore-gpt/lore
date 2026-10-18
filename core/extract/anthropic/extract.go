@@ -36,9 +36,10 @@ import (
 	"github.com/lore-gpt/lore/core/ext"
 )
 
-// DefaultModel is the extraction model: cheap and fast, which suits the
-// high-volume, structured extraction pass.
-const DefaultModel = string(anthropicsdk.ModelClaudeHaiku4_5)
+// DefaultModel is the extraction model: cheap and fast, which suits the high-volume, structured extraction
+// pass. It belongs to a generation that takes no temperature, so extraction on it is not deterministic (see
+// samplingTemperature); LORE_EXTRACTION_MODEL=claude-haiku-4-5 restores the earlier, deterministic default.
+const DefaultModel = "claude-haiku-5-5"
 
 // DefaultMaxTokens caps the structured output.
 //
