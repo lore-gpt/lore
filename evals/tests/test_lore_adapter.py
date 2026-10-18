@@ -1,8 +1,20 @@
+from typing import TYPE_CHECKING, Any
+
 import pytest
 from loregpt import PackResult, RunResult, WriteResult
 
 from longmemeval._types import Session, Turn
-from longmemeval.adapters.lore import DistillationTimeout, LoreAdapter
+from longmemeval.adapters.lore import DistillationTimeout, LoreAdapter, occurred_at
+
+if TYPE_CHECKING:
+    from loregpt import LoreClient
+
+    from longmemeval.adapters.lore import LoreLike
+
+    def _the_real_client_satisfies_the_protocol(client: LoreClient) -> LoreLike:
+        # Checked by mypy, never run: the adapter's protocol must stay a slice of the real client, or the
+        # harness would type-check against a fake and fail only when a real run wires the real client in.
+        return client
 
 
 class FakeLore:
@@ -10,7 +22,7 @@ class FakeLore:
     distillation probes, so the adapter's read-your-writes poll can be exercised without a server."""
 
     def __init__(self, covered_after: int = 1) -> None:
-        self.writes: list[tuple[str, str, str]] = []
+        self.writes: list[tuple[str, str, dict[str, Any]]] = []
         self.packs: list[tuple[str, int, int]] = []
         self._probes = 0
         self._covered_after = covered_after
@@ -19,8 +31,8 @@ class FakeLore:
     def create_run(self) -> RunResult:
         return RunResult(run_id="run-1", created_at="t")
 
-    def write(self, *, run_id: str, agent_id: str, content: str) -> WriteResult:
-        self.writes.append((run_id, agent_id, content))
+    def write(self, *, run_id: str, agent_id: str, payload: dict[str, Any]) -> WriteResult:
+        self.writes.append((run_id, agent_id, payload))
         self._last_seq = len(self.writes)
         return WriteResult(event_id=f"ev-{self._last_seq}", seq=self._last_seq)
 
@@ -44,18 +56,40 @@ class FakeLore:
 
 def _sessions() -> list[Session]:
     return [
-        Session("s1", "2031/01/04", (Turn("user", "hi"), Turn("assistant", "hello"))),
+        Session("s1", "2023/05/21 (Sun) 14:49", (Turn("user", "hi"), Turn("assistant", "hello"))),
         Session("s2", "", (Turn("user", "bye"),)),
     ]
 
 
-def test_ingest_writes_turns_with_role_and_date_prefix() -> None:
+def test_ingest_writes_each_turn_as_a_structured_payload() -> None:
+    """The content keeps the dated text both systems read; the structured fields repeat what that text already
+    says, machine-readably — who spoke, in which session, and when."""
     fake = FakeLore(covered_after=1)
     adapter = LoreAdapter(lambda: fake, sleep=lambda s: None)
     adapter.ingest(_sessions())
     assert [agent for _, agent, _ in fake.writes] == ["user", "assistant", "user"]
-    assert fake.writes[0][2] == "[2031/01/04] user: hi"
-    assert fake.writes[2][2] == "user: bye"  # an empty date carries no prefix
+    assert fake.writes[0][2] == {
+        "content": "[2023/05/21 (Sun) 14:49] user: hi",
+        "role": "user",
+        "session_id": "s1",
+        "occurred_at": "2023-05-21T14:49:00Z",
+    }
+    # An undated session carries neither the text prefix nor a timestamp field — nothing is invented.
+    assert fake.writes[2][2] == {"content": "user: bye", "role": "user", "session_id": "s2"}
+
+
+@pytest.mark.parametrize(
+    ("stamp", "want"),
+    [
+        ("2023/05/21 (Sun) 14:49", "2023-05-21T14:49:00Z"),
+        ("2023/01/10 10:34", "2023-01-10T10:34:00Z"),
+        ("2031/01/04", None),  # a date with no time is not guessed into one
+        ("", None),
+        ("yesterday afternoon", None),
+    ],
+)
+def test_occurred_at_reads_the_dataset_stamp_or_declines(stamp: str, want: str | None) -> None:
+    assert occurred_at(stamp) == want
 
 
 def test_ryw_poll_waits_until_covered() -> None:

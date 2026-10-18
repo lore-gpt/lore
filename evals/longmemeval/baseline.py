@@ -1,6 +1,7 @@
 """The measurement baseline: a locked Mem0 reference accuracy that Lore is gated against, valid only within
-one measurement universe (dataset revision + judge + answerer + n + protocol). The gate is one-sided — Lore
-passes at or above the reference minus a margin; exceeding it is a win, not a failure. A baseline is locked
+one measurement universe (dataset revision + split + question subset + judge + answerer + n + protocol).
+The gate is one-sided — Lore passes at or above the reference minus a margin; exceeding it is a win, not a
+failure. A baseline is locked
 only when the measured Mem0 reference is sanity-consistent with published Mem0 LongMemEval numbers, so a broken
 harness cannot lock a bogus low reference that then passes everything.
 
@@ -9,6 +10,7 @@ margin are in the same units."""
 
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -54,6 +56,16 @@ class Universe:
     answerer_model: str
     n: int
     protocol: str
+    # Which questions, not only how many. Two runs of the same size over different questions measured different
+    # things; before these fields existed the key could not tell them apart, so a reference locked on one set
+    # would have graded a run on another. Both default to "" so a reference saved before they existed still loads
+    # — and, having neither, matches no run that records them.
+    split: str = ""
+    subset: str = ""
+
+    def digest(self) -> str:
+        """A stable short id for this universe: the first 16 hex chars of the sha256 of its fields."""
+        return hashlib.sha256(json.dumps(asdict(self), sort_keys=True).encode("utf-8")).hexdigest()[:16]
 
     @staticmethod
     def of(prov: Provenance, protocol: str) -> Universe:
@@ -69,7 +81,16 @@ class Universe:
             answerer_model=prov.answerer_model,
             n=prov.n,
             protocol=f"{protocol}+isolation={prov.isolation}" if prov.isolation else protocol,
+            split=prov.split,
+            subset=prov.subset,
         )
+
+
+def baseline_path(directory: Path, universe: Universe) -> Path:
+    """Where the reference for a universe lives: one file per universe. A single shared file would let locking a
+    reference in a new universe overwrite the reference of another one still in use (a development set and a
+    verdict set are measured in different universes, side by side)."""
+    return directory / f"mem0.{universe.digest()}.json"
 
 
 @dataclass(frozen=True, slots=True)

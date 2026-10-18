@@ -64,13 +64,15 @@ class Mem0PoolConfig:
     is_reasoning_model: bool
     top_k: int
     split: str
-    n: int
     cache_dir: Path
 
 
 @dataclass(frozen=True)
 class _Job:
-    index: int  # position in the deterministic subset; the worker re-derives the question from it
+    # The worker finds the question by id in the full split, so it never has to re-derive which questions the run
+    # chose. It used to re-derive the run's list and take the question at a position in it, which silently
+    # assumed the worker would pick the same list the driver did — the moment the driver could choose questions
+    # any other way, every worker would have ingested the wrong ones without a single error.
     question_id: str
 
 
@@ -96,13 +98,13 @@ def _worker(
         from mem0 import Memory
 
         from .adapters.mem0 import Mem0Adapter
-        from .loader import deterministic_subset, download_split, load_questions
+        from .loader import download_split, load_questions
     except Exception:  # pragma: no cover - import failure is reported, not raised into the pool
         out.put(("", False, f"worker {worker_index} could not start:\n{traceback.format_exc(limit=4)}"))
         return
 
     try:
-        questions = deterministic_subset(load_questions(download_split(cfg.split, cfg.cache_dir / "hf")), cfg.n)
+        by_id = {q.question_id: q for q in load_questions(download_split(cfg.split, cfg.cache_dir / "hf"))}
         memory = Memory.from_config(
             {
                 "llm": {
@@ -121,7 +123,7 @@ def _worker(
         job = jobs.get()
         if job is None:
             return
-        question = questions[job.index]
+        question = by_id[job.question_id]
         try:
             adapter.ingest(question.sessions)
             context = adapter.retrieve(question.question, question.question_date)
@@ -145,7 +147,7 @@ def build_contexts(
     than waited out, because the checkpoint means restarting costs only the unfinished questions.
     """
     done = {qid: ctx for qid, ctx in checkpoint.load().items() if any(q.question_id == qid for q in questions)}
-    todo = [(i, q) for i, q in enumerate(questions) if q.question_id not in done]
+    todo = [q for q in questions if q.question_id not in done]
     heartbeat.write(done=len(done), in_flight=[], note=f"resuming with {len(todo)} of {len(questions)} left")
     if not todo:
         return done
@@ -153,8 +155,8 @@ def build_contexts(
     ctx_mp: SpawnContext = mp.get_context("spawn")
     jobs: mp.Queue[_Job | None] = ctx_mp.Queue()
     out: mp.Queue[tuple[str, bool, str]] = ctx_mp.Queue()
-    for index, question in todo:
-        jobs.put(_Job(index=index, question_id=question.question_id))
+    for question in todo:
+        jobs.put(_Job(question_id=question.question_id))
     n_workers = max(1, min(workers, len(todo)))
     for _ in range(n_workers):
         jobs.put(None)
@@ -163,7 +165,7 @@ def build_contexts(
     for p in procs:
         p.start()
 
-    in_flight = {q.question_id for _, q in todo}
+    in_flight = {q.question_id for q in todo}
     failures: list[str] = []
     idle_seconds = 0.0
     try:

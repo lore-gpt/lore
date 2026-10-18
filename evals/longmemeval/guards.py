@@ -8,6 +8,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 
 from .loader import PLACEHOLDER_REVISION
+from .subsets import SEALED_PREFIX
 
 # A composed embedder whose model@dim identity starts with this prefix is the offline, deterministic fixture:
 # fine for keyless dev, wrong for a measurement run whose whole point is a real vector space.
@@ -110,3 +111,30 @@ def mem0_retrieval_blocker(degraded_legs: Sequence[str]) -> str | None:
         "competitor and flatters Lore, so the comparison would not be a parity comparison. Install the "
         "competitor extras (`uv sync --extra competitors`) and re-run"
     )
+
+
+def subset_seal_blocker(subset_name: str, unsealed: bool) -> str | None:
+    """A sealed subset is read once, for a verdict, and only on purpose.
+
+    Development tooling compares answers against gold question by question, and every change made after looking
+    at a question's failure is, a little, a change made for that question. A verdict set looked at that way stops
+    measuring the system and starts measuring the tuning — the reason a verdict set exists apart from the
+    development one. So a real run over a sealed subset needs the caller to say, explicitly, that this is the read;
+    the subset's name then lands in the report's provenance, which is the record that the read happened."""
+    if subset_name.startswith(SEALED_PREFIX) and not unsealed:
+        return (
+            f"subset {subset_name!r} is sealed — it is read once, for a verdict. Develop against 'dev'; when this "
+            "really is the verdict run, pass --unseal-gate"
+        )
+    return None
+
+
+def run_dir_blocker(batch: bool, lore_run_dir: str) -> str | None:
+    """The Batch API path ingests in-process and never consults the checkpoint, so asking for both would quietly
+    drop the checkpoint — the run would look resumable and not be. Refuse the combination instead."""
+    if batch and lore_run_dir.strip():
+        return (
+            "--lore-run-dir is not used by the --batch path (it ingests without the checkpoint), so the run would "
+            "not be resumable — drop one of the two flags"
+        )
+    return None
