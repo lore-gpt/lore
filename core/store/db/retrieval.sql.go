@@ -69,7 +69,7 @@ func (q *Queries) GetActiveModelID(ctx context.Context, id pgtype.UUID) (*string
 }
 
 const retrieveExact = `-- name: RetrieveExact :many
-SELECT m.id, m.content, m.kind, (e.vec <=> $1::vector)::float8 AS distance
+SELECT m.id, m.content, m.kind, m.occurred_at, (e.vec <=> $1::vector)::float8 AS distance
 FROM memories m
 JOIN embeddings e ON e.project_id = m.project_id AND e.memory_id = m.id
 WHERE m.project_id = $2 AND e.project_id = $2
@@ -91,10 +91,11 @@ type RetrieveExactParams struct {
 }
 
 type RetrieveExactRow struct {
-	ID       pgtype.UUID `json:"id"`
-	Content  string      `json:"content"`
-	Kind     string      `json:"kind"`
-	Distance float64     `json:"distance"`
+	ID         pgtype.UUID        `json:"id"`
+	Content    string             `json:"content"`
+	Kind       string             `json:"kind"`
+	OccurredAt pgtype.Timestamptz `json:"occurred_at"`
+	Distance   float64            `json:"distance"`
 }
 
 // The exact-scan retrieval path: the filtered live memories nearest the query vector by cosine distance,
@@ -123,6 +124,7 @@ func (q *Queries) RetrieveExact(ctx context.Context, arg RetrieveExactParams) ([
 			&i.ID,
 			&i.Content,
 			&i.Kind,
+			&i.OccurredAt,
 			&i.Distance,
 		); err != nil {
 			return nil, err
@@ -136,7 +138,7 @@ func (q *Queries) RetrieveExact(ctx context.Context, arg RetrieveExactParams) ([
 }
 
 const retrieveLexical = `-- name: RetrieveLexical :many
-SELECT m.id, m.content, m.kind,
+SELECT m.id, m.content, m.kind, m.occurred_at,
        ts_rank_cd(to_tsvector('english', m.content), websearch_to_tsquery('english', $1::text))::float8 AS rank
 FROM memories m
 WHERE m.project_id = $2
@@ -157,10 +159,11 @@ type RetrieveLexicalParams struct {
 }
 
 type RetrieveLexicalRow struct {
-	ID      pgtype.UUID `json:"id"`
-	Content string      `json:"content"`
-	Kind    string      `json:"kind"`
-	Rank    float64     `json:"rank"`
+	ID         pgtype.UUID        `json:"id"`
+	Content    string             `json:"content"`
+	Kind       string             `json:"kind"`
+	OccurredAt pgtype.Timestamptz `json:"occurred_at"`
+	Rank       float64            `json:"rank"`
 }
 
 // The lexical (full-text) retrieval leg: the live memories whose content matches the query terms, ranked by
@@ -192,6 +195,7 @@ func (q *Queries) RetrieveLexical(ctx context.Context, arg RetrieveLexicalParams
 			&i.ID,
 			&i.Content,
 			&i.Kind,
+			&i.OccurredAt,
 			&i.Rank,
 		); err != nil {
 			return nil, err

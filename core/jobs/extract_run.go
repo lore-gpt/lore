@@ -637,9 +637,31 @@ func gate(ctx context.Context, runID string, events []db.Event) gatedWindow {
 				slog.String("gated_reason", reason))
 			continue
 		}
-		g.window = append(g.window, ext.InputEvent{Seq: e.Seq, AgentID: e.AgentID, Payload: json.RawMessage(e.Payload)})
+		g.window = append(g.window, ext.InputEvent{
+			Seq: e.Seq, AgentID: e.AgentID, OccurredAt: occurredAt(e), Payload: json.RawMessage(e.Payload),
+		})
 	}
 	return g
+}
+
+// occurredAt is when an event happened, as the extractor is shown it and as a memory distilled from the event
+// is dated: the payload's own "occurred_at" when it is a valid RFC 3339 timestamp, because a client replaying
+// history knows when each event originally happened and that is the time a question about "when" asks;
+// otherwise when the server received the event. A malformed or non-string value falls back rather than
+// failing the pass — a date label is not worth losing a window's memories over. Always UTC.
+func occurredAt(e db.Event) time.Time {
+	var stated struct {
+		OccurredAt string `json:"occurred_at"`
+	}
+	if json.Unmarshal(e.Payload, &stated) == nil && stated.OccurredAt != "" {
+		if t, err := time.Parse(time.RFC3339, stated.OccurredAt); err == nil {
+			return t.UTC()
+		}
+	}
+	if e.CreatedAt.Valid {
+		return e.CreatedAt.Time.UTC()
+	}
+	return time.Time{}
 }
 
 // resolveCandidates maps the extractor's candidates to writes, resolving each one's provenance from
@@ -663,6 +685,7 @@ func resolveCandidates(ctx context.Context, runID string, bySeq map[int64]db.Eve
 			SourceEventID:  src.ID,
 			CreatedByAgent: src.AgentID,
 			SourceSeq:      m.SourceSeq,
+			OccurredAt:     occurredAt(src),
 		})
 	}
 

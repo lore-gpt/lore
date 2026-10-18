@@ -193,7 +193,7 @@ func TestReadPathPartitionAndRawTailPlans(t *testing.T) {
 
 	// Exact (scoped) — the small-candidate crossover path; partition-scanned, must stay tenant-local. The SQL
 	// mirrors the plan shape of RetrieveExact (core/store/queries/retrieval.sql); keep the two in lockstep.
-	exactPlan, exactMs := explain(`SELECT m.id, m.content, m.kind, (e.vec <=> $6::vector)::float8 AS distance
+	exactPlan, exactMs := explain(`SELECT m.id, m.content, m.kind, m.occurred_at, (e.vec <=> $6::vector)::float8 AS distance
 		FROM memories m JOIN embeddings e ON e.project_id=m.project_id AND e.memory_id=m.id
 		WHERE m.project_id=$1 AND e.project_id=$1 AND e.model_id=$2
 		  AND m.superseded_by IS NULL AND m.valid_to IS NULL

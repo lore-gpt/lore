@@ -153,9 +153,8 @@ const (
 	// incoming write supersedes the stored one). 0.92 is the auto-merge threshold.
 	nearMergeCosine = 0.92
 	// grayZoneCosine: the lower bound of the grey band. A candidate in [grayZoneCosine, nearMergeCosine)
-	// is too similar to be confidently distinct but not similar enough to auto-merge; L1 keeps it separate
-	// and only records its score. The dual-threshold + adjudication funnel that resolves the grey band is
-	// a later increment; review_status is deliberately not touched here.
+	// is too similar to be confidently distinct but not similar enough to auto-merge, so it is kept separate
+	// and only its score is recorded; review_status is deliberately not touched here.
 	grayZoneCosine = 0.85
 	// dedupBucketScanCap bounds how many live bucket members the similarity probe compares against, so a
 	// large bucket (e.g. the shared empty-entity-context bucket) never runs an unbounded scan.
@@ -299,11 +298,17 @@ func insertDistilledMemory(ctx context.Context, q *db.Queries, projectID pgtype.
 		CreatedByAgent: &agent,
 		ContentHash:    contentHash,
 		ContextHash:    contextHash,
+		OccurredAt:     timestamptz(m.OccurredAt),
 	})
 	if err != nil {
 		return pgtype.UUID{}, fmt.Errorf("insert memory: %w", err)
 	}
 	return id, nil
+}
+
+// timestamptz stores a time that may be unknown: the zero time becomes NULL rather than year 1.
+func timestamptz(t time.Time) pgtype.Timestamptz {
+	return pgtype.Timestamptz{Time: t, Valid: !t.IsZero()}
 }
 
 // recordExactMerge merges an identical restatement into an existing live memory: bump the version and
@@ -341,6 +346,7 @@ func recordNearMerge(ctx context.Context, q *db.Queries, projectID, memoryID pgt
 		ContextHash:    contextHash,
 		SourceEventID:  m.SourceEventID,
 		CreatedByAgent: &changedBy,
+		OccurredAt:     timestamptz(m.OccurredAt),
 	})
 	if err != nil {
 		return fmt.Errorf("near-merge update: %w", err)

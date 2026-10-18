@@ -288,11 +288,13 @@ func (e *Extractor) CollectBatch(ctx context.Context, handle string) (ext.Extrac
 
 // wireEventInput is one event as presented to the model: its per-run seq (which
 // the model echoes back as each candidate's source_seq for provenance), the
-// writing agent, and the opaque payload.
+// writing agent, when it happened (RFC 3339, UTC; omitted when unknown), and the
+// opaque payload.
 type wireEventInput struct {
-	Seq     int64           `json:"seq"`
-	AgentID string          `json:"agent_id"`
-	Payload json.RawMessage `json:"payload"`
+	Seq        int64           `json:"seq"`
+	AgentID    string          `json:"agent_id"`
+	OccurredAt string          `json:"occurred_at,omitempty"`
+	Payload    json.RawMessage `json:"payload"`
 }
 
 // marshalEvents serialises the window as the user message. Events keep their seq
@@ -305,6 +307,9 @@ func marshalEvents(events []ext.InputEvent) (string, error) {
 			payload = json.RawMessage("null")
 		}
 		in[i] = wireEventInput{Seq: ev.Seq, AgentID: ev.AgentID, Payload: payload}
+		if !ev.OccurredAt.IsZero() {
+			in[i].OccurredAt = ev.OccurredAt.UTC().Format(time.RFC3339)
+		}
 	}
 	b, err := json.Marshal(struct {
 		Events []wireEventInput `json:"events"`
