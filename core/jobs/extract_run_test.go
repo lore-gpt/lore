@@ -28,8 +28,10 @@ func TestExtractRunArgs_Kind(t *testing.T) {
 
 func TestExtractRunArgs_Unique(t *testing.T) {
 	opts := (jobs.ExtractRunArgs{}).InsertOpts()
-	if opts.MaxAttempts != 3 {
-		t.Errorf("MaxAttempts = %d, want 3", opts.MaxAttempts)
+	// Seven attempts, spaced by the worker's NextRetry so the retries outlast a provider slowdown of several
+	// minutes (retry_test.go pins the schedule); three used to be spent inside two minutes.
+	if opts.MaxAttempts != 7 {
+		t.Errorf("MaxAttempts = %d, want 7", opts.MaxAttempts)
 	}
 	if !opts.UniqueOpts.ByArgs {
 		t.Error("UniqueOpts.ByArgs = false, want true (coalesce per run)")

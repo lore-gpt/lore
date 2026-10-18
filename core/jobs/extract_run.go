@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math/rand/v2"
 	"sort"
 	"time"
 
@@ -44,10 +45,10 @@ func (ExtractRunArgs) Kind() string { return "extract_run" }
 // InsertOpts makes extract_run a per-run unique job: while a run's job is active — available,
 // pending, running, scheduled (including snoozed), or retryable — further events for that run
 // coalesce into it rather than enqueuing another. Completed is deliberately excluded so a fresh
-// window starts once a pass finishes. Three attempts.
+// window starts once a pass finishes. extractMaxAttempts attempts, spaced by NextRetry.
 func (ExtractRunArgs) InsertOpts() river.InsertOpts {
 	return river.InsertOpts{
-		MaxAttempts: 3,
+		MaxAttempts: extractMaxAttempts,
 		UniqueOpts: river.UniqueOpts{
 			ByArgs: true,
 			ByState: []rivertype.JobState{
@@ -202,6 +203,58 @@ const extractJobTimeout = 30 * time.Minute
 // Timeout overrides River's one-minute default for extraction. See extractJobTimeout.
 func (w *ExtractRunWorker) Timeout(*river.Job[ExtractRunArgs]) time.Duration {
 	return extractJobTimeout
+}
+
+// extractMaxAttempts is how many times a failing pass is tried before River discards the job. With the waits
+// extractRetryDelay puts between them, the six retries span more than ten minutes.
+const extractMaxAttempts = 7
+
+// extractRetryBase is the wait after a pass's first failure; each later failure doubles it, up to
+// extractRetryCap.
+const (
+	extractRetryBase = 10 * time.Second
+	extractRetryCap  = 8 * time.Minute
+)
+
+// NextRetry spaces out the retries of a failed pass so that they outlast a short provider slowdown.
+//
+// River's default schedule waits about attempt^4 seconds — one second, then sixteen — so the three attempts a
+// pass used to get were spent inside two minutes. A provider that stayed slow for three failed all of them (an
+// embeddings request timing out while it read the response was seen doing exactly that), River discarded the
+// job, and the run's checkpoint stayed where it was. Nothing re-enqueues the pass of a conversation that has
+// finished, so its distillation stopped until an operator ran `lore runs requeue`.
+//
+// Almost every error that reaches River from here is that kind: a provider, or the database, not answering for
+// a while. What the window itself causes — an answer that overruns the output ceiling, or one the model
+// declines — is answered inside the attempt by shrinking the window, and ends in a JobCancel when shrinking
+// cannot help (see distil), so it never waits on this schedule. Waiting longer therefore costs the failures
+// that retrying cannot fix nothing, and buys the ones it can fix their best chance.
+//
+// The wait doubles from ten seconds, so the six retries wait 10s, 20s, 40s, 80s, 160s and 320s — ten and a half
+// minutes in all, on top of the attempts themselves — before the job is discarded: long enough for a provider
+// blip to pass, short enough that a provider that is really down shows up in the logs and in `lore runs
+// stalled` within the quarter hour. Each wait carries up to a tenth more as jitter, so runs that one outage
+// failed together do not all come back in the same second.
+//
+// More attempts are safe because a pass is idempotent: it persists only together with the checkpoint advance,
+// compare-and-swapped on the checkpoint it started from, so a retry redistils the same window instead of
+// duplicating anything.
+func (w *ExtractRunWorker) NextRetry(job *river.Job[ExtractRunArgs]) time.Time {
+	return time.Now().UTC().Add(extractRetryDelay(len(job.Errors)+1, rand.Float64))
+}
+
+// extractRetryDelay is the wait after the nth failure of a pass: extractRetryBase doubled n-1 times, capped at
+// extractRetryCap, plus up to a tenth of that as jitter (jitter returns values in [0, 1)).
+//
+// n counts the job's recorded errors, as River's own policy does, rather than taking the attempt number: the
+// attempt number has not always survived a snooze, and this job snoozes on every debounce.
+func extractRetryDelay(n int, jitter func() float64) time.Duration {
+	d := extractRetryBase
+	for i := 1; i < n && d < extractRetryCap; i++ {
+		d *= 2
+	}
+	d = min(d, extractRetryCap)
+	return d + time.Duration(float64(d)/10*jitter())
 }
 
 // Work runs one coalesced extraction pass for the job's run. A run may be in one of two phases: if an

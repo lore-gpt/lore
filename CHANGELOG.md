@@ -151,6 +151,15 @@ action on upgrade says so in its entry.
 
 ### Fixed
 
+- **A provider that is slow for a few minutes no longer stops a run's distillation.** A failed extraction pass
+  was retried on River's default schedule — about one second, then sixteen — so its three attempts were spent
+  inside two minutes. A provider that stayed slow for three (an embeddings request timing out mid-response,
+  for one) failed all of them, the job was discarded, and the run's checkpoint stayed put: a finished
+  conversation sends no event that would enqueue another pass, so its distillation stopped until `lore runs
+  requeue`. A pass now gets seven attempts, waiting 10s, 20s, 40s, 80s, 160s and 320s between them — more than
+  ten minutes in all — with a little jitter so the runs one outage failed together do not retry in step.
+  Failures the window itself causes — an answer that overruns the output ceiling, or one the model declines —
+  are still handled inside the attempt and cancelled at the floor, so they never wait on this schedule.
 - **A burst of writes no longer stops a run from ever distilling again.** One extraction pass used to
   read every event past the run's checkpoint, however many that was. A client writing faster than
   extraction runs — a bulk import, a backfill, an agent replaying a transcript — could therefore build a
