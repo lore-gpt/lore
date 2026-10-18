@@ -255,7 +255,7 @@ Copy [`.env.example`](.env.example) to `.env` and set:
 | `LORE_EXTRACTION_PROVIDER` | no | fixture | `anthropic` for real LLM extraction; unset/`fixture` keeps the offline fixture. Extraction runs in `worker`, but set it for **both** roles: `serve` reads it only to report which extractor the deployment uses on `/healthz`, and a server left unset reports the fixture while the worker uses a real model |
 | `LORE_EXTRACTION_MODEL` | no | — | Model override for the provider; unset uses its built-in default, `claude-haiku-5-5` (not deterministic — see *Newer models* below; `claude-haiku-4-5` is deterministic). Set it for **both** roles, as above |
 | `LORE_EXTRACTION_MAX_TOKENS` | no | `16384` | Output ceiling for one extraction pass. A cap, not a spend: you are billed for tokens actually generated, so headroom is free |
-| `LORE_EXTRACTION_MAX_WINDOW` | no | `200` | Events one extraction pass distils. Pairs with the ceiling above — see below |
+| `LORE_EXTRACTION_MAX_WINDOW` | no | `60` | Events one extraction pass distils. Pairs with the ceiling above — see below |
 | `ANTHROPIC_API_KEY` | with `anthropic` | — | Provider-native key (not `LORE_`-prefixed); the worker fails at startup without it. The **worker only** — `serve` builds no extractor, so it has no use for the key |
 | `LORE_EMBEDDING_PROVIDER` | no | fixture | `openai` for a real vector space; unset/`fixture` keeps the offline fixture |
 | `LORE_EMBEDDING_BASE_URL` | no | OpenAI | Any OpenAI-compatible `/v1/embeddings` endpoint (OpenAI, a self-hosted TEI/Ollama/vLLM server) |
@@ -273,7 +273,9 @@ quickstart send — while a real provider reads free-form payloads.
 
 **Window and ceiling.** `LORE_EXTRACTION_MAX_WINDOW` bounds how many events one pass distils, and
 `LORE_EXTRACTION_MAX_TOKENS` bounds how large its answer may be. They are one setting in two halves, and the
-right pair depends on how much text your events carry — which is why both are adjustable. You do not have to
+right pair depends on how much text your events carry — which is why both are adjustable. The default window
+is small on purpose: a long window is distilled less reliably — what a pass keeps from it varies from one
+ingestion to the next — so raising it trades recall you can count on for fewer model calls. You do not have to
 get it right: when an answer overruns the ceiling the pass halves its window and retries, commits what fits,
 and leaves the rest for the next pass, so a mismatch costs extra model calls rather than lost memories. The
 only case needing you is dense enough content that even a handful of events overruns the ceiling — the worker
