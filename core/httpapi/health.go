@@ -17,11 +17,12 @@ type Health struct {
 	// "text-embedding-3-small@1536"). It is reported so an operator can confirm the server and worker share
 	// one vector space; it never affects Status.
 	Embedder string `json:"embedder"`
-	// Extraction is the provider/model identity distilling this deployment's memories (e.g. "fixture" or
-	// "anthropic/claude-haiku-4-5"). Unlike Embedder it is not something this process composed — extraction
-	// runs in the worker — but from the same configuration, which the scaffold gives to both roles. It is
-	// here because /healthz is the only place the question can be asked of a running deployment, and
-	// "which model wrote these memories?" has no answer at all otherwise. It never affects Status.
+	// Extraction is the provider/model/prompt identity distilling this deployment's memories (e.g. "fixture"
+	// or "anthropic/claude-haiku-4-5/prompt-1a2b3c4d5e6f"). Unlike Embedder it is not something this process
+	// composed — extraction runs in the worker — but from the same configuration, which the scaffold gives to
+	// both roles. It is here because /healthz is the only place the question can be asked of a running
+	// deployment, and "which model, under which instructions, wrote these memories?" has no answer at all
+	// otherwise. It never affects Status.
 	Extraction string `json:"extraction"`
 }
 

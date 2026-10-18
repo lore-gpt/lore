@@ -75,10 +75,15 @@ const FixtureIdentity = ProviderFixture
 // UnknownIdentity is what Identity reports for a provider name Build would reject.
 const UnknownIdentity = "unknown"
 
-// Identity names the extractor a configuration selects, as "provider/model" — "anthropic/claude-haiku-4-5",
-// or bare "fixture" for the offline default, or "unknown" for a provider name Build would reject. It answers
-// "what is distilling this deployment's memories?" from configuration alone, constructing nothing: no client,
-// and in particular no API key.
+// Identity names the extractor a configuration selects, as "provider/model/prompt-<digest>" —
+// "anthropic/claude-haiku-4-5/prompt-1a2b3c4d5e6f" — or bare "fixture" for the offline default, or "unknown"
+// for a provider name Build would reject. It answers "what is distilling this deployment's memories?" from
+// configuration alone, constructing nothing: no client, and in particular no API key.
+//
+// The prompt digest is part of the answer because the model is not the whole of it: two builds on the same
+// model with different extraction instructions distil different memories, and a name that covered only the
+// model would report both as one. The digest identifies the instructions without publishing them; see
+// anthropic.PromptDigest for what it covers.
 //
 // That last point is why this exists separately from Build. Extraction runs in the worker, but /healthz is
 // the server's surface and the only place an operator — or a harness recording what it measured — can ask
@@ -93,7 +98,13 @@ const UnknownIdentity = "unknown"
 func Identity(provider, model string) string {
 	switch strings.ToLower(strings.TrimSpace(provider)) {
 	case ProviderAnthropic:
-		return ProviderAnthropic + "/" + modelOrDefault(model)
+		digest := anthropic.PromptDigest()
+		if digest == "" {
+			// The extractor could not name its own instructions — a defect its tests rule out. Naming the
+			// model alone would claim a precision this identity no longer has.
+			return UnknownIdentity
+		}
+		return ProviderAnthropic + "/" + modelOrDefault(model) + "/prompt-" + digest
 	case ProviderFixture, "":
 		return FixtureIdentity
 	default:

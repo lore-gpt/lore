@@ -558,7 +558,8 @@ def _lore_embedding_model(base_url: str, health: dict[str, object]) -> str:
 
 
 def _lore_extraction_identity(health: dict[str, object]) -> str:
-    """The extractor distilling this deployment's memories (provider/model, or 'fixture'), from /healthz.
+    """The extractor distilling this deployment's memories (provider/model/prompt-<digest>, or 'fixture'), from
+    /healthz.
 
     Unlike the embedder there is deliberately NO environment fallback. Extraction is configured on the
     worker, a different process in a different container, so this process's LORE_EXTRACTION_* says nothing

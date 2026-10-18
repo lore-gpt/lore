@@ -46,7 +46,8 @@ def test_lore_extraction_blocker_fails_closed_and_refuses_the_fixture() -> None:
     assert lore_extraction_blocker("unknown") is not None
     # Canned output is not extraction, so scoring against it measures the fixture.
     assert lore_extraction_blocker("fixture") is not None
-    # A real provider/model passes.
+    # A real extractor passes, named with its prompt digest or, from a server that predates it, without.
+    assert lore_extraction_blocker("anthropic/claude-haiku-4-5/prompt-1a2b3c4d5e6f") is None
     assert lore_extraction_blocker("anthropic/claude-haiku-4-5") is None
     # Only the bare identity is the fixture. A provider that happens to start with those letters is a real
     # one and must not be caught by a sloppy prefix test.

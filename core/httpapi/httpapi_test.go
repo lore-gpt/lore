@@ -166,7 +166,7 @@ func TestHealthzReportsExtractionID(t *testing.T) {
 		name string
 		id   string
 	}{
-		{"a configured provider is named", "anthropic/claude-haiku-4-5"},
+		{"a configured provider is named", "anthropic/claude-haiku-4-5/prompt-1a2b3c4d5e6f"},
 		{"the offline default is named", "fixture"},
 		{"an unset identity stays empty rather than becoming a placeholder", ""},
 	} {

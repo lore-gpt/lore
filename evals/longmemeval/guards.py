@@ -14,8 +14,8 @@ from .subsets import SEALED_PREFIX
 # fine for keyless dev, wrong for a measurement run whose whole point is a real vector space.
 FIXTURE_EMBEDDER_PREFIX = "fixture-embed-"
 
-# The server reports its extractor as provider/model; this is the whole identity the offline one goes by (it
-# has no model half), so an exact match is the right test rather than a prefix.
+# The server reports its extractor as provider/model/prompt-<digest>; this is the whole identity the offline
+# one goes by (it has no model or prompt half), so an exact match is the right test rather than a prefix.
 FIXTURE_EXTRACTOR = "fixture"
 
 

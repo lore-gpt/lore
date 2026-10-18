@@ -89,8 +89,10 @@ func TestBuildUnknownProviderErrors(t *testing.T) {
 // TestIdentityNamesWhatBuildWouldCompose is the anti-drift lock between the two functions. They are
 // deliberately separate — Identity constructs nothing so a keyless process can call it — which means the
 // pair can silently disagree, and a /healthz that names the wrong model is worse than one that names none.
-// So the identity's model half is asserted against the same default Build hands the provider.
+// So the identity's model half is asserted against the same default Build hands the provider, and its prompt
+// half against the digest of the instructions that extractor sends.
 func TestIdentityNamesWhatBuildWouldCompose(t *testing.T) {
+	prompt := "/prompt-" + anthropic.PromptDigest()
 	for _, tc := range []struct {
 		name     string
 		provider string
@@ -102,11 +104,11 @@ func TestIdentityNamesWhatBuildWouldCompose(t *testing.T) {
 		// A model override on the fixture is not a thing the fixture reads, so it must not appear.
 		{"fixture ignores a model override", "FIXTURE", "claude-haiku-4-5", FixtureIdentity},
 		{"anthropic without an override names the provider default", "anthropic", "",
-			ProviderAnthropic + "/" + anthropic.DefaultModel},
+			ProviderAnthropic + "/" + anthropic.DefaultModel + prompt},
 		{"anthropic with an override names the override", "Anthropic", "claude-sonnet-4-6",
-			ProviderAnthropic + "/claude-sonnet-4-6"},
+			ProviderAnthropic + "/claude-sonnet-4-6" + prompt},
 		{"whitespace and case are normalised as Build normalises them", "  ANTHROPIC  ", "",
-			ProviderAnthropic + "/" + anthropic.DefaultModel},
+			ProviderAnthropic + "/" + anthropic.DefaultModel + prompt},
 		// Build rejects this outright, so the deployment is already failing. Reporting a name here would
 		// dress up a broken configuration as a working one.
 		{"a provider Build would reject is not given a name", "gpt-x", "", UnknownIdentity},

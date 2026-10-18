@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/lore-gpt/lore/server/internal/extraction"
 )
 
 // closedAddr returns a loopback address with nothing listening on it, so a probe against it fails at the
@@ -115,6 +117,39 @@ func TestDoctorPrintsTheDatabaseHintOnlyOnAFailedConnection(t *testing.T) {
 		if strings.Contains(out, "the stack does not publish 5432") {
 			t.Errorf("the database hint was printed when LORE_DATABASE_URL is simply unset — that is a "+
 				"configuration error, not a sign of probing the wrong host:\n%s", out)
+		}
+	})
+}
+
+// TestDoctorNamesTheExtractor checks that doctor prints the identity /healthz reports, prompt digest included,
+// and treats the two configurations that distil nothing real the way the embedding line does: the offline
+// fixture is a warning, a provider the worker cannot build is a failure.
+func TestDoctorNamesTheExtractor(t *testing.T) {
+	t.Setenv("LORE_DATABASE_URL", "") // keep the database branch out of this test's output
+	t.Setenv("LORE_EXTRACTION_MODEL", "")
+
+	t.Run("a real extractor is named with its prompt", func(t *testing.T) {
+		t.Setenv("LORE_EXTRACTION_PROVIDER", "anthropic")
+		out := runDoctor(t, "http://"+closedAddr(t))
+		id := extraction.Identity("anthropic", "")
+		if !strings.Contains(id, "/prompt-") || !strings.Contains(out, "ok extraction: "+id+"\n") {
+			t.Errorf("doctor does not name the extractor as %q:\n%s", id, out)
+		}
+	})
+
+	t.Run("the offline fixture is a warning", func(t *testing.T) {
+		t.Setenv("LORE_EXTRACTION_PROVIDER", "")
+		out := runDoctor(t, "http://"+closedAddr(t))
+		if !strings.Contains(out, "! extraction: offline fixture") {
+			t.Errorf("doctor does not warn that extraction is the offline fixture:\n%s", out)
+		}
+	})
+
+	t.Run("a provider the worker cannot build is a failure", func(t *testing.T) {
+		t.Setenv("LORE_EXTRACTION_PROVIDER", "gpt-x")
+		out := runDoctor(t, "http://"+closedAddr(t))
+		if !strings.Contains(out, `x extraction: LORE_EXTRACTION_PROVIDER "gpt-x" is not a provider`) {
+			t.Errorf("doctor does not fail an extraction provider the worker would reject:\n%s", out)
 		}
 	})
 }
